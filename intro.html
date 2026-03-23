@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Windows XP Tour - Intro</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #000;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        .player-container {
+            position: relative;
+            background: #fff;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }
+
+        #animation-canvas {
+            display: block;
+        }
+
+        .controls {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+            padding: 15px;
+            background: linear-gradient(to bottom, #0a246a, #003399);
+            border-top: 2px solid #003399;
+        }
+
+        .controls button {
+            padding: 8px 20px;
+            font-size: 14px;
+            cursor: pointer;
+            border: 1px solid #003366;
+            border-radius: 3px;
+            background: linear-gradient(to bottom, #fff, #ddd);
+            color: #003366;
+            font-weight: bold;
+            transition: all 0.2s;
+        }
+
+        .controls button:hover {
+            background: linear-gradient(to bottom, #fff, #cce0ff);
+        }
+
+        .controls button:active {
+            background: linear-gradient(to bottom, #cce0ff, #fff);
+        }
+
+        .progress-container {
+            flex: 1;
+            max-width: 300px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .progress-bar {
+            flex: 1;
+            height: 8px;
+            background: #001a4d;
+            border-radius: 4px;
+            overflow: hidden;
+            cursor: pointer;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(to bottom, #6699ff, #3366cc);
+            width: 0%;
+            transition: width 0.1s linear;
+        }
+
+        .time-display {
+            color: #fff;
+            font-size: 12px;
+            min-width: 80px;
+            text-align: center;
+        }
+
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255,255,255,0.95);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+        }
+
+        .loading-text {
+            color: #003399;
+            font-size: 18px;
+            margin-bottom: 20px;
+        }
+
+        .loading-bar {
+            width: 300px;
+            height: 20px;
+            background: #e0e0e0;
+            border-radius: 10px;
+            overflow: hidden;
+            border: 1px solid #ccc;
+        }
+
+        .loading-fill {
+            height: 100%;
+            background: linear-gradient(to bottom, #3399ff, #0066cc);
+            width: 0%;
+            transition: width 0.1s;
+        }
+
+        .loading-percent {
+            color: #003399;
+            font-size: 14px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="player-container">
+        <div class="loading-overlay" id="loading">
+            <div class="loading-text">Loading Windows XP Tour...</div>
+            <div class="loading-bar">
+                <div class="loading-fill" id="loading-fill"></div>
+            </div>
+            <div class="loading-percent" id="loading-percent">0%</div>
+        </div>
+
+        <canvas id="animation-canvas" width="640" height="480"></canvas>
+
+        <div class="controls">
+            <button id="play-btn">Play</button>
+            <button id="restart-btn">Restart</button>
+            <div class="progress-container">
+                <div class="progress-bar" id="progress-bar">
+                    <div class="progress-fill" id="progress-fill"></div>
+                </div>
+            </div>
+            <span class="time-display" id="time-display">0:00 / 0:00</span>
+        </div>
+    </div>
+
+    <script>
+        const TOTAL_FRAMES = 586;
+        const FPS = 15;
+        const FRAME_DURATION = 1000 / FPS;
+
+        const canvas = document.getElementById('animation-canvas');
+        const ctx = canvas.getContext('2d');
+        const playBtn = document.getElementById('play-btn');
+        const restartBtn = document.getElementById('restart-btn');
+        const progressBar = document.getElementById('progress-bar');
+        const progressFill = document.getElementById('progress-fill');
+        const timeDisplay = document.getElementById('time-display');
+        const loadingOverlay = document.getElementById('loading');
+        const loadingFill = document.getElementById('loading-fill');
+        const loadingPercent = document.getElementById('loading-percent');
+
+        let frames = [];
+        let currentFrame = 0;
+        let isPlaying = false;
+        let animationTimer = null;
+        let audioElements = [];
+
+        // Audio timing (approximate sync points based on frame analysis)
+        const audioTiming = [
+            { frame: 1, src: 'intro/sounds/1_1.mp3' },
+            { frame: 60, src: 'intro/sounds/2_2.mp3' },
+            { frame: 120, src: 'intro/sounds/3_3.mp3' },
+            { frame: 180, src: 'intro/sounds/4_4.mp3' },
+            { frame: 240, src: 'intro/sounds/5_5.mp3' },
+            { frame: 300, src: 'intro/sounds/6_6.mp3' },
+            { frame: 360, src: 'intro/sounds/7_7.mp3' },
+            { frame: 420, src: 'intro/sounds/8_8.mp3' },
+            { frame: 480, src: 'intro/sounds/9_9.mp3' },
+            { frame: 520, src: 'intro/sounds/10_10.mp3' },
+            { frame: 550, src: 'intro/sounds/11_11.mp3' },
+        ];
+
+        // Preload all frames
+        async function preloadFrames() {
+            const loadPromises = [];
+
+            for (let i = 1; i <= TOTAL_FRAMES; i++) {
+                const img = new Image();
+                const promise = new Promise((resolve, reject) => {
+                    img.onload = () => {
+                        frames[i - 1] = img;
+                        const percent = Math.round((frames.filter(f => f).length / TOTAL_FRAMES) * 100);
+                        loadingFill.style.width = percent + '%';
+                        loadingPercent.textContent = percent + '%';
+                        resolve();
+                    };
+                    img.onerror = () => {
+                        // Create a blank frame for missing images
+                        frames[i - 1] = null;
+                        resolve();
+                    };
+                });
+                img.src = `intro/frames/${i}.png`;
+                loadPromises.push(promise);
+            }
+
+            await Promise.all(loadPromises);
+            loadingOverlay.style.display = 'none';
+            drawFrame(0);
+        }
+
+        // Preload audio
+        function preloadAudio() {
+            audioTiming.forEach(timing => {
+                const audio = new Audio(timing.src);
+                audio.preload = 'auto';
+                audioElements.push({ frame: timing.frame, audio: audio });
+            });
+        }
+
+        // Draw a specific frame
+        function drawFrame(frameIndex) {
+            if (frames[frameIndex]) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(frames[frameIndex], 0, 0, canvas.width, canvas.height);
+            }
+            updateProgress();
+        }
+
+        // Update progress bar and time display
+        function updateProgress() {
+            const progress = (currentFrame / TOTAL_FRAMES) * 100;
+            progressFill.style.width = progress + '%';
+
+            const currentTime = currentFrame / FPS;
+            const totalTime = TOTAL_FRAMES / FPS;
+            timeDisplay.textContent = formatTime(currentTime) + ' / ' + formatTime(totalTime);
+        }
+
+        // Format seconds to mm:ss
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return mins + ':' + secs.toString().padStart(2, '0');
+        }
+
+        // Play audio at specific frames
+        function checkAudio() {
+            audioElements.forEach(item => {
+                if (currentFrame === item.frame) {
+                    item.audio.currentTime = 0;
+                    item.audio.play().catch(() => {});
+                }
+            });
+        }
+
+        // Animation loop
+        function animate() {
+            if (!isPlaying) return;
+
+            drawFrame(currentFrame);
+            checkAudio();
+
+            currentFrame++;
+
+            if (currentFrame >= TOTAL_FRAMES) {
+                stop();
+                currentFrame = TOTAL_FRAMES - 1;
+                return;
+            }
+
+            animationTimer = setTimeout(animate, FRAME_DURATION);
+        }
+
+        // Play/Pause
+        function togglePlay() {
+            if (isPlaying) {
+                pause();
+            } else {
+                play();
+            }
+        }
+
+        function play() {
+            if (currentFrame >= TOTAL_FRAMES - 1) {
+                currentFrame = 0;
+            }
+            isPlaying = true;
+            playBtn.textContent = 'Pause';
+            animate();
+        }
+
+        function pause() {
+            isPlaying = false;
+            playBtn.textContent = 'Play';
+            if (animationTimer) {
+                clearTimeout(animationTimer);
+            }
+        }
+
+        function stop() {
+            pause();
+            stopAllAudio();
+        }
+
+        function stopAllAudio() {
+            audioElements.forEach(item => {
+                item.audio.pause();
+                item.audio.currentTime = 0;
+            });
+        }
+
+        // Restart
+        function restart() {
+            stop();
+            currentFrame = 0;
+            drawFrame(0);
+        }
+
+        // Seek
+        function seek(e) {
+            const rect = progressBar.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const percent = x / rect.width;
+            currentFrame = Math.floor(percent * TOTAL_FRAMES);
+            currentFrame = Math.max(0, Math.min(currentFrame, TOTAL_FRAMES - 1));
+            stopAllAudio();
+            drawFrame(currentFrame);
+        }
+
+        // Event listeners
+        playBtn.addEventListener('click', togglePlay);
+        restartBtn.addEventListener('click', restart);
+        progressBar.addEventListener('click', seek);
+
+        // Keyboard controls
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault();
+                togglePlay();
+            } else if (e.code === 'KeyR') {
+                restart();
+            } else if (e.code === 'ArrowLeft') {
+                pause();
+                currentFrame = Math.max(0, currentFrame - 15);
+                drawFrame(currentFrame);
+            } else if (e.code === 'ArrowRight') {
+                pause();
+                currentFrame = Math.min(TOTAL_FRAMES - 1, currentFrame + 15);
+                drawFrame(currentFrame);
+            }
+        });
+
+        // Initialize
+        preloadAudio();
+        preloadFrames();
+    </script>
+</body>
+</html>

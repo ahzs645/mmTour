@@ -1,0 +1,398 @@
+/* ========================================
+   GSAP Player Layout
+   ======================================== */
+
+.gsap-player-layout {
+  display: flex;
+  flex-direction: row;
+  background: #0d0d1a;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.gsap-player-layout--with-controls {
+  min-height: 100vh;
+}
+
+.gsap-player-layout--stage-only {
+  height: auto;
+  background: transparent;
+}
+
+.gsap-player-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* ========================================
+   Stage Wrapper
+   ======================================== */
+
+.gsap-stage-wrapper {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0d0d1a;
+  min-height: 0;
+  overflow: hidden;
+  padding: 20px;
+}
+
+.gsap-player-layout--stage-only .gsap-stage-wrapper {
+  flex: none;
+  width: min(100%, 720px);
+  aspect-ratio: 4 / 3;
+  padding: 0;
+  background: transparent;
+  align-self: center;
+}
+
+.gsap-stage {
+  position: relative;
+}
+
+/* ========================================
+   Controls
+   ======================================== */
+
+.gsap-controls {
+  background: linear-gradient(to bottom, #1a1a30, #0d0d1a);
+  padding: 14px 20px;
+  border-top: 1px solid #2a2a40;
+  flex-shrink: 0;
+}
+
+.gsap-controls-row {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.gsap-controls-secondary {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #1a1a30;
+}
+
+/* Transport */
+.gsap-transport {
+  display: flex;
+  gap: 4px;
+}
+
+.gsap-transport button {
+  width: 38px;
+  height: 34px;
+  border: none;
+  border-radius: 4px;
+  background: #252540;
+  color: #ccc;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.12s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gsap-transport button:hover {
+  background: #353560;
+  color: #fff;
+}
+
+.gsap-transport button:active {
+  background: #454570;
+}
+
+.gsap-play-btn {
+  width: 48px !important;
+  background: #0055bb !important;
+  color: #fff !important;
+  font-size: 16px !important;
+}
+
+.gsap-play-btn:hover {
+  background: #0066dd !important;
+}
+
+/* Timeline */
+.gsap-timeline {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.gsap-time {
+  color: #8899bb;
+  font-size: 13px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  min-width: 110px;
+}
+
+.gsap-progress {
+  flex: 1;
+  height: 6px;
+  background: #1a1a30;
+  border-radius: 3px;
+  cursor: pointer;
+  position: relative;
+}
+
+.gsap-progress:hover {
+  height: 8px;
+}
+
+.gsap-progress-fill {
+  height: 100%;
+  background: linear-gradient(to right, #0055bb, #00aaff);
+  border-radius: 3px;
+  transition: width 0.04s linear;
+}
+
+.gsap-progress-handle {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 12px;
+  height: 12px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.gsap-progress:hover .gsap-progress-handle {
+  opacity: 1;
+}
+
+/* Frame Input */
+.gsap-frame-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #8899bb;
+  font-size: 13px;
+}
+
+.gsap-frame-input input {
+  width: 70px;
+  padding: 5px 8px;
+  background: #1a1a30;
+  border: 1px solid #2a2a40;
+  border-radius: 4px;
+  color: #ccc;
+  font-size: 13px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.gsap-frame-input input:focus {
+  outline: none;
+  border-color: #0055bb;
+}
+
+/* Toggles */
+.gsap-toggles {
+  display: flex;
+  gap: 16px;
+}
+
+.gsap-toggles label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #6677aa;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.gsap-toggles input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  accent-color: #0055bb;
+}
+
+.gsap-stats {
+  margin-left: auto;
+  color: #445577;
+  font-size: 11px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+/* ========================================
+   Debug Panel
+   ======================================== */
+
+.gsap-debug-panel {
+  width: 320px;
+  background: #111122;
+  border-left: 1px solid #2a2a40;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.gsap-debug-header {
+  padding: 12px 16px;
+  background: #0a0a18;
+  border-bottom: 1px solid #2a2a40;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #ccc;
+  font-size: 13px;
+}
+
+.gsap-debug-header span {
+  color: #6677aa;
+  font-size: 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.gsap-debug-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.gsap-debug-empty {
+  color: #445577;
+  text-align: center;
+  padding: 24px;
+  font-size: 13px;
+}
+
+.gsap-debug-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #aabbdd;
+  transition: background 0.1s;
+}
+
+.gsap-debug-item:hover {
+  background: #1a1a33;
+}
+
+.gsap-debug-clip {
+  border-left: 3px solid #ff4455;
+  opacity: 0.7;
+}
+
+.gsap-debug-depth {
+  font-weight: bold;
+  color: #8899bb;
+  min-width: 32px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.gsap-debug-id {
+  color: #5599ff;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.gsap-debug-type {
+  color: #6677aa;
+  margin-left: auto;
+  font-size: 11px;
+}
+
+.gsap-debug-badge {
+  background: #ff4455;
+  color: #fff;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+
+/* ========================================
+   Loading & Error
+   ======================================== */
+
+.gsap-loading {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0d0d1a;
+  z-index: 1000;
+}
+
+.gsap-loading-content {
+  text-align: center;
+  color: #ccc;
+}
+
+.gsap-loading-content h2 {
+  margin-bottom: 24px;
+  font-weight: 400;
+  font-size: 20px;
+  color: #8899bb;
+}
+
+.gsap-loading-bar {
+  width: 320px;
+  height: 6px;
+  background: #1a1a30;
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 0 auto 16px;
+}
+
+.gsap-loading-fill {
+  height: 100%;
+  background: linear-gradient(to right, #0055bb, #00aaff);
+  transition: width 0.2s;
+}
+
+.gsap-loading-status {
+  color: #445577;
+  font-size: 13px;
+}
+
+.gsap-error {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0d0d1a;
+  color: #ff6b6b;
+  font-size: 18px;
+}
+
+/* ========================================
+   Scrollbar
+   ======================================== */
+
+.gsap-debug-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.gsap-debug-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.gsap-debug-list::-webkit-scrollbar-thumb {
+  background: #2a2a40;
+  border-radius: 3px;
+}
+
+.gsap-debug-list::-webkit-scrollbar-thumb:hover {
+  background: #3a3a50;
+}

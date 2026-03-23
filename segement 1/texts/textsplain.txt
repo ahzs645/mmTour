@@ -1,0 +1,27 @@
+ID: 27
+Click Start, click Help and Support, and type &apos;walkthroughs&apos; in the Search box.
+--- SEPARATOR ---
+ID: 29
+Better Help for Every Task
+--- SEPARATOR ---
+ID: 51
+Easier to Learn and Use
+--- SEPARATOR ---
+ID: 79
+Faster, Smarter, Safer
+--- SEPARATOR ---
+ID: 111
+Faster, Smarter,Safer
+--- SEPARATOR ---
+ID: 114
+Click to Replay
+--- SEPARATOR ---
+ID: 117
+Easier to Learnand Use
+--- SEPARATOR ---
+ID: 121
+Better Helpfor Every Task
+--- SEPARATOR ---
+ID: 128
+To continue the Tour, click an icon.
+--- SEPARATOR ---

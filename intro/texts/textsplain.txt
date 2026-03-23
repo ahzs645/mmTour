@@ -1,0 +1,39 @@
+ID: 64
+More secure,Easier to Manage
+--- SEPARATOR ---
+ID: 66
+On the Road andAround the World
+--- SEPARATOR ---
+ID: 68
+Robust, Reliable, Compatible
+--- SEPARATOR ---
+ID: 81
+Better Helpfor Every Task
+--- SEPARATOR ---
+ID: 83
+Easier to Learnand Use
+--- SEPARATOR ---
+ID: 85
+Faster, Smarter,Safer
+--- SEPARATOR ---
+ID: 120
+Optimized forGames and DVDs
+--- SEPARATOR ---
+ID: 122
+Playing Music,Video, CDs
+--- SEPARATOR ---
+ID: 124
+Built-in Photo Sharingand Organization
+--- SEPARATOR ---
+ID: 134
+Data Protection,Inside and Out
+--- SEPARATOR ---
+ID: 136
+Let the Wizarddo the Work
+--- SEPARATOR ---
+ID: 138
+Networks: Powerful and Practical
+--- SEPARATOR ---
+ID: 140
+Multiple Usersa Cinch to Switch
+--- SEPARATOR ---

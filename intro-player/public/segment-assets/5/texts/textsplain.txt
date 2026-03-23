@@ -1,0 +1,51 @@
+ID: 63
+Ending Your Session
+--- SEPARATOR ---
+ID: 68
+Control Panel
+--- SEPARATOR ---
+ID: 73
+Windows
+--- SEPARATOR ---
+ID: 78
+Files and Folders
+--- SEPARATOR ---
+ID: 83
+Start Menu
+--- SEPARATOR ---
+ID: 88
+Taskbar
+--- SEPARATOR ---
+ID: 93
+Icons
+--- SEPARATOR ---
+ID: 99
+Windows Desktop
+--- SEPARATOR ---
+ID: 102
+The Windows Desktop
+--- SEPARATOR ---
+ID: 103
+Replay
+--- SEPARATOR ---
+ID: 130
+Icons
+--- SEPARATOR ---
+ID: 157
+Taskbar
+--- SEPARATOR ---
+ID: 185
+Start Menu
+--- SEPARATOR ---
+ID: 199
+Files and Folders
+--- SEPARATOR ---
+ID: 217
+Windows
+--- SEPARATOR ---
+ID: 249
+Control Panel
+--- SEPARATOR ---
+ID: 275
+Ending Your Session
+--- SEPARATOR ---

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Shape Test</title>
+    <style>
+        body { background: #333; padding: 20px; }
+        .shape-box {
+            background: white;
+            margin: 10px;
+            padding: 20px;
+            display: inline-block;
+        }
+        .shape-box h3 { margin: 0 0 10px 0; font-family: sans-serif; }
+        #stage {
+            width: 640px;
+            height: 480px;
+            background: white;
+            position: relative;
+            overflow: hidden;
+            border: 2px solid blue;
+        }
+        .element {
+            position: absolute;
+            left: 0;
+            top: 0;
+            transform-origin: 0 0;
+            border: 1px solid red;
+        }
+    </style>
+</head>
+<body>
+    <h1 style="color:white">Shape Loading Test</h1>
+
+    <div class="shape-box">
+        <h3>Shape 15 (Windows text)</h3>
+        <div id="shape15"></div>
+    </div>
+
+    <div class="shape-box">
+        <h3>Shape 49</h3>
+        <div id="shape49"></div>
+    </div>
+
+    <h2 style="color:white">Stage with transforms:</h2>
+    <div id="stage"></div>
+
+    <script>
+        async function loadShape(id, container) {
+            try {
+                const response = await fetch(`intro/shapes/${id}.svg`);
+                if (response.ok) {
+                    const svg = await response.text();
+                    container.innerHTML = svg;
+                    console.log(`Loaded shape ${id}:`, svg.substring(0, 100));
+                    return svg;
+                } else {
+                    container.innerHTML = `<p style="color:red">Shape ${id} not found</p>`;
+                }
+            } catch (e) {
+                container.innerHTML = `<p style="color:red">Error: ${e.message}</p>`;
+            }
+        }
+
+        async function test() {
+            // Load individual shapes
+            const svg15 = await loadShape('15', document.getElementById('shape15'));
+            await loadShape('49', document.getElementById('shape49'));
+
+            // Test on stage with transform
+            const stage = document.getElementById('stage');
+
+            if (svg15) {
+                const wrapper = document.createElement('div');
+                wrapper.className = 'element';
+                wrapper.innerHTML = svg15;
+                // Place at center of stage with identity transform
+                wrapper.style.transform = 'matrix(1, 0, 0, 1, 200, 200)';
+                stage.appendChild(wrapper);
+                console.log('Added shape 15 to stage at (200, 200)');
+            }
+
+            // Load timeline data and show frame 0 info
+            const response = await fetch('intro-timeline.json');
+            const data = await response.json();
+            console.log('Timeline loaded:', data.meta);
+            console.log('Frame 0 places:', data.timeline[0].place.length);
+            console.log('First placement:', data.timeline[0].place[0]);
+        }
+
+        test();
+    </script>
+</body>
+</html>

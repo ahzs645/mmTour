@@ -1,0 +1,15 @@
+onClipEvent(load){
+   if(!sound_mov1)
+   {
+      _root.attachMovie("blank","sound_mov1",1);
+      _root.attachMovie("blank","sound_mov2",2);
+      _root.attachMovie("blank","sound_mov_ro1",7);
+      _root.attachMovie("blank","sound_mov_ro2",8);
+      _root.attachMovie("blank","sound_mov_ro3",9);
+      _root.attachMovie("blank","sound_mov_ro4",10);
+      _root.attachMovie("blank","sound_mov_ro5",11);
+      _root.attachMovie("blank","sound_mov_ro6",12);
+      _root.attachMovie("blank","sound_mov_ro7",13);
+      _root.attachMovie("blank","sound_mov_ro8",14);
+   }
+}
