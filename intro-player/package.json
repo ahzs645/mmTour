@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "capture:gsap-frames": "node scripts/capture-gsap-frames.mjs"
   },
   "dependencies": {
     "@ruffle-rs/ruffle": "^0.2.0-nightly.2026.3.15",

@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { parseSwfFile } from '../engine/SwfParser';
+import type { SwfMovie } from '../engine/SwfParser';
 import { GsapSwfRenderer } from '../engine/GsapSwfRenderer';
 import './GsapPlayer.css';
 
@@ -12,6 +13,29 @@ interface GsapTourPlayerProps {
 }
 
 const DEFAULT_STAGE_SIZE = { width: 640, height: 480 };
+const MENU_BOOTSTRAP_TICK = 2;
+
+function findLastEmptyRootFrame(movie: SwfMovie): number | null {
+  const displayList = new Map<number, number>();
+  let lastEmptyFrame: number | null = displayList.size === 0 ? 0 : null;
+
+  movie.frames.forEach((frame, frameIndex) => {
+    for (const depth of frame.removals) {
+      displayList.delete(depth);
+    }
+
+    for (const placement of frame.placements) {
+      if (placement.characterId === undefined) continue;
+      displayList.set(placement.depth, placement.characterId);
+    }
+
+    if (displayList.size === 0) {
+      lastEmptyFrame = frameIndex;
+    }
+  });
+
+  return lastEmptyFrame;
+}
 
 export function GsapTourPlayer({
   onFrameChangeExternal,
@@ -25,6 +49,8 @@ export function GsapTourPlayer({
   const introLayerRef = useRef<HTMLDivElement>(null);
   const navRendererRef = useRef<GsapSwfRenderer | null>(null);
   const introRendererRef = useRef<GsapSwfRenderer | null>(null);
+  const layerSyncRef = useRef(false);
+  const menuIntroFrameRef = useRef<number | null>(null);
   const initialAutoplayPendingRef = useRef(autoplay && initialFrame === null);
   const initialSeekFrameRef = useRef<number | null>(initialFrame);
 
@@ -43,16 +69,57 @@ export function GsapTourPlayer({
   }, [currentFrame, totalFrames, onFrameChangeExternal]);
 
   const getMasterRenderer = useCallback(() => {
-    return introRendererRef.current ?? navRendererRef.current;
-  }, []);
+    return isMenuScreen
+      ? (navRendererRef.current ?? introRendererRef.current)
+      : (introRendererRef.current ?? navRendererRef.current);
+  }, [isMenuScreen]);
+
+  const getFrameTargets = useCallback((frame: number) => {
+    const navRenderer = navRendererRef.current;
+    const introRenderer = introRendererRef.current;
+
+    if (isMenuScreen) {
+      const navTotalFrames = navRenderer?.totalFrames ?? 0;
+      const navFrame = navTotalFrames > 0
+        ? Math.max(0, Math.min(frame, navTotalFrames - 1))
+        : null;
+      const introTotalFrames = introRenderer?.totalFrames ?? 0;
+      const introMenuFrame = menuIntroFrameRef.current;
+      const introFrame = introTotalFrames > 0
+        ? Math.max(
+            0,
+            Math.min(
+              introMenuFrame ?? (navFrame ?? 0),
+              introTotalFrames - 1,
+            ),
+          )
+        : null;
+
+      return {
+        masterFrame: navFrame ?? (introFrame ?? 0),
+        navFrame,
+        introFrame,
+      };
+    }
+
+    const introTotalFrames = introRenderer?.totalFrames ?? 0;
+    const introFrame = introTotalFrames > 0
+      ? Math.max(0, Math.min(frame, introTotalFrames - 1))
+      : null;
+
+    return {
+      masterFrame: introFrame ?? 0,
+      navFrame: navRenderer ? 0 : null,
+      introFrame,
+    };
+  }, [isMenuScreen]);
 
   const syncFrame = useCallback((frame: number, pause = true) => {
     const introRenderer = introRendererRef.current;
     const navRenderer = navRendererRef.current;
-    const maxFrames = Math.max(introRenderer?.totalFrames ?? 0, navRenderer?.totalFrames ?? 0);
-    if (maxFrames === 0) return;
+    const { masterFrame, navFrame, introFrame } = getFrameTargets(frame);
 
-    const clampedFrame = Math.max(0, Math.min(frame, maxFrames - 1));
+    if (navFrame === null && introFrame === null) return;
 
     if (pause) {
       introRenderer?.pause();
@@ -60,13 +127,22 @@ export function GsapTourPlayer({
       setIsPlaying(false);
     }
 
-    if (introRenderer) {
-      introRenderer.seekToFrame(Math.min(clampedFrame, introRenderer.totalFrames - 1));
-    } else if (navRenderer) {
-      navRenderer.seekToFrame(Math.min(clampedFrame, navRenderer.totalFrames - 1));
-      setCurrentFrame(clampedFrame);
+    layerSyncRef.current = true;
+
+    try {
+      if (introRenderer && introFrame !== null && introRenderer.currentFrame !== introFrame) {
+        introRenderer.seekToFrame(introFrame);
+      }
+
+      if (navRenderer && navFrame !== null && navRenderer.currentFrame !== navFrame) {
+        navRenderer.seekToFrame(navFrame);
+      }
+    } finally {
+      layerSyncRef.current = false;
     }
-  }, []);
+
+    setCurrentFrame(masterFrame);
+  }, [getFrameTargets]);
 
   useEffect(() => {
     let destroyed = false;
@@ -98,7 +174,7 @@ export function GsapTourPlayer({
         if (destroyed) return;
 
         const navMovie = navResult.status === 'fulfilled' ? navResult.value : null;
-        const introMovie = !isMenuScreen && introResult.status === 'fulfilled' ? introResult.value : null;
+        const introMovie = introResult.status === 'fulfilled' ? introResult.value : null;
 
         if (!navMovie && !introMovie) {
           const navReason = navResult.status === 'rejected' ? String(navResult.reason) : '';
@@ -114,46 +190,100 @@ export function GsapTourPlayer({
 
         const navRenderer = navMovie && navLayerRef.current
           ? new GsapSwfRenderer(navMovie, navLayerRef.current, {
-              hiddenCharacterIds: isMenuScreen ? [3, 8, 12, 56, 60, 110] : [],
+              hiddenCharacterIds: isMenuScreen ? [8, 56] : [],
             })
           : null;
-        const introRenderer = introMovie && introLayerRef.current
+        const introRenderer = !isMenuScreen && introMovie && introLayerRef.current
           ? new GsapSwfRenderer(introMovie, introLayerRef.current)
           : null;
+
+        menuIntroFrameRef.current = isMenuScreen && introMovie
+          ? findLastEmptyRootFrame(introMovie)
+          : null;
+
+        if (isMenuScreen && navRenderer) {
+          navRenderer.bootstrapMovie({
+            tick: MENU_BOOTSTRAP_TICK,
+            globals: [{ path: '_level0.bkgd.OSVersion', value: 'Per' }],
+            functionName: 'startAddedNav',
+          });
+        }
 
         navRendererRef.current = navRenderer;
         introRendererRef.current = introRenderer;
 
         if (navLayerRef.current) {
-          navLayerRef.current.style.background = navMovie?.backgroundColor ?? 'transparent';
+          navLayerRef.current.style.background = isMenuScreen
+            ? 'transparent'
+            : (navMovie?.backgroundColor ?? 'transparent');
         }
         if (introLayerRef.current) {
-          introLayerRef.current.style.background = 'transparent';
-          introLayerRef.current.style.display = introMovie ? '' : 'none';
+          introLayerRef.current.style.background = introMovie?.backgroundColor ?? 'transparent';
+          introLayerRef.current.style.display = introMovie && !isMenuScreen ? '' : 'none';
         }
 
-        const maxFrames = Math.max(introRenderer?.totalFrames ?? 0, navRenderer?.totalFrames ?? 0);
-        const nextFps = introRenderer?.fps ?? navRenderer?.fps ?? 15;
-        setTotalFrames(maxFrames);
+        const nextTotalFrames = isMenuScreen
+          ? (navRenderer?.totalFrames ?? introRenderer?.totalFrames ?? 0)
+          : (introRenderer?.totalFrames ?? navRenderer?.totalFrames ?? 0);
+        const nextFps = isMenuScreen
+          ? (navRenderer?.fps ?? introRenderer?.fps ?? 15)
+          : (introRenderer?.fps ?? navRenderer?.fps ?? 15);
+        setTotalFrames(nextTotalFrames);
         setFps(nextFps);
 
-        if (introRenderer) {
+        if (isMenuScreen) {
+          if (navRenderer) {
+            navRenderer.onFrameChange = (frame) => {
+              if (layerSyncRef.current) return;
+
+              const { masterFrame, introFrame } = getFrameTargets(frame);
+
+              if (introRenderer && introFrame !== null && introRenderer.currentFrame !== introFrame) {
+                layerSyncRef.current = true;
+                try {
+                  introRenderer.seekToFrame(introFrame);
+                } finally {
+                  layerSyncRef.current = false;
+                }
+              }
+
+              setCurrentFrame(masterFrame);
+              if (masterFrame > 0) {
+                initialAutoplayPendingRef.current = false;
+              }
+            };
+            navRenderer.onPlaybackChange = (playing) => setIsPlaying(playing);
+          }
+
+          if (introRenderer) {
+            introRenderer.onFrameChange = undefined;
+            introRenderer.onPlaybackChange = undefined;
+          }
+        } else if (introRenderer) {
           introRenderer.onFrameChange = (frame) => {
+            if (layerSyncRef.current) return;
             setCurrentFrame(frame);
             if (frame > 0) {
               initialAutoplayPendingRef.current = false;
             }
           };
           introRenderer.onPlaybackChange = (playing) => setIsPlaying(playing);
-          introRenderer.seekToFrame(0);
-        }
-
-        if (!introRenderer && navRenderer) {
+          if (navRenderer) {
+            navRenderer.onFrameChange = undefined;
+            navRenderer.onPlaybackChange = undefined;
+          }
+        } else if (navRenderer) {
           navRenderer.onFrameChange = (frame) => setCurrentFrame(frame);
           navRenderer.onPlaybackChange = (playing) => setIsPlaying(playing);
-          navRenderer.seekToFrame(0);
-        } else if (navRenderer) {
-          navRenderer.seekToFrame(0);
+        }
+
+        if (isMenuScreen && navRenderer && initialSeekFrameRef.current === null) {
+          navRenderer.seekToFrame(MENU_BOOTSTRAP_TICK);
+          setCurrentFrame(navRenderer.currentFrame);
+          setIsPlaying(navRenderer.isPlaying);
+          initialAutoplayPendingRef.current = autoplay;
+        } else {
+          syncFrame(0);
         }
 
         (
@@ -176,7 +306,13 @@ export function GsapTourPlayer({
           initialAutoplayPendingRef.current = false;
           setTimeout(() => {
             if (destroyed) return;
-            introRenderer?.play();
+            const autoplayRenderer = isMenuScreen
+              ? (navRenderer ?? introRenderer)
+              : (introRenderer ?? navRenderer);
+            if (isMenuScreen && navRenderer && introRenderer) {
+              introRenderer.pause();
+            }
+            autoplayRenderer?.play();
           }, 0);
         }
       } catch (err) {
@@ -200,13 +336,14 @@ export function GsapTourPlayer({
       introRendererRef.current?.destroy();
       navRendererRef.current = null;
       introRendererRef.current = null;
+      menuIntroFrameRef.current = null;
       (
         window as Window & {
           __GSAP_RENDERERS__?: { nav: GsapSwfRenderer | null; intro: GsapSwfRenderer | null };
         }
       ).__GSAP_RENDERERS__ = { nav: null, intro: null };
     };
-  }, [autoplay, initialFrame, isMenuScreen, syncFrame]);
+  }, [autoplay, getFrameTargets, initialFrame, isMenuScreen, syncFrame]);
 
   useEffect(() => {
     const wrapper = wrapperRef.current;
@@ -235,12 +372,16 @@ export function GsapTourPlayer({
 
     if (masterRenderer.isPlaying) {
       masterRenderer.pause();
+      introRendererRef.current?.pause();
       navRendererRef.current?.pause();
       return;
     }
 
+    if (isMenuScreen && masterRenderer === navRendererRef.current) {
+      introRendererRef.current?.pause();
+    }
     masterRenderer.play();
-  }, [getMasterRenderer]);
+  }, [getMasterRenderer, isMenuScreen]);
 
   const handleFrameStep = useCallback((delta: number) => {
     syncFrame(currentFrame + delta);
@@ -254,8 +395,8 @@ export function GsapTourPlayer({
   }, [syncFrame, totalFrames]);
 
   const handleRestart = useCallback(() => {
-    syncFrame(0);
-  }, [syncFrame]);
+    syncFrame(isMenuScreen ? MENU_BOOTSTRAP_TICK : 0);
+  }, [isMenuScreen, syncFrame]);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -280,7 +421,7 @@ export function GsapTourPlayer({
           break;
         case 'Home':
           e.preventDefault();
-          syncFrame(0);
+          syncFrame(isMenuScreen ? MENU_BOOTSTRAP_TICK : 0);
           break;
         case 'End':
           e.preventDefault();
@@ -356,7 +497,7 @@ export function GsapTourPlayer({
                     {isMenuScreen ? 'Parsing nav.swf...' : 'Parsing nav.swf + intro.swf...'}
                   </div>
                   <div style={{ fontSize: 12, color: '#999' }}>
-                    {isMenuScreen ? 'Building the original SWF-owned menu screen' : 'Building original SWF-owned tour layers'}
+                    {isMenuScreen ? 'Bootstrapping the nav menu timeline to match the original tour state' : 'Building original SWF-owned tour layers'}
                   </div>
                 </div>
               </div>
@@ -385,7 +526,7 @@ export function GsapTourPlayer({
           <div className="gsap-controls">
             <div className="gsap-controls-row">
               <div className="gsap-transport">
-                <button onClick={() => syncFrame(0)} title="Start (Home)" type="button">&#x23EE;</button>
+                <button onClick={() => syncFrame(isMenuScreen ? MENU_BOOTSTRAP_TICK : 0)} title="Start (Home)" type="button">&#x23EE;</button>
                 <button onClick={() => handleFrameStep(-1)} title="Prev (Left)" type="button">&#x25C0;</button>
                 <button onClick={handlePlayPause} className="gsap-play-btn" title="Play/Pause (Space)" type="button">{isPlaying ? '\u23F8' : '\u25B6'}</button>
                 <button onClick={() => handleFrameStep(1)} title="Next (Right)" type="button">&#x25B6;</button>

@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, type ReactNode } from 'react';
 import { GsapStage } from './GsapStage';
 import { GsapSwfRenderer } from '../engine/GsapSwfRenderer';
 import { NavOverlay } from './NavOverlay';
@@ -9,23 +9,27 @@ interface GsapPlayerProps {
   onFrameChangeExternal?: (frame: number, totalFrames: number) => void;
   showControls?: boolean;
   showOverlay?: boolean;
+  overlay?: ReactNode;
   initialFrame?: number | null;
   autoplay?: boolean;
+  initialSegment?: TourSegmentId | null;
 }
 
 export function GsapPlayer({
   onFrameChangeExternal,
   showControls = true,
   showOverlay = true,
+  overlay,
   initialFrame = null,
   autoplay = true,
+  initialSegment = null,
 }: GsapPlayerProps = {}) {
   const rendererRef = useRef<GsapSwfRenderer | null>(null);
   const autoplayOnReadyRef = useRef(false);
   const initialAutoplayPendingRef = useRef(autoplay && initialFrame === null);
   const initialSeekFrameRef = useRef<number | null>(initialFrame);
-  const [swfUrl, setSwfUrl] = useState('/intro.swf');
-  const [activeSegment, setActiveSegment] = useState<TourSegmentId | null>(null);
+  const [swfUrl, setSwfUrl] = useState(() => initialSegment === null ? '/intro.swf' : getSegmentSwfUrl(initialSegment));
+  const [activeSegment, setActiveSegment] = useState<TourSegmentId | null>(initialSegment);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentFrame, setCurrentFrame] = useState(0);
   const [totalFrames, setTotalFrames] = useState(0);
@@ -168,7 +172,7 @@ export function GsapPlayer({
         <GsapStage
           swfUrl={swfUrl}
           onRendererReady={handleRendererReady}
-          overlay={showOverlay ? (
+          overlay={overlay ?? (showOverlay ? (
             <NavOverlay
               currentFrame={currentFrame}
               totalFrames={totalFrames}
@@ -179,7 +183,7 @@ export function GsapPlayer({
               onSegmentClick={handleSegmentClick}
               onExitTour={handleExitTour}
             />
-          ) : null}
+          ) : null)}
         />
 
         {showControls ? (

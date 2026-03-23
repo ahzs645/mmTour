@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createRufflePlayer, initRuffle, type RufflePlayer as RufflePlayerElement } from '../engine/RuffleLoader';
 
 interface RufflePlayerProps {
   swfUrl: string;
+  overlay?: ReactNode;
 }
 
-export function RufflePlayer({ swfUrl }: RufflePlayerProps) {
+export function RufflePlayer({ swfUrl, overlay }: RufflePlayerProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<RufflePlayerElement | null>(null);
   const [loading, setLoading] = useState(true);
@@ -65,6 +66,7 @@ export function RufflePlayer({ swfUrl }: RufflePlayerProps) {
     <div className="ruffle-shell">
       <div className="ruffle-stage-frame">
         <div ref={hostRef} className="ruffle-stage-host" />
+        {overlay}
 
         {loading && (
           <div className="ruffle-overlay">

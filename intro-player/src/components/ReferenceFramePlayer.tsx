@@ -1,9 +1,18 @@
+import type { ReactNode } from 'react';
+
 interface ReferenceFramePlayerProps {
   frame: number;
   totalFrames: number;
+  srcBase?: string;
+  overlay?: ReactNode;
 }
 
-export function ReferenceFramePlayer({ frame, totalFrames }: ReferenceFramePlayerProps) {
+export function ReferenceFramePlayer({
+  frame,
+  totalFrames,
+  srcBase = '/intro/frames',
+  overlay,
+}: ReferenceFramePlayerProps) {
   const clampedFrame = Math.max(0, frame);
   const sourceFrame = clampedFrame + 1;
 
@@ -13,10 +22,11 @@ export function ReferenceFramePlayer({ frame, totalFrames }: ReferenceFramePlaye
         <img
           key={sourceFrame}
           className="reference-frame-image"
-          src={`/intro/frames/${sourceFrame}.png`}
+          src={`${srcBase}/${sourceFrame}.png`}
           alt={`Extracted reference frame ${clampedFrame}`}
           draggable={false}
         />
+        {overlay}
         <div className="reference-frame-meta">
           Frame {clampedFrame}
           {totalFrames > 0 ? ` / ${totalFrames - 1}` : ''}

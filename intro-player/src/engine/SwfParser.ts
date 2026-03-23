@@ -51,10 +51,14 @@ export interface SwfTextChar {
   text: string;
   color: string;
   fontSize: number;
+  leading: number;
   fontId: number;
   bounds: SwfRect;
   align: number;
   variableName: string;
+  multiline: boolean;
+  wordWrap: boolean;
+  html: boolean;
 }
 
 export interface SwfFontChar {
@@ -63,6 +67,8 @@ export interface SwfFontChar {
   fontName: string;
   isBold: boolean;
   isItalic: boolean;
+  assetUrl?: string;
+  cssFamily?: string;
 }
 
 export interface SwfRect {
@@ -72,6 +78,8 @@ export interface SwfRect {
 export interface SwfFrame {
   placements: SwfPlacement[];
   removals: number[];
+  labels: string[];
+  actions: Uint8Array[];
 }
 
 export interface SwfPlacement {
@@ -296,8 +304,9 @@ function shapeToSvg(
 
 const extractedShapeCache = new Map<string, Promise<string | null>>();
 const extractedSpriteCache = new Map<string, Promise<string | null>>();
+const extractedFontCache = new Map<string, Promise<string | null>>();
 
-function getExtractedAssetBase(swfUrl: string, assetType: 'shapes' | 'sprites'): string | null {
+function getExtractedAssetBase(swfUrl: string, assetType: 'shapes' | 'sprites' | 'fonts'): string | null {
   const pathname = (() => {
     try {
       return new URL(swfUrl, window.location.href).pathname;
@@ -336,18 +345,82 @@ function getExtractedSpriteBase(swfUrl: string): string | null {
   return getExtractedAssetBase(swfUrl, 'sprites');
 }
 
-function normalizeExtractedShapeSvg(svgText: string): string {
-  const withoutXml = svgText.replace(/<\?xml[\s\S]*?\?>\s*/i, '');
-  return withoutXml.replace(/<g(\s|>)/, '<g class="swf-content"$1');
+function getExtractedFontBase(swfUrl: string): string | null {
+  return getExtractedAssetBase(swfUrl, 'fonts');
 }
 
-async function loadExtractedShapeSvg(basePath: string | null, id: number): Promise<string | null> {
+function parseSvgLength(value: string | null): number | null {
+  if (!value) return null;
+  const parsed = parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseSvgViewBox(value: string | null): { minX: number; minY: number; width: number; height: number } | null {
+  if (!value) return null;
+  const [minX, minY, width, height] = value
+    .trim()
+    .split(/[\s,]+/)
+    .slice(0, 4)
+    .map(Number);
+
+  if (![minX, minY, width, height].every(Number.isFinite)) {
+    return null;
+  }
+
+  return { minX, minY, width, height };
+}
+
+function normalizeExtractedShapeSvg(svgText: string, bounds?: SwfRect): string {
+  const withoutXml = svgText.replace(/<\?xml[\s\S]*?\?>\s*/i, '');
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(withoutXml, 'image/svg+xml');
+  const svg = doc.documentElement;
+
+  if (!(svg instanceof SVGSVGElement)) {
+    return withoutXml;
+  }
+
+  const hasBitmapContent = Boolean(svg.querySelector('image, pattern'));
+  if (hasBitmapContent && bounds) {
+    const sourceViewBox = parseSvgViewBox(svg.getAttribute('viewBox'));
+    const sourceWidth = sourceViewBox?.width ?? parseSvgLength(svg.getAttribute('width'));
+    const sourceHeight = sourceViewBox?.height ?? parseSvgLength(svg.getAttribute('height'));
+    const sourceMinX = sourceViewBox?.minX ?? 0;
+    const sourceMinY = sourceViewBox?.minY ?? 0;
+    const targetWidth = bounds.xMax - bounds.xMin;
+    const targetHeight = bounds.yMax - bounds.yMin;
+
+    if (
+      sourceWidth !== null &&
+      sourceHeight !== null &&
+      Number.isFinite(sourceWidth) &&
+      Number.isFinite(sourceHeight) &&
+      sourceWidth > 0 &&
+      sourceHeight > 0 &&
+      targetWidth > 0 &&
+      targetHeight > 0
+    ) {
+      const normalizedSourceWidth = sourceWidth;
+      const normalizedSourceHeight = sourceHeight;
+      svg.setAttribute('viewBox', `${sourceMinX} ${sourceMinY} ${normalizedSourceWidth} ${normalizedSourceHeight}`);
+      svg.setAttribute('width', targetWidth.toFixed(2));
+      svg.setAttribute('height', targetHeight.toFixed(2));
+      svg.setAttribute('data-swf-use-bounds-offset', 'true');
+    }
+  }
+
+  return new XMLSerializer().serializeToString(svg);
+}
+
+async function loadExtractedShapeSvg(basePath: string | null, id: number, bounds?: SwfRect): Promise<string | null> {
   if (!basePath) return null;
 
   const url = `${basePath}/${id}.svg`;
   const cached = extractedShapeCache.get(url);
   if (cached) {
-    return cached;
+    return cached.then((svgText) => {
+      return svgText && bounds ? normalizeExtractedShapeSvg(svgText, bounds) : svgText;
+    });
   }
 
   const request = (async () => {
@@ -360,14 +433,16 @@ async function loadExtractedShapeSvg(basePath: string | null, id: number): Promi
       if (!/<svg[\s>]/i.test(svgText)) {
         return null;
       }
-      return normalizeExtractedShapeSvg(svgText);
+      return svgText.replace(/<\?xml[\s\S]*?\?>\s*/i, '');
     } catch {
       return null;
     }
   })();
 
   extractedShapeCache.set(url, request);
-  return request;
+  return request.then((svgText) => {
+    return svgText && bounds ? normalizeExtractedShapeSvg(svgText, bounds) : svgText;
+  });
 }
 
 async function loadExtractedSpriteUrl(basePath: string | null, id: number): Promise<string | null> {
@@ -392,12 +467,36 @@ async function loadExtractedSpriteUrl(basePath: string | null, id: number): Prom
   return request;
 }
 
+async function loadExtractedFontUrl(basePath: string | null, id: number, fontName: string): Promise<string | null> {
+  if (!basePath) return null;
+
+  const filename = `${id}_${fontName}.ttf`;
+  const url = `${basePath}/${encodeURIComponent(filename)}`;
+  const cached = extractedFontCache.get(url);
+  if (cached) {
+    return cached;
+  }
+
+  const request = (async () => {
+    try {
+      const response = await fetch(url);
+      return response.ok ? url : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  extractedFontCache.set(url, request);
+  return request;
+}
+
 // ===== Main Parser =====
 
 export async function parseSwfFile(url: string): Promise<SwfMovie> {
   const response = await fetch(url);
   const buffer = await response.arrayBuffer();
   const bytes = new Uint8Array(buffer);
+  const extractedFontBase = getExtractedFontBase(url);
 
   // Dynamic import to avoid bundling issues
   const { parseSwf } = await import('swf-parser');
@@ -413,7 +512,7 @@ export async function parseSwfFile(url: string): Promise<SwfMovie> {
   const characters = new Map<number, SwfCharacter>();
   const frames: SwfFrame[] = [];
   const pendingCharacters: Array<Promise<void>> = [];
-  let currentFrame: SwfFrame = { placements: [], removals: [] };
+  let currentFrame: SwfFrame = { placements: [], removals: [], labels: [], actions: [] };
   let bgColor = '#ffffff';
 
   for (const tag of movie.tags) {
@@ -442,7 +541,7 @@ export async function parseSwfFile(url: string): Promise<SwfMovie> {
         };
         const generatedSvg = shapeToSvg(shapeTag.shape as Parameters<typeof shapeToSvg>[0], bounds);
         pendingCharacters.push((async () => {
-          const svgPaths = await loadExtractedShapeSvg(extractedShapeBase, shapeTag.id) ?? generatedSvg;
+          const svgPaths = await loadExtractedShapeSvg(extractedShapeBase, shapeTag.id, pixelBounds) ?? generatedSvg;
           characters.set(shapeTag.id, {
             type: 'shape',
             id: shapeTag.id,
@@ -461,16 +560,20 @@ export async function parseSwfFile(url: string): Promise<SwfMovie> {
           tags: ReadonlyArray<Record<string, unknown>>;
         };
         const spriteFrames: SwfFrame[] = [];
-        let spriteFrame: SwfFrame = { placements: [], removals: [] };
+        let spriteFrame: SwfFrame = { placements: [], removals: [], labels: [], actions: [] };
 
         for (const subTag of (spriteTag.tags || [])) {
           if (subTag.type === 49) {
             spriteFrame.placements.push(parsePlacement(subTag as unknown as Record<string, unknown>));
           } else if (subTag.type === 54) {
             spriteFrame.removals.push(subTag.depth as number);
+          } else if (subTag.type === 38 && typeof subTag.name === 'string') {
+            spriteFrame.labels.push(subTag.name);
+          } else if (subTag.type === 31 && subTag.actions instanceof Uint8Array) {
+            spriteFrame.actions.push(subTag.actions);
           } else if (subTag.type === 58) {
             spriteFrames.push(spriteFrame);
-            spriteFrame = { placements: [], removals: [] };
+            spriteFrame = { placements: [], removals: [], labels: [], actions: [] };
           }
           // Shapes inside sprites
           if (subTag.type === 22 && (subTag as { shape?: unknown }).shape) {
@@ -483,7 +586,7 @@ export async function parseSwfFile(url: string): Promise<SwfMovie> {
             };
             const generatedSvg = shapeToSvg(st.shape as Parameters<typeof shapeToSvg>[0], st.bounds);
             pendingCharacters.push((async () => {
-              const svgPaths = await loadExtractedShapeSvg(extractedShapeBase, st.id) ?? generatedSvg;
+              const svgPaths = await loadExtractedShapeSvg(extractedShapeBase, st.id, pixelBounds) ?? generatedSvg;
               characters.set(st.id, {
                 type: 'shape',
                 id: st.id,
@@ -532,13 +635,15 @@ export async function parseSwfFile(url: string): Promise<SwfMovie> {
         const txtTag = tag as {
           id: number; text: string; color: { r: number; g: number; b: number; a: number };
           fontSize: number; fontId: number; bounds: SwfRect; align: number; variableName: string;
+          leading?: number; multiline?: boolean; wordWrap?: boolean; html?: boolean;
         };
         characters.set(txtTag.id, {
           type: 'text',
           id: txtTag.id,
-          text: (txtTag.text || '').replace(/\r/g, '\n'),
+          text: (txtTag.text || '').replace(/\r/g, '\n').replace(/\n+$/g, ''),
           color: rgbaToHex(txtTag.color?.r || 0, txtTag.color?.g || 0, txtTag.color?.b || 0),
           fontSize: twipsToPixels(txtTag.fontSize || 240),
+          leading: twipsToPixels(txtTag.leading || 0),
           fontId: txtTag.fontId,
           bounds: {
             xMin: twipsToPixels(txtTag.bounds?.xMin || 0),
@@ -548,6 +653,9 @@ export async function parseSwfFile(url: string): Promise<SwfMovie> {
           },
           align: txtTag.align || 0,
           variableName: txtTag.variableName || '',
+          multiline: Boolean(txtTag.multiline),
+          wordWrap: Boolean(txtTag.wordWrap),
+          html: Boolean(txtTag.html),
         });
         break;
       }
@@ -555,13 +663,18 @@ export async function parseSwfFile(url: string): Promise<SwfMovie> {
       case 12: {
         // DefineFont
         const fontTag = tag as { id: number; fontName: string; isBold: boolean; isItalic: boolean };
-        characters.set(fontTag.id, {
+        const fontChar: SwfFontChar = {
           type: 'font',
           id: fontTag.id,
           fontName: fontTag.fontName,
           isBold: fontTag.isBold,
           isItalic: fontTag.isItalic,
-        });
+          cssFamily: `swf-font-${fontTag.id}`,
+        };
+        characters.set(fontTag.id, fontChar);
+        pendingCharacters.push((async () => {
+          fontChar.assetUrl = await loadExtractedFontUrl(extractedFontBase, fontTag.id, fontTag.fontName) ?? undefined;
+        })());
         break;
       }
 
@@ -577,10 +690,26 @@ export async function parseSwfFile(url: string): Promise<SwfMovie> {
         break;
       }
 
+      case 38: {
+        // FrameLabel
+        if (typeof (tag as { name?: unknown }).name === 'string') {
+          currentFrame.labels.push((tag as { name: string }).name);
+        }
+        break;
+      }
+
+      case 31: {
+        // DoAction
+        if ((tag as { actions?: unknown }).actions instanceof Uint8Array) {
+          currentFrame.actions.push((tag as { actions: Uint8Array }).actions);
+        }
+        break;
+      }
+
       case 58: {
         // ShowFrame
         frames.push(currentFrame);
-        currentFrame = { placements: [], removals: [] };
+        currentFrame = { placements: [], removals: [], labels: [], actions: [] };
         break;
       }
     }

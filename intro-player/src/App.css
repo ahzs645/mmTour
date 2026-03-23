@@ -50,6 +50,17 @@ body {
   gap: 8px;
 }
 
+.app-toolbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.app-scene-switch {
+  display: flex;
+  gap: 8px;
+}
+
 .app-mode-btn {
   border: 1px solid rgba(255, 255, 255, 0.16);
   background: rgba(18, 24, 42, 0.9);
@@ -140,6 +151,17 @@ body {
   height: 100%;
 }
 
+.app-stage-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 20;
+}
+
+.app-stage-overlay * {
+  pointer-events: none !important;
+}
+
 .ruffle-stage-host ruffle-player,
 .ruffle-stage-host embed,
 .ruffle-stage-host object {
@@ -183,6 +205,11 @@ body {
   .app-toolbar {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .app-toolbar-controls {
+    width: 100%;
+    flex-wrap: wrap;
   }
 
   .ruffle-stage-frame {
