@@ -1,0 +1,52 @@
+ï{
+  "source": {
+    "swfFile": "/Users/superman/Documents/Work/My/guepard/demo/images/images.swf",
+    "flaFile": "",
+    "sourceCodePath": "",
+    "projectName": "images",
+    "preloaderFile": "",
+    "mainClass": ""
+  },
+  "target": {
+    "htmlTemplate": "",
+    "renderType": 1,
+    "minify": true,
+    "html5ProjectPath": "/Users/superman/Development/localhost/demo/images/build",
+    "enableBuild": true,
+    "copyEngine": false,
+    "exportDataInZIP": false,
+    "copyOriginalSWF": false
+  },
+  "resources": {
+    "shapeBorder": 2,
+    "shapeScale": 100,
+    "exportDebugTextures": false,
+    "texturePowerMax": 11,
+    "shapeScaleMin": 90,
+    "texturePowerBig": 11,
+    "compressDigits": 3,
+    "scaleMargin": 5,
+    "texturePowerMin": 5,
+    "shapeBigScale": true,
+    "exportResources": true,
+    "exportCodeEmbed": false,
+    "exportCodeTree": false,
+    "exportCode": true,
+    "exportFonts": false,
+    "exportCodeTokens": false,
+    "imageQuality": 80,
+    "exportSounds": false
+  },
+  "settings": {
+    "sdkPath": "/Users/superman/Documents/Work/My/guepard/sdk"
+  },
+  "parameters": {
+    "frameRate": 24,
+    "fillScreen": true,
+    "align": 0,
+    "scaleMode": 0,
+    "appHeight": 400,
+    "backgroundColor": "0xffffff",
+    "appWidth": 550
+  }
+}

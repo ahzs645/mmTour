@@ -1,27 +1,0 @@
-ID: 37
-More Secure,Easier to Manage
---- SEPARATOR ---
-ID: 41
-On the Road andAround the World
---- SEPARATOR ---
-ID: 44
-Robust, Reliable, Compatible
---- SEPARATOR ---
-ID: 48
-To continue, click an icon.
---- SEPARATOR ---
-ID: 95
-Click Start, click Help and Support, and type &apos;walkthroughs&apos; in the Search box.
---- SEPARATOR ---
-ID: 96
-Robust, Reliable, Compatible
---- SEPARATOR ---
-ID: 97
-Click to Replay
---- SEPARATOR ---
-ID: 122
-On the Road and Around the World
---- SEPARATOR ---
-ID: 157
-More Secure, Easier to Manage
---- SEPARATOR ---

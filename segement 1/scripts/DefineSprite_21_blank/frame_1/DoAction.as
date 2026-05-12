@@ -1,2 +1,0 @@
-loaded = true;
-stop();

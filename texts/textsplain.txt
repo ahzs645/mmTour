@@ -1,27 +1,0 @@
-ID: 28
-Optimized forGames and DVDs
---- SEPARATOR ---
-ID: 32
-Playing Music,Video, CDs
---- SEPARATOR ---
-ID: 35
-Built-in Photo Sharingand Organization
---- SEPARATOR ---
-ID: 39
-To continue, click an icon.
---- SEPARATOR ---
-ID: 64
-Built-in Photo Sharing
---- SEPARATOR ---
-ID: 65
-Click to Replay
---- SEPARATOR ---
-ID: 69
-Click Start, click Help and Support, and type &apos;walkthroughs&apos; in the Search box.
---- SEPARATOR ---
-ID: 96
-Playing Music, Videos, CDs
---- SEPARATOR ---
-ID: 109
-Optimized for Games and DVDs
---- SEPARATOR ---

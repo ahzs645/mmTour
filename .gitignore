@@ -1,4 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Generated conversion artifacts
+extracted/
+public/generated/
+verification/
+artifacts/
+
+# Local browser/test output
+.playwright-mcp/
+playwright-report/
+test-results/
+
+# Generated screenshots and ad hoc captures
+*.png
+*.jpg
+*.jpeg
+!public/*.png
+!public/*.jpg
+!public/*.jpeg
+
+# Local OS/editor files
 .DS_Store
-__pycache__/
-*.pyc
-.codex-artifacts/
+*.swp
+
+# Local env files
+.env
+.env.*
