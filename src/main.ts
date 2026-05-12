@@ -372,6 +372,8 @@ let currentVoiceover: HTMLAudioElement | null = null;
 let currentMusic: HTMLAudioElement | null = null;
 let lastSoundFrameKey = "";
 let lastFrameFunctionCallKey = "";
+let lastPlayedFrameIndex = -1;
+let lastPlayedScene = "";
 const playedSpriteSoundKeys = new Set<string>();
 const runtimeGlobals: Record<string, RuntimeGlobalValue> = {};
 const loadedLevelSwfs: Record<number, string> = { 4: activeScene.swf };
@@ -811,6 +813,63 @@ function buildGsapAssetPlayer(assetTimeline: AssetTimeline) {
   });
 }
 
+function processPlaybackFrameActions(
+  assetTimeline: AssetTimeline,
+  frameIndex: number,
+): "continue" | "stopped" | "navigated" | "gotoFrame" {
+  if (shouldStopAtFrame(assetTimeline, frameIndex)) {
+    timeline?.pause(frameIndex / assetTimeline.fps);
+    isGsapPlaying = false;
+    if (frameIndex !== Number(frameScrubber.value)) frameScrubber.value = String(frameIndex);
+    setFrameStatus(assetTimeline, frameIndex, 0);
+    return "stopped";
+  }
+
+  const swfLoadActions = rootSwfLoadActionsAtFrame(assetTimeline, frameIndex);
+  for (const action of swfLoadActions) rememberLoadedLevel(action, assetTimeline, frameIndex);
+  const swfAction = primaryRootSwfNavigation(swfLoadActions);
+  if (swfAction?.swf) {
+    isRunningExtractedAction = true;
+    runtimeGlobals["nav.targSection"] = "";
+    queueShellLevelCallsForLoadedScene(assetTimeline, frameIndex, swfAction.swf);
+    status.textContent = `Loading ${swfAction.swf}`;
+    void navigateToSceneBySwf(swfAction.swf).finally(() => {
+      isRunningExtractedAction = false;
+    });
+    return "navigated";
+  }
+
+  const levelGoto = rootLevelGotoAtFrame(assetTimeline, frameIndex);
+  if (levelGoto) {
+    const targetSwf = loadedLevelSwfs[levelGoto.level];
+    if (targetSwf) {
+      isRunningExtractedAction = true;
+      runtimeGlobals["nav.targSection"] = "";
+      status.textContent = `Loading ${targetSwf}`;
+      void navigateToSceneBySwf(targetSwf, levelGoto.action).finally(() => {
+        isRunningExtractedAction = false;
+      });
+      return "navigated";
+    }
+  }
+
+  const extractedAction = rootTimelineActionAtFrame(assetTimeline, frameIndex);
+  const targetFrame = extractedAction ? resolveRuntimeFrame(extractedAction, assetTimeline, frameIndex) : -1;
+  if (extractedAction && targetFrame >= 0 && targetFrame !== frameIndex) {
+    isRunningExtractedAction = true;
+    goToFrame(targetFrame, extractedAction.command === "gotoAndPlay");
+    isRunningExtractedAction = false;
+    return "gotoFrame";
+  }
+
+  if (frameIndex !== Math.round(Number(frameScrubber.value))) {
+    triggerFrameSounds(assetTimeline, frameIndex);
+    runFrameFunctionCalls(assetTimeline, frameIndex);
+  }
+
+  return "continue";
+}
+
 function renderFrame(assetTimeline: AssetTimeline, index: number) {
   const frame = assetTimeline.frames[Math.max(0, Math.min(assetTimeline.frames.length - 1, index))];
   const mode = renderModeSelect.value;
@@ -838,49 +897,30 @@ function renderFrame(assetTimeline: AssetTimeline, index: number) {
   directSwfLayer.hidden = true;
   externalLevelLayer.hidden = false;
 
-  if (!isRunningExtractedAction && isGsapPlaying && shouldStopAtFrame(assetTimeline, frame.index)) {
-    timeline?.pause(frame.index / assetTimeline.fps);
-    isGsapPlaying = false;
-    setFrameStatus(assetTimeline, frame.index, 0);
-    return;
-  }
-
   if (!isRunningExtractedAction && isGsapPlaying) {
-    const swfLoadActions = rootSwfLoadActionsAtFrame(assetTimeline, frame.index);
-    for (const action of swfLoadActions) rememberLoadedLevel(action, assetTimeline, frame.index);
-    const swfAction = primaryRootSwfNavigation(swfLoadActions);
-    if (swfAction?.swf) {
-      isRunningExtractedAction = true;
-      runtimeGlobals["nav.targSection"] = "";
-      queueShellLevelCallsForLoadedScene(assetTimeline, frame.index, swfAction.swf);
-      status.textContent = `Loading ${swfAction.swf}`;
-      void navigateToSceneBySwf(swfAction.swf).finally(() => {
-        isRunningExtractedAction = false;
-      });
-      return;
+    if (lastPlayedScene !== assetTimeline.scene) {
+      lastPlayedScene = assetTimeline.scene;
+      lastPlayedFrameIndex = -1;
     }
-
-    const levelGoto = rootLevelGotoAtFrame(assetTimeline, frame.index);
-    if (levelGoto) {
-      const targetSwf = loadedLevelSwfs[levelGoto.level];
-      if (targetSwf) {
-        isRunningExtractedAction = true;
-        runtimeGlobals["nav.targSection"] = "";
-        status.textContent = `Loading ${targetSwf}`;
-        void navigateToSceneBySwf(targetSwf, levelGoto.action).finally(() => {
-          isRunningExtractedAction = false;
-        });
+    const startWalk = lastPlayedFrameIndex >= 0 && lastPlayedFrameIndex < frame.index
+      ? lastPlayedFrameIndex + 1
+      : frame.index;
+    for (let walkFrame = startWalk; walkFrame <= frame.index; walkFrame += 1) {
+      const outcome = processPlaybackFrameActions(assetTimeline, walkFrame);
+      if (outcome === "stopped") {
+        lastPlayedFrameIndex = walkFrame;
         return;
       }
-    }
-
-    const extractedAction = rootTimelineActionAtFrame(assetTimeline, frame.index);
-    const targetFrame = extractedAction ? resolveRuntimeFrame(extractedAction, assetTimeline, frame.index) : -1;
-    if (extractedAction && targetFrame >= 0 && targetFrame !== frame.index) {
-      isRunningExtractedAction = true;
-      goToFrame(targetFrame, extractedAction.command === "gotoAndPlay");
-      isRunningExtractedAction = false;
-      return;
+      if (outcome === "navigated") {
+        lastPlayedFrameIndex = -1;
+        lastPlayedScene = "";
+        return;
+      }
+      if (outcome === "gotoFrame") {
+        lastPlayedFrameIndex = -1;
+        return;
+      }
+      lastPlayedFrameIndex = walkFrame;
     }
   }
 
@@ -977,6 +1017,8 @@ function goToFrame(index: number, play: boolean) {
   const frame = Math.max(0, Math.min(activeAssetTimeline.frameCount - 1, index));
   timeline.pause(frame / activeAssetTimeline.fps);
   frameScrubber.value = String(frame);
+  lastPlayedFrameIndex = play ? frame - 1 : frame;
+  lastPlayedScene = activeAssetTimeline.scene;
   renderFrame(activeAssetTimeline, frame);
 
   const stoppedByFrameAction = play && shouldStopAtFrame(activeAssetTimeline, frame);
