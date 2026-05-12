@@ -518,6 +518,22 @@ h2 {
   user-select: none;
 }
 
+.stopped-sprite-instance {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+
+.stopped-sprite-content {
+  position: absolute;
+  display: block;
+  max-width: none;
+  transform-origin: 0 0;
+  user-select: none;
+}
+
 .nested-target-overlay {
   position: absolute;
   left: 0;
