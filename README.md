@@ -156,10 +156,34 @@ Run the standalone player at:
 http://127.0.0.1:5173/scene-player.html
 ```
 
-This is the GSAP-native replacement for static `Frame SVG` playback. Remaining
-work is color-transform fidelity, masks/clip depth, nested sprite timelines, and
-wiring ActionScript control flow (stops are honored today; gotos and button
-interactions are not yet driven by the player).
+The player is modular under `src/gsap-scene/`:
+
+```text
+types.ts          shared scene/track/runtime types
+media.ts          DOM element + media creation (shape/image/sprite/text/button)
+tweens.ts         real gsap.to() segments driving matrix + opacity
+color-transform.ts exact feColorMatrix filters (multiply + add)
+masking.ts        clipDepth masking via affine-mapped clip-path polygons
+control-flow.ts   stop frames, label resolution, goto navigation
+player.ts         orchestrator composing the modules
+```
+
+It now drives the timeline like Flash: stop frames pause playback, timeline
+gotos retime the timeline, and button releases navigate (gotoAndPlay parks on a
+destination stop). Color transforms (full CXFORMWITHALPHA multiply + add) and
+clip-depth masks are extracted by `build-asset-timeline` and applied by the
+player. It is available both on the standalone page and as the **GSAP Scene
+(tweens)** render mode in the main comparison app beside Ruffle.
+
+Smoke-check the player against every converted scene (screenshots + metrics):
+
+```sh
+npm run verify:gsap-scene
+```
+
+Remaining work is nested sprite timelines (sprite cells are frame-stepped, deep
+nested clips are not yet tweened), non-rectangular mask shapes (approximated by
+their bounding box today), and cross-SWF level navigation.
 
 ## Flash to GSAP mapping
 

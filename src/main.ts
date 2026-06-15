@@ -1,6 +1,7 @@
 import { gsap } from "gsap";
 import { GsapDisplayListRenderer, type GsapDisplayDebugEntry } from "./gsap-display-list-renderer";
 import { GsapSwfRenderer } from "./engine/GsapSwfRenderer";
+import { GsapScenePlayer } from "./gsap-scene";
 import { parseSwfFile } from "./engine/SwfParser";
 import { scenes, type TourScene } from "./data";
 import "./styles.css";
@@ -250,6 +251,7 @@ app.innerHTML = `
           <option value="frame" selected>Frame SVG</option>
           <option value="asset">Asset Timeline</option>
           <option value="gsap">GSAP Display List</option>
+          <option value="scene">GSAP Scene (tweens)</option>
           <option value="direct">Direct SWF Renderer</option>
         </select>
       </label>
@@ -277,6 +279,7 @@ app.innerHTML = `
             <img id="frameStageImage" class="frame-stage-image" alt="" />
             <div id="frameStageInline" class="frame-stage-inline" aria-hidden="true"></div>
             <div id="gsapDisplayLayer" class="gsap-display-layer" aria-hidden="true"></div>
+            <div id="gsapSceneLayer" class="gsap-scene-layer" aria-hidden="true" hidden></div>
             <div id="directSwfLayer" class="direct-swf-layer" aria-hidden="true"></div>
             <div id="externalLevelLayer" class="external-level-layer" aria-hidden="true"></div>
             <div id="awaitingLoopLayer" class="awaiting-loop-layer" aria-hidden="true"></div>
@@ -328,6 +331,7 @@ const assetWrap = assetStage.parentElement as HTMLDivElement;
 const frameStageImage = must<HTMLImageElement>("#frameStageImage");
 const frameStageInline = must<HTMLDivElement>("#frameStageInline");
 const gsapDisplayLayer = must<HTMLDivElement>("#gsapDisplayLayer");
+const gsapSceneLayer = must<HTMLDivElement>("#gsapSceneLayer");
 const directSwfLayer = must<HTMLDivElement>("#directSwfLayer");
 const externalLevelLayer = must<HTMLDivElement>("#externalLevelLayer");
 const awaitingLoopLayer = must<HTMLDivElement>("#awaitingLoopLayer");
@@ -403,6 +407,12 @@ select.addEventListener("change", () => {
 });
 
 restartBtn.addEventListener("click", () => {
+  if (isSceneRenderMode()) {
+    void ensureSceneLoaded(activeScene).then((player) => {
+      if (isSceneRenderMode()) player.restart();
+    });
+    return;
+  }
   if (isDirectRenderMode()) {
     void restartDirectRenderer();
   } else {
@@ -414,6 +424,10 @@ restartBtn.addEventListener("click", () => {
 });
 
 playBtn.addEventListener("click", () => {
+  if (isSceneRenderMode()) {
+    ensureScenePlayer().togglePlay();
+    return;
+  }
   if (isDirectRenderMode()) {
     void toggleDirectRendererPlayback();
     return;
@@ -435,6 +449,12 @@ playBtn.addEventListener("click", () => {
 });
 
 frameScrubber.addEventListener("input", () => {
+  if (isSceneRenderMode()) {
+    void ensureSceneLoaded(activeScene).then((player) => {
+      if (isSceneRenderMode()) player.seekToFrame(Number(frameScrubber.value));
+    });
+    return;
+  }
   if (isDirectRenderMode()) {
     isGsapPlaying = false;
     updatePlayButton();
@@ -512,6 +532,46 @@ async function loadRuffle(scene: TourScene) {
 
 function isDirectRenderMode() {
   return renderModeSelect.value === "direct";
+}
+
+let gsapScenePlayer: GsapScenePlayer | null = null;
+let gsapSceneLoadedFor = "";
+
+function isSceneRenderMode() {
+  return renderModeSelect.value === "scene";
+}
+
+function ensureScenePlayer() {
+  if (!gsapScenePlayer) {
+    gsapScenePlayer = new GsapScenePlayer(gsapSceneLayer);
+    gsapScenePlayer.onFrameChange = (frame) => {
+      if (!isSceneRenderMode()) return;
+      frameScrubber.value = String(frame);
+      status.dataset.mode = gsapScenePlayer!.isPlaying ? "playing" : "stopped";
+      status.textContent = `${gsapScenePlayer!.isPlaying ? "Playing" : "Ready at"} GSAP scene frame ${frame + 1}`;
+      updatePlayButton();
+    };
+    gsapScenePlayer.onPlaybackChange = () => {
+      if (isSceneRenderMode()) updatePlayButton();
+    };
+  }
+  return gsapScenePlayer;
+}
+
+async function ensureSceneLoaded(scene: TourScene) {
+  const player = ensureScenePlayer();
+  if (gsapSceneLoadedFor === scene.swf && player.loadedScene) return player;
+
+  const sceneName = scene.swf.replace(/\.swf$/i, "");
+  const loaded = await player.load(`/generated/${sceneName}/gsap-scene.json?v=${Date.now()}`);
+  if (loaded) {
+    gsapSceneLoadedFor = scene.swf;
+    frameScrubber.max = String(loaded.frameCount - 1);
+  } else {
+    gsapSceneLoadedFor = "";
+    status.textContent = `No gsap-scene.json for ${sceneName} (run npm run build:gsap-scenes)`;
+  }
+  return player;
 }
 
 function destroyDirectRenderer() {
@@ -713,8 +773,11 @@ async function loadAssetTimeline(scene: TourScene, entryTarget?: SceneEntryTarge
     );
   }
   assetTimelineVersion += 1;
-  renderModeSelect.selectedIndex = 0;
-  renderModeSelect.value = "frame";
+  // Preserve an explicitly chosen GSAP Scene mode across scene switches.
+  if (renderModeSelect.value !== "scene") {
+    renderModeSelect.selectedIndex = 0;
+    renderModeSelect.value = "frame";
+  }
   assetStage.style.background = activeAssetTimeline.backgroundColor ?? "#ffffff";
   frameScrubber.max = String(activeAssetTimeline.frameCount - 1);
   const entryFrame = resolveSceneEntryFrame(activeAssetTimeline, entryTarget);
@@ -877,6 +940,32 @@ function renderFrame(assetTimeline: AssetTimeline, index: number) {
   const frame = assetTimeline.frames[Math.max(0, Math.min(assetTimeline.frames.length - 1, index))];
   const mode = renderModeSelect.value;
   updateStaticReference(assetTimeline, frame.index);
+
+  if (mode !== "scene") {
+    gsapSceneLayer.hidden = true;
+    gsapScenePlayer?.pause();
+  }
+
+  if (mode === "scene") {
+    timeline?.pause();
+    isGsapPlaying = false;
+    stopAwaitingLoop();
+    clearButtonVisualState();
+    frameSvgRequest += 1;
+    frameStageImage.hidden = true;
+    frameStageInline.replaceChildren();
+    assetStage.querySelectorAll(".asset-instance").forEach((node) => node.remove());
+    renderedInstances.clear();
+    gsapDisplayLayer.hidden = true;
+    directSwfLayer.hidden = true;
+    externalLevelLayer.hidden = true;
+    awaitingLoopLayer.replaceChildren();
+    gsapSceneLayer.hidden = false;
+    void ensureSceneLoaded(activeScene).then((player) => {
+      if (isSceneRenderMode()) player.seekToFrame(frame.index);
+    });
+    return;
+  }
 
   if (mode === "direct") {
     timeline?.pause();
