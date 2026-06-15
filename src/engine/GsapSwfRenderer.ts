@@ -62,6 +62,10 @@ interface Avm1FunctionDef {
   params: string[];
   body: Uint8Array;
   constantPool: string[];
+  isFunction2?: boolean;
+  registerCount?: number;
+  paramRegisters?: number[];
+  flags?: number;
 }
 
 type Avm1Primitive = string | number | boolean | null;
@@ -1086,11 +1090,14 @@ export class GsapSwfRenderer {
       playbackOverridesByName?: Map<string, SpritePlaybackState>;
       globals?: Map<string, Avm1Value>;
       constantPool?: string[];
+      registers?: Avm1Value[];
     },
-  ) {
+  ): Avm1Value {
     const stack: Avm1Value[] = [];
     let constantPool = [...(options.constantPool ?? [])];
     const functions = new Map<string, Avm1FunctionDef>();
+    const registers: Avm1Value[] = options.registers ?? new Array<Avm1Value>(256).fill(undefined);
+    let returnValue: Avm1Value = undefined;
     let pos = 0;
 
     while (pos < bytes.length) {
@@ -1210,7 +1217,7 @@ export class GsapSwfRenderer {
           break;
 
         case 0x96:
-          this.readPushValues(bytes.subarray(actionStart, actionEnd), constantPool, stack);
+          this.readPushValues(bytes.subarray(actionStart, actionEnd), constantPool, stack, registers);
           break;
 
         case 0x99: {
@@ -1255,12 +1262,309 @@ export class GsapSwfRenderer {
           }
           break;
 
+        case 0x04:
+          if (options.timelineState) {
+            options.timelineState.currentFrame = this.clampFrame(options.timelineState.currentFrame + 1, options.char.frameCount);
+            options.timelineState.isPlaying = false;
+          }
+          break;
+
+        case 0x05:
+          if (options.timelineState) {
+            options.timelineState.currentFrame = this.clampFrame(options.timelineState.currentFrame - 1, options.char.frameCount);
+            options.timelineState.isPlaying = false;
+          }
+          break;
+
+        case 0x0A: {
+          const a = this.avm1ToNumberEcma(stack.pop());
+          const b = this.avm1ToNumberEcma(stack.pop());
+          stack.push(b + a);
+          break;
+        }
+
+        case 0x0C: {
+          const a = this.avm1ToNumberEcma(stack.pop());
+          const b = this.avm1ToNumberEcma(stack.pop());
+          stack.push(b * a);
+          break;
+        }
+
+        case 0x0D: {
+          const a = this.avm1ToNumberEcma(stack.pop());
+          const b = this.avm1ToNumberEcma(stack.pop());
+          stack.push(b / a);
+          break;
+        }
+
+        case 0x3F: {
+          const a = this.avm1ToNumberEcma(stack.pop());
+          const b = this.avm1ToNumberEcma(stack.pop());
+          stack.push(b % a);
+          break;
+        }
+
+        case 0x0E: {
+          const a = this.toAvm1Number(stack.pop());
+          const b = this.toAvm1Number(stack.pop());
+          stack.push(b === a);
+          break;
+        }
+
+        case 0x0F: {
+          const a = this.toAvm1Number(stack.pop());
+          const b = this.toAvm1Number(stack.pop());
+          stack.push(b < a);
+          break;
+        }
+
+        case 0x10: {
+          const a = this.toAvm1Boolean(stack.pop());
+          const b = this.toAvm1Boolean(stack.pop());
+          stack.push(b && a);
+          break;
+        }
+
+        case 0x11: {
+          const a = this.toAvm1Boolean(stack.pop());
+          const b = this.toAvm1Boolean(stack.pop());
+          stack.push(b || a);
+          break;
+        }
+
+        case 0x13: {
+          const a = this.toAvm1String(stack.pop());
+          const b = this.toAvm1String(stack.pop());
+          stack.push(b === a);
+          break;
+        }
+
+        case 0x14:
+          stack.push(this.toAvm1String(stack.pop()).length);
+          break;
+
+        case 0x18:
+          stack.push(this.avm1ToInt32(stack.pop()));
+          break;
+
+        case 0x21: {
+          const a = this.toAvm1String(stack.pop());
+          const b = this.toAvm1String(stack.pop());
+          stack.push(b + a);
+          break;
+        }
+
+        case 0x23: {
+          const value = stack.pop();
+          const index = this.toAvm1Number(stack.pop());
+          const target = stack.pop();
+          this.setAvm1Property(target, index, value);
+          break;
+        }
+
+        case 0x26:
+          console.debug('[AVM1 trace]', this.avm1ToStringEcma(stack.pop()));
+          break;
+
+        case 0x29: {
+          const a = this.toAvm1String(stack.pop());
+          const b = this.toAvm1String(stack.pop());
+          stack.push(b < a);
+          break;
+        }
+
+        case 0x30: {
+          const max = this.toAvm1Number(stack.pop());
+          stack.push(max > 0 ? Math.floor(Math.random() * max) : 0);
+          break;
+        }
+
+        case 0x34:
+          stack.push(Math.floor(options.currentTick * (1000 / this.movie.frameRate)));
+          break;
+
+        case 0x3C: {
+          const value = stack.pop();
+          const name = this.toAvm1String(stack.pop());
+          this.setAvm1Variable(name, value, options.globals);
+          break;
+        }
+
+        case 0x3E:
+          return stack.pop();
+
+        case 0x40: {
+          this.toAvm1String(stack.pop());
+          const argCount = Math.max(0, Math.floor(this.toAvm1Number(stack.pop())));
+          for (let i = 0; i < argCount; i++) stack.pop();
+          stack.push({});
+          break;
+        }
+
+        case 0x41: {
+          const name = this.toAvm1String(stack.pop());
+          this.setAvm1Variable(name, undefined, options.globals);
+          break;
+        }
+
+        case 0x42: {
+          const count = Math.max(0, Math.floor(this.toAvm1Number(stack.pop())));
+          const arr: Avm1Object = { length: count };
+          for (let i = 0; i < count; i++) {
+            arr[String(i)] = stack.pop();
+          }
+          stack.push(arr);
+          break;
+        }
+
+        case 0x43: {
+          const count = Math.max(0, Math.floor(this.toAvm1Number(stack.pop())));
+          const obj: Avm1Object = {};
+          for (let i = 0; i < count; i++) {
+            const value = stack.pop();
+            const key = this.toAvm1String(stack.pop());
+            obj[key] = value;
+          }
+          stack.push(obj);
+          break;
+        }
+
+        case 0x44:
+          stack.push(this.avm1TypeOf(stack.pop()));
+          break;
+
+        case 0x47: {
+          const a = stack.pop();
+          const b = stack.pop();
+          stack.push(this.avm1Add2(b, a));
+          break;
+        }
+
+        case 0x48: {
+          const a = stack.pop();
+          const b = stack.pop();
+          stack.push(this.avm1Less2(b, a));
+          break;
+        }
+
+        case 0x4A:
+          stack.push(this.avm1ToNumberEcma(stack.pop()));
+          break;
+
+        case 0x4B:
+          stack.push(this.avm1ToStringEcma(stack.pop()));
+          break;
+
+        case 0x4C: {
+          const top = stack[stack.length - 1];
+          stack.push(top);
+          break;
+        }
+
+        case 0x4D: {
+          const a = stack.pop();
+          const b = stack.pop();
+          stack.push(a);
+          stack.push(b);
+          break;
+        }
+
+        case 0x50:
+          stack.push(this.avm1ToNumberEcma(stack.pop()) + 1);
+          break;
+
+        case 0x51:
+          stack.push(this.avm1ToNumberEcma(stack.pop()) - 1);
+          break;
+
+        case 0x60: {
+          const a = this.avm1ToInt32(stack.pop());
+          const b = this.avm1ToInt32(stack.pop());
+          stack.push(b & a);
+          break;
+        }
+
+        case 0x61: {
+          const a = this.avm1ToInt32(stack.pop());
+          const b = this.avm1ToInt32(stack.pop());
+          stack.push(b | a);
+          break;
+        }
+
+        case 0x62: {
+          const a = this.avm1ToInt32(stack.pop());
+          const b = this.avm1ToInt32(stack.pop());
+          stack.push(b ^ a);
+          break;
+        }
+
+        case 0x63: {
+          const a = this.avm1ToInt32(stack.pop()) & 0x1f;
+          const b = this.avm1ToInt32(stack.pop());
+          stack.push(b << a);
+          break;
+        }
+
+        case 0x64: {
+          const a = this.avm1ToInt32(stack.pop()) & 0x1f;
+          const b = this.avm1ToInt32(stack.pop());
+          stack.push(b >> a);
+          break;
+        }
+
+        case 0x65: {
+          const a = this.avm1ToInt32(stack.pop()) & 0x1f;
+          const b = this.avm1ToUint32(stack.pop());
+          stack.push(b >>> a);
+          break;
+        }
+
+        case 0x66: {
+          const a = stack.pop();
+          const b = stack.pop();
+          stack.push(this.avm1StrictEquals(b, a));
+          break;
+        }
+
+        case 0x67: {
+          const a = stack.pop();
+          const b = stack.pop();
+          stack.push(this.avm1Less2(a, b));
+          break;
+        }
+
+        case 0x68: {
+          const a = this.toAvm1String(stack.pop());
+          const b = this.toAvm1String(stack.pop());
+          stack.push(b > a);
+          break;
+        }
+
+        case 0x87:
+          registers[bytes[actionStart]] = stack[stack.length - 1];
+          break;
+
+        case 0x8E: {
+          const parsed = this.readFunction2Definition(bytes, actionStart, actionEnd, constantPool);
+          if (parsed) {
+            functions.set(parsed.def.name, parsed.def);
+            if (parsed.def.name) {
+              this.setAvm1Variable(parsed.def.name, parsed.def, options.globals);
+            }
+            pos = parsed.nextPos;
+            continue;
+          }
+          break;
+        }
+
         default:
           break;
       }
 
       pos = actionEnd;
     }
+
+    return returnValue;
   }
 
   private readConstantPool(bytes: Uint8Array): string[] {
@@ -1283,8 +1587,14 @@ export class GsapSwfRenderer {
     return pool;
   }
 
-  private readPushValues(bytes: Uint8Array, constantPool: string[], stack: Avm1Value[]) {
+  private readPushValues(
+    bytes: Uint8Array,
+    constantPool: string[],
+    stack: Avm1Value[],
+    registers: Avm1Value[] = [],
+  ) {
     let pos = 0;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
     while (pos < bytes.length) {
       const valueType = bytes[pos++];
@@ -1301,6 +1611,12 @@ export class GsapSwfRenderer {
           break;
         }
 
+        case 0x01:
+          // 32-bit float
+          stack.push(view.getFloat32(pos, true));
+          pos += 4;
+          break;
+
         case 0x02:
           stack.push(null);
           break;
@@ -1309,17 +1625,29 @@ export class GsapSwfRenderer {
           stack.push(undefined);
           break;
 
+        case 0x04:
+          // Register
+          stack.push(registers[bytes[pos++]]);
+          break;
+
         case 0x05:
           stack.push(bytes[pos++] !== 0);
           break;
 
+        case 0x06: {
+          // 64-bit double, stored as two little-endian 32-bit words in swapped order
+          const lo = view.getUint32(pos, true);
+          const hi = view.getUint32(pos + 4, true);
+          const swapped = new DataView(new ArrayBuffer(8));
+          swapped.setUint32(0, hi, true);
+          swapped.setUint32(4, lo, true);
+          stack.push(swapped.getFloat64(0, true));
+          pos += 8;
+          break;
+        }
+
         case 0x07:
-          stack.push(
-            bytes[pos] |
-            (bytes[pos + 1] << 8) |
-            (bytes[pos + 2] << 16) |
-            (bytes[pos + 3] << 24),
-          );
+          stack.push(view.getInt32(pos, true));
           pos += 4;
           break;
 
@@ -1383,9 +1711,35 @@ export class GsapSwfRenderer {
   }
 
   private getAvm1Property(target: Avm1Value, propertyIndex: number, currentFrame: number | undefined): Avm1Value {
-    if ((target === '' || target === null || target === undefined) && propertyIndex === 4 && currentFrame !== undefined) {
-      return currentFrame + 1;
+    const name = this.propertyNameByIndex(propertyIndex);
+
+    if ((target === '' || target === null || target === undefined)) {
+      if (propertyIndex === 4 && currentFrame !== undefined) {
+        return currentFrame + 1;
+      }
+      return undefined;
     }
+
+    if (this.isDisplayEntry(target)) {
+      const m = target.matrix;
+      switch (name) {
+        case '_x': return m.tx;
+        case '_y': return m.ty;
+        case '_xscale': return Math.sqrt(m.a * m.a + m.b * m.b) * 100;
+        case '_yscale': return Math.sqrt(m.c * m.c + m.d * m.d) * 100;
+        case '_rotation': return Math.atan2(m.b, m.a) * 180 / Math.PI;
+        case '_alpha': return (target.colorTransform?.am ?? 1) * 100;
+        case '_visible': return target.element.style.display !== 'none';
+        case '_currentframe': return (currentFrame ?? 0) + 1;
+        case '_name': return target.instanceName ?? '';
+        default: return undefined;
+      }
+    }
+
+    if (this.isAvm1Object(target) && name) {
+      return (target as Avm1Object)[name];
+    }
+
     return undefined;
   }
 
@@ -1589,16 +1943,44 @@ export class GsapSwfRenderer {
     }
 
     const nextGlobals = new Map(options.globals ?? []);
-    fn.params.forEach((param, index) => {
-      nextGlobals.set(param, args[index]);
-    });
+    let registers: Avm1Value[] | undefined;
 
-    this.executeActionScript(fn.body, {
+    if (fn.isFunction2) {
+      registers = new Array<Avm1Value>(Math.max(fn.registerCount ?? 4, 4)).fill(undefined);
+      const root = options.globals?.get('_level0');
+      const flags = fn.flags ?? 0;
+      let reg = 1;
+      if (flags & 0x01) registers[reg++] = root ?? null; // preload this
+      if (flags & 0x04) {
+        const argObject: Avm1Object = { length: args.length };
+        args.forEach((value, index) => { argObject[String(index)] = value; });
+        registers[reg++] = argObject; // preload arguments
+      }
+      if (flags & 0x10) registers[reg++] = undefined; // preload super
+      if (flags & 0x40) registers[reg++] = root ?? null; // preload _root
+      if (flags & 0x80) registers[reg++] = root ?? null; // preload _parent
+      if (flags & 0x100) registers[reg++] = root ?? null; // preload _global
+
+      fn.params.forEach((param, index) => {
+        const targetRegister = fn.paramRegisters?.[index] ?? 0;
+        if (targetRegister > 0) {
+          registers![targetRegister] = args[index];
+        } else {
+          nextGlobals.set(param, args[index]);
+        }
+      });
+    } else {
+      fn.params.forEach((param, index) => {
+        nextGlobals.set(param, args[index]);
+      });
+    }
+
+    return this.executeActionScript(fn.body, {
       ...options,
       constantPool: fn.constantPool,
       globals: nextGlobals,
+      registers,
     });
-    return undefined;
   }
 
   private assignAvm1Global(globals: Map<string, Avm1Value>, path: string, value: Avm1Primitive) {
@@ -1634,6 +2016,180 @@ export class GsapSwfRenderer {
       return this.toAvm1Number(a) === this.toAvm1Number(b);
     }
     return this.toAvm1String(a) === this.toAvm1String(b);
+  }
+
+  /** ECMA-style ToNumber: undefined -> NaN, invalid strings -> NaN. */
+  private avm1ToNumberEcma(value: Avm1Value): number {
+    if (typeof value === 'number') return value;
+    if (typeof value === 'boolean') return value ? 1 : 0;
+    if (value === null) return 0;
+    if (value === undefined) return NaN;
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed === '') return 0;
+      const parsed = Number(trimmed);
+      return Number.isNaN(parsed) ? NaN : parsed;
+    }
+    return NaN;
+  }
+
+  private avm1ToStringEcma(value: Avm1Value): string {
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number') return Number.isNaN(value) ? 'NaN' : String(value);
+    if (typeof value === 'boolean') return value ? 'true' : 'false';
+    if (value === null) return 'null';
+    if (value === undefined) return 'undefined';
+    if (this.isDisplayTarget(value)) return value.instanceName ?? '[object MovieClip]';
+    if (this.isAvm1Function(value)) return '[type Function]';
+    return '[object Object]';
+  }
+
+  private avm1ToInt32(value: Avm1Value): number {
+    const n = this.avm1ToNumberEcma(value);
+    return Number.isFinite(n) ? n | 0 : 0;
+  }
+
+  private avm1ToUint32(value: Avm1Value): number {
+    const n = this.avm1ToNumberEcma(value);
+    return Number.isFinite(n) ? n >>> 0 : 0;
+  }
+
+  private avm1TypeOf(value: Avm1Value): string {
+    if (value === undefined) return 'undefined';
+    if (value === null) return 'null';
+    if (typeof value === 'number') return 'number';
+    if (typeof value === 'string') return 'string';
+    if (typeof value === 'boolean') return 'boolean';
+    if (this.isDisplayTarget(value)) return 'movieclip';
+    if (this.isAvm1Function(value)) return 'function';
+    return 'object';
+  }
+
+  /** ECMA "+" semantics: string concat when either operand is a string. */
+  private avm1Add2(a: Avm1Value, b: Avm1Value): Avm1Value {
+    if (typeof a === 'string' || typeof b === 'string') {
+      return this.avm1ToStringEcma(a) + this.avm1ToStringEcma(b);
+    }
+    return this.avm1ToNumberEcma(a) + this.avm1ToNumberEcma(b);
+  }
+
+  /** ECMA abstract relational comparison (a < b). */
+  private avm1Less2(a: Avm1Value, b: Avm1Value): boolean {
+    if (typeof a === 'string' && typeof b === 'string') {
+      return a < b;
+    }
+    const na = this.avm1ToNumberEcma(a);
+    const nb = this.avm1ToNumberEcma(b);
+    if (Number.isNaN(na) || Number.isNaN(nb)) return false;
+    return na < nb;
+  }
+
+  private avm1StrictEquals(a: Avm1Value, b: Avm1Value): boolean {
+    if (typeof a !== typeof b) return false;
+    return a === b;
+  }
+
+  private propertyNameByIndex(index: number): string | null {
+    const names = [
+      '_x', '_y', '_xscale', '_yscale', '_currentframe', '_totalframes',
+      '_alpha', '_visible', '_width', '_height', '_rotation', '_target',
+      '_framesloaded', '_name', '_droptarget', '_url', '_highquality',
+      '_focusrect', '_soundbuftime', '_quality', '_xmouse', '_ymouse',
+    ];
+    return names[Math.floor(index)] ?? null;
+  }
+
+  private isDisplayEntry(value: Avm1Value): value is DisplayEntry {
+    return Boolean(value && typeof value === 'object' && 'matrix' in value && 'element' in value);
+  }
+
+  private setAvm1Property(target: Avm1Value, index: number, value: Avm1Value) {
+    const name = this.propertyNameByIndex(index);
+    if (!name) return;
+
+    if (this.isDisplayEntry(target)) {
+      const matrix = target.matrix;
+      switch (name) {
+        case '_x':
+          target.matrix = { ...matrix, tx: this.toAvm1Number(value) };
+          this.applyPlacementTransform(target.element, target.matrix);
+          break;
+        case '_y':
+          target.matrix = { ...matrix, ty: this.toAvm1Number(value) };
+          this.applyPlacementTransform(target.element, target.matrix);
+          break;
+        case '_alpha': {
+          const alpha = Math.max(0, Math.min(1, this.toAvm1Number(value) / 100));
+          target.colorTransform = { ...(target.colorTransform ?? { rm: 1, gm: 1, bm: 1, am: 1, ra: 0, ga: 0, ba: 0, aa: 0 }), am: alpha };
+          target.element.style.opacity = String(alpha);
+          break;
+        }
+        case '_visible':
+          target.element.style.display = this.toAvm1Boolean(value) ? '' : 'none';
+          break;
+        default:
+          break;
+      }
+      return;
+    }
+
+    if (this.isAvm1Object(target)) {
+      (target as Avm1Object)[name] = value as Avm1Value;
+    }
+  }
+
+  private readFunction2Definition(
+    bytes: Uint8Array,
+    headerStart: number,
+    headerEnd: number,
+    constantPool: string[],
+  ): { def: Avm1FunctionDef; nextPos: number } | null {
+    const header = bytes.subarray(headerStart, headerEnd);
+    let pos = 0;
+    const nameEnd = header.indexOf(0, pos);
+    if (nameEnd === -1) return null;
+
+    const name = this.decodeBytes(header.subarray(pos, nameEnd));
+    pos = nameEnd + 1;
+    if (pos + 5 > header.length) return null;
+
+    const paramCount = header[pos] | (header[pos + 1] << 8);
+    pos += 2;
+    const registerCount = header[pos];
+    pos += 1;
+    const flags = header[pos] | (header[pos + 1] << 8);
+    pos += 2;
+
+    const params: string[] = [];
+    const paramRegisters: number[] = [];
+    for (let i = 0; i < paramCount && pos < header.length; i++) {
+      const register = header[pos];
+      pos += 1;
+      const end = header.indexOf(0, pos);
+      if (end === -1) return null;
+      params.push(this.decodeBytes(header.subarray(pos, end)));
+      paramRegisters.push(register);
+      pos = end + 1;
+    }
+
+    if (pos + 2 > header.length) return null;
+    const codeSize = header[pos] | (header[pos + 1] << 8);
+
+    const bodyStart = headerEnd;
+    const bodyEnd = Math.min(bytes.length, bodyStart + codeSize);
+    return {
+      def: {
+        name,
+        params,
+        body: bytes.subarray(bodyStart, bodyEnd),
+        constantPool: [...constantPool],
+        isFunction2: true,
+        registerCount,
+        paramRegisters,
+        flags,
+      },
+      nextPos: bodyEnd,
+    };
   }
 
   private resolveLabelFrame(char: { frames: SwfFrame[]; id?: number }, label: string): number | null {
