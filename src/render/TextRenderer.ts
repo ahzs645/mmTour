@@ -1,38 +1,28 @@
-import { assetUrl } from "../data/TimelineLoader";
 import type { AssetTimeline } from "../data/timelineTypes";
 
 /**
- * Registers each scene's embedded fonts as @font-face faces (family
- * `swf-font-<id>`) so dynamic/edit text can render in its original typeface,
- * and resolves a CSS font stack for a given DefineEditText fontId.
+ * Resolves a CSS font stack for a text field's DefineEditText fontId using the
+ * font's NAME plus a system sans fallback — mirroring how Flash/Ruffle render
+ * these fields (the named font if the OS has it, otherwise a generic sans). We
+ * deliberately do NOT @font-face the extracted TTF: on macOS Ruffle falls back
+ * to the system sans, so using the embedded Franklin Gothic would make the
+ * player diverge from the reference.
  */
 export class FontRegistry {
-  private registered = new Set<number>();
-  private families = new Map<number, string>();
+  private names = new Map<number, string>();
 
   register(timeline: AssetTimeline) {
-    if (!("fonts" in document)) return;
     for (const asset of Object.values(timeline.assets ?? {})) {
       if (asset.kind !== "font" || !asset.src) continue;
-      const family = `swf-font-${asset.id}`;
-      this.families.set(asset.id, family);
-      if (this.registered.has(asset.id)) continue;
-      this.registered.add(asset.id);
-      // Font filenames often contain spaces (e.g. "47_Franklin Gothic.ttf");
-      // encode the URL so the FontFace fetch doesn't silently fail.
-      const face = new FontFace(family, `url("${encodeURI(assetUrl(asset.src))}")`);
-      face
-        .load()
-        .then((loaded) => document.fonts.add(loaded))
-        .catch(() => {
-          /* font missing/undecodable — fall back to the CSS stack */
-        });
+      const file = asset.src.split("/").pop() ?? "";
+      const name = file.replace(/\.ttf$/i, "").replace(/^\d+_/, "").trim();
+      if (name) this.names.set(asset.id, name);
     }
   }
 
   resolveFamily(fontId?: number): string | undefined {
     if (fontId == null) return undefined;
-    const family = this.families.get(fontId);
-    return family ? `"${family}", Arial, Helvetica, sans-serif` : undefined;
+    const name = this.names.get(fontId);
+    return name ? `"${name}", Arial, Helvetica, sans-serif` : undefined;
   }
 }

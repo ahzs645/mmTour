@@ -1,10 +1,8 @@
 import { gsap } from "gsap";
 import { assetUrl } from "../data/TimelineLoader";
-import type { AssetTimeline, ControlAction } from "../data/timelineTypes";
+import type { ButtonActionRecord, ControlAction } from "../data/timelineTypes";
 import type { RenderNode } from "../player/types";
 import { applyColorTransform } from "./colorTransform";
-import { installButtonOverlays } from "./ButtonOverlay";
-import { namespaceSvgIds } from "./svgUtils";
 
 type RenderedNode = {
   element: HTMLDivElement;
@@ -12,34 +10,18 @@ type RenderedNode = {
   characterId: number;
   kind: RenderNode["kind"];
   src: string;
-  /** True when this sprite is rendered as inline SVG to host button overlays. */
-  interactive?: boolean;
 };
 
 export type DomRendererOptions = {
   /** Resolve a CSS font-family for a text field's font id (registered by TextRenderer). */
   resolveFontFamily?: (fontId?: number) => string | undefined;
-  /** Sprite character ids that own buttons — rendered inline so hit areas can overlay. */
+  /** Sprite character ids that own buttons — get hover/click handlers. */
   interactiveSpriteIds?: Set<number>;
-  /** Timeline used to resolve button state artwork + actions for overlays. */
-  timeline?: AssetTimeline;
-  /** Dispatch a button's release action, tagged with the owner sprite's depth. */
+  /** Resolve the button actions (rollOver/rollOut/release) for an owner sprite. */
+  resolveButtonActions?: (spriteCharacterId: number) => ButtonActionRecord | undefined;
+  /** Dispatch a button action, tagged with the owner sprite's depth. */
   dispatchButton?: (action: ControlAction, ownerDepth: number) => void;
 };
-
-// Inline SVG text is fetched once per source and reused across instances/frames.
-const svgTextCache = new Map<string, Promise<string>>();
-
-function fetchSvgText(src: string): Promise<string> {
-  let pending = svgTextCache.get(src);
-  if (!pending) {
-    pending = fetch(assetUrl(src))
-      .then((response) => (response.ok ? response.text() : ""))
-      .then((text) => text.replace(/<\?xml[^>]*>\s*/i, ""));
-    svgTextCache.set(src, pending);
-  }
-  return pending;
-}
 
 /**
  * Renders a list of RenderNodes into a DOM layer, diffing by depth so unchanged
@@ -99,7 +81,31 @@ export class DomRenderer {
     element.append(media);
     this.layer.append(element);
 
+    if (this.isInteractiveSprite(node)) this.wireSpriteButton(media, node);
+
     return { element, media, characterId: node.characterId, kind: node.kind, src: "" };
+  }
+
+  /**
+   * Attach hover/click handlers to the media container (which has the icon's
+   * real size; the wrapping instance element is 0×0 because the media is
+   * absolutely positioned). The container persists across inline-SVG
+   * re-injection, so dispatching the button's rollOver/rollOut/release reliably
+   * drives the owner sprite's own playhead — the icon expands on hover and the
+   * root navigates on click, like the source.
+   */
+  private wireSpriteButton(media: HTMLElement, node: RenderNode) {
+    const actions = this.options.resolveButtonActions?.(node.characterId);
+    const dispatch = this.options.dispatchButton;
+    if (!actions || !dispatch) return;
+
+    media.style.pointerEvents = "auto";
+    media.style.cursor = "pointer";
+    const depth = node.depth;
+    if (actions.rollOver) media.addEventListener("pointerenter", () => dispatch(actions.rollOver!, depth));
+    if (actions.rollOut) media.addEventListener("pointerleave", () => dispatch(actions.rollOut!, depth));
+    if (actions.press) media.addEventListener("pointerdown", () => dispatch(actions.press!, depth));
+    if (actions.release) media.addEventListener("pointerup", () => dispatch(actions.release!, depth));
   }
 
   private isInteractiveSprite(node: RenderNode): boolean {
@@ -114,12 +120,9 @@ export class DomRenderer {
       return text;
     }
 
-    if (this.isInteractiveSprite(node)) {
-      const container = document.createElement("div");
-      container.className = "player-sprite-inline";
-      return container;
-    }
-
+    // Sprites (interactive or not) render as isolated <img>: no cross-SVG id
+    // collisions, and per-frame animation is a cheap src swap that never
+    // destroys the element (so hover/click listeners stay attached).
     const image = document.createElement("img");
     image.decoding = "async";
     image.draggable = false;
@@ -127,14 +130,6 @@ export class DomRenderer {
   }
 
   private updateMedia(rendered: RenderedNode, node: RenderNode) {
-    if (this.isInteractiveSprite(node)) {
-      if (rendered.src !== node.src && node.src) {
-        rendered.src = node.src;
-        this.injectInteractiveSprite(rendered.media, node);
-      }
-      return;
-    }
-
     if (rendered.kind === "text") {
       if (node.text) {
         this.styleText(rendered.media, node);
@@ -157,27 +152,6 @@ export class DomRenderer {
       .then((content) => {
         element.textContent = content.trim();
       });
-  }
-
-  private injectInteractiveSprite(container: HTMLElement, node: RenderNode) {
-    const src = node.src;
-    const depth = node.depth;
-    container.dataset.pendingSrc = src;
-    void fetchSvgText(src).then((svgText) => {
-      // A newer frame may have superseded this injection.
-      if (container.dataset.pendingSrc !== src || !svgText) return;
-      // Namespace ids per depth so the 3 inline icon SVGs don't collide.
-      container.innerHTML = namespaceSvgIds(svgText, `d${depth}_`);
-      const svg = container.querySelector("svg");
-      if (!svg) return;
-      // Native px sizing (FFDec sprite SVGs have no viewBox); just stop overlays
-      // outside the bounds from being clipped.
-      svg.style.overflow = "visible";
-      const { timeline, dispatchButton } = this.options;
-      if (timeline && dispatchButton) {
-        installButtonOverlays(svg as SVGSVGElement, timeline, (action) => dispatchButton(action, depth));
-      }
-    });
   }
 
   private styleText(element: HTMLElement, node: RenderNode) {

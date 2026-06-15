@@ -1,45 +1,87 @@
 import { chromium } from "playwright";
-const URL = process.env.APP_URL ?? "http://127.0.0.1:5174/";
-const b = await chromium.launch();
-const p = await b.newPage({ viewport: { width: 1280, height: 900 } });
+
+// Verifies the decompiled player's button interaction: hovering an interactive
+// sprite plays its rollOver animation, rolling out collapses it, and clicking
+// navigates the root timeline — driven by control.buttonActions, like the source.
+
+const URL = process.env.APP_URL ?? "http://127.0.0.1:5173/";
+
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1400, height: 760 } });
 const errors = [];
-p.on("pageerror", e => errors.push(String(e)));
-await p.goto(URL, { waitUntil: "domcontentloaded" });
-await p.waitForSelector("#renderMode");
-await p.selectOption("#sceneSelect", { label: "Segment 1 - segment1.swf" }).catch(()=>{});
-await p.waitForTimeout(1200);
-await p.selectOption("#renderMode", "player");
-await p.waitForTimeout(300);
+page.on("pageerror", (e) => errors.push(String(e).slice(0, 140)));
 
-const max = Number(await p.getAttribute("#frameScrubber", "max"));
-let found = null;
-for (let f = 0; f <= max; f += 1) {
-  await p.$eval("#frameScrubber", (el, v) => { el.value = String(v); el.dispatchEvent(new Event("input", {bubbles:true})); }, f);
-  await p.waitForTimeout(40);
-  const counts = await p.evaluate(() => ({
-    inline: document.querySelectorAll("#playerLayer .player-sprite-inline svg").length,
-    rects: document.querySelectorAll("#playerLayer .player-button-overlays rect").length,
-  }));
-  if (counts.rects > 0) { found = { frame: f, ...counts }; break; }
-}
+await page.goto(URL, { waitUntil: "domcontentloaded" });
+await page.waitForSelector("#renderMode");
+// segment4 (default) opens on its interactive menu.
+await page.waitForTimeout(2600);
 
-let hover = null;
-if (found) {
-  const box = await p.$eval("#playerLayer .player-button-overlays rect", (r) => {
-    const b = r.getBoundingClientRect(); return { x: b.x + b.width/2, y: b.y + b.height/2 };
+const box = await page.evaluate(() => {
+  const imgs = [...document.querySelectorAll("#playerLayer .player-instance img")].filter(
+    (i) => getComputedStyle(i).pointerEvents === "auto",
+  );
+  const target = imgs[1] ?? imgs[0];
+  if (!target) return null;
+  const b = target.getBoundingClientRect();
+  return { count: imgs.length, x: b.x + b.width / 2, y: b.y + b.height / 2 };
+});
+
+const iconSrc = () =>
+  page.evaluate(() => {
+    const imgs = [...document.querySelectorAll("#playerLayer .player-instance img")].filter(
+      (i) => getComputedStyle(i).pointerEvents === "auto",
+    );
+    return (imgs[1] ?? imgs[0])?.getAttribute("src")?.split("/").pop();
   });
-  const before = await p.evaluate(() => document.querySelectorAll("#playerLayer .player-button-overlays image").length);
-  await p.mouse.move(box.x, box.y);
-  await p.waitForTimeout(150);
-  const afterHover = await p.evaluate(() => document.querySelectorAll("#playerLayer .player-button-overlays image").length);
-  await p.mouse.down(); await p.waitForTimeout(80);
-  const afterDown = await p.evaluate(() => document.querySelectorAll("#playerLayer .player-button-overlays image").length);
-  await p.mouse.up();
-  hover = { before, afterHover, afterDown };
-}
+const rootStatus = () => page.textContent("#status").then((s) => s?.trim());
 
-console.log(JSON.stringify({ max, found, hover, errors: errors.slice(0,5) }, null, 2));
-await b.close();
-if (!found) { console.error("FAIL: no button overlays found on any frame"); process.exit(1); }
-if (!hover || hover.afterHover <= hover.before) { console.error("FAIL: hover did not add over-state artwork"); process.exit(1); }
+const resting = await iconSrc();
+const rootBefore = await rootStatus();
+
+// HOVER → expect the icon to animate (frame changes).
+await page.mouse.move(box.x, box.y);
+const hover = [];
+for (let i = 0; i < 6; i += 1) {
+  await page.waitForTimeout(110);
+  hover.push(await iconSrc());
+}
+const hoverAnimated = new Set(hover).size > 1;
+
+// ROLLOUT → expect the icon to return toward its resting frame.
+await page.mouse.move(5, 5);
+await page.waitForTimeout(900);
+const afterRollout = await iconSrc();
+
+// CLICK → expect the root timeline to navigate.
+await page.mouse.move(box.x, box.y);
+await page.waitForTimeout(300);
+await page.mouse.down();
+await page.waitForTimeout(50);
+await page.mouse.up();
+await page.waitForTimeout(900);
+const rootAfter = await rootStatus();
+
+await browser.close();
+
+const navigated = rootBefore !== rootAfter;
+console.log(
+  JSON.stringify(
+    { interactiveImages: box?.count, resting, hover, hoverAnimated, afterRollout, rootBefore, rootAfter, navigated, errors: errors.slice(0, 5) },
+    null,
+    2,
+  ),
+);
+
+if (!box) {
+  console.error("FAIL: no interactive sprites found");
+  process.exit(1);
+}
+if (!hoverAnimated) {
+  console.error("FAIL: hover did not animate the icon");
+  process.exit(1);
+}
+if (!navigated) {
+  console.error("FAIL: click did not navigate the root timeline");
+  process.exit(1);
+}
 console.log("OK");

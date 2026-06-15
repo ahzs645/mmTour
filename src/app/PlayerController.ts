@@ -1,16 +1,22 @@
-import type { AssetTimeline } from "../data/timelineTypes";
+import type { AssetTimeline, ButtonActionRecord } from "../data/timelineTypes";
 import { DomRenderer } from "../render/DomRenderer";
 import { FontRegistry } from "../render/TextRenderer";
 import { Player } from "../player/Player";
 import { SoundController } from "../audio/SoundController";
 
-/** Sprites that own a button must render inline so hit areas can overlay them. */
-function collectInteractiveSpriteIds(timeline: AssetTimeline): Set<number> {
-  const ids = new Set<number>();
+/**
+ * Map each button-owning sprite to its button's actions. Hovering/clicking the
+ * sprite then plays its rollOver/rollOut/release animations exactly like the
+ * source (e.g. an icon expands on hover, navigates on click).
+ */
+function collectSpriteButtonActions(timeline: AssetTimeline): Map<number, ButtonActionRecord> {
+  const byOwner = new Map<number, ButtonActionRecord>();
   for (const record of Object.values(timeline.control?.buttonActions ?? {})) {
-    for (const spriteId of record.ownerSpriteIds ?? []) ids.add(spriteId);
+    for (const spriteId of record.ownerSpriteIds ?? []) {
+      if (!byOwner.has(spriteId)) byOwner.set(spriteId, record);
+    }
   }
-  return ids;
+  return byOwner;
 }
 
 export type PlayerControllerOptions = {
@@ -56,10 +62,11 @@ export class PlayerController {
     this.timeline = timeline;
     this.layer.hidden = false;
     this.fonts.register(timeline);
+    const spriteButtonActions = collectSpriteButtonActions(timeline);
     const renderer = new DomRenderer(this.layer, {
       resolveFontFamily: (fontId) => this.fonts.resolveFamily(fontId),
-      interactiveSpriteIds: collectInteractiveSpriteIds(timeline),
-      timeline,
+      interactiveSpriteIds: new Set(spriteButtonActions.keys()),
+      resolveButtonActions: (spriteId) => spriteButtonActions.get(spriteId),
       dispatchButton: (action, ownerDepth) => this.player?.dispatchButtonAction(action, ownerDepth),
     });
     this.player = new Player(timeline, renderer, {
