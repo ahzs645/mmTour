@@ -1,6 +1,7 @@
 import { gsap } from "gsap";
 import { GsapDisplayListRenderer, type GsapDisplayDebugEntry } from "./gsap-display-list-renderer";
 import { GsapSwfRenderer } from "./engine/GsapSwfRenderer";
+import { GsapScenePlayer } from "./gsap-scene";
 import { parseSwfFile } from "./engine/SwfParser";
 import { scenes, type TourScene } from "./data";
 import "./styles.css";
@@ -250,6 +251,7 @@ app.innerHTML = `
           <option value="frame" selected>Frame SVG</option>
           <option value="asset">Asset Timeline</option>
           <option value="gsap">GSAP Display List</option>
+          <option value="scene">GSAP Scene (tweens)</option>
           <option value="direct">Direct SWF Renderer</option>
         </select>
       </label>
@@ -277,6 +279,7 @@ app.innerHTML = `
             <img id="frameStageImage" class="frame-stage-image" alt="" />
             <div id="frameStageInline" class="frame-stage-inline" aria-hidden="true"></div>
             <div id="gsapDisplayLayer" class="gsap-display-layer" aria-hidden="true"></div>
+            <div id="gsapSceneLayer" class="gsap-scene-layer" aria-hidden="true" hidden></div>
             <div id="directSwfLayer" class="direct-swf-layer" aria-hidden="true"></div>
             <div id="externalLevelLayer" class="external-level-layer" aria-hidden="true"></div>
             <div id="awaitingLoopLayer" class="awaiting-loop-layer" aria-hidden="true"></div>
@@ -328,6 +331,7 @@ const assetWrap = assetStage.parentElement as HTMLDivElement;
 const frameStageImage = must<HTMLImageElement>("#frameStageImage");
 const frameStageInline = must<HTMLDivElement>("#frameStageInline");
 const gsapDisplayLayer = must<HTMLDivElement>("#gsapDisplayLayer");
+const gsapSceneLayer = must<HTMLDivElement>("#gsapSceneLayer");
 const directSwfLayer = must<HTMLDivElement>("#directSwfLayer");
 const externalLevelLayer = must<HTMLDivElement>("#externalLevelLayer");
 const awaitingLoopLayer = must<HTMLDivElement>("#awaitingLoopLayer");
@@ -372,6 +376,8 @@ let currentVoiceover: HTMLAudioElement | null = null;
 let currentMusic: HTMLAudioElement | null = null;
 let lastSoundFrameKey = "";
 let lastFrameFunctionCallKey = "";
+let lastPlayedFrameIndex = -1;
+let lastPlayedScene = "";
 const playedSpriteSoundKeys = new Set<string>();
 const runtimeGlobals: Record<string, RuntimeGlobalValue> = {};
 const loadedLevelSwfs: Record<number, string> = { 4: activeScene.swf };
@@ -401,6 +407,12 @@ select.addEventListener("change", () => {
 });
 
 restartBtn.addEventListener("click", () => {
+  if (isSceneRenderMode()) {
+    void ensureSceneLoaded(activeScene).then((player) => {
+      if (isSceneRenderMode()) player.restart();
+    });
+    return;
+  }
   if (isDirectRenderMode()) {
     void restartDirectRenderer();
   } else {
@@ -412,6 +424,10 @@ restartBtn.addEventListener("click", () => {
 });
 
 playBtn.addEventListener("click", () => {
+  if (isSceneRenderMode()) {
+    ensureScenePlayer().togglePlay();
+    return;
+  }
   if (isDirectRenderMode()) {
     void toggleDirectRendererPlayback();
     return;
@@ -433,6 +449,12 @@ playBtn.addEventListener("click", () => {
 });
 
 frameScrubber.addEventListener("input", () => {
+  if (isSceneRenderMode()) {
+    void ensureSceneLoaded(activeScene).then((player) => {
+      if (isSceneRenderMode()) player.seekToFrame(Number(frameScrubber.value));
+    });
+    return;
+  }
   if (isDirectRenderMode()) {
     isGsapPlaying = false;
     updatePlayButton();
@@ -469,10 +491,10 @@ document.querySelectorAll<HTMLButtonElement>(".debug-tab").forEach((button) => {
 void loadScene(activeScene);
 stageResizeObserver.observe(assetWrap);
 
-async function loadScene(scene: TourScene, entryTarget?: SceneEntryTarget, preserveExternalLevels = false) {
+async function loadScene(scene: TourScene, entryTarget?: SceneEntryTarget, preserveExternalLevels = false, autoPlay = false) {
   status.textContent = `Loading ${scene.swf}`;
   ruffleName.textContent = `${scene.length.toFixed(2)}s`;
-  await loadAssetTimeline(scene, entryTarget, preserveExternalLevels);
+  await loadAssetTimeline(scene, entryTarget, preserveExternalLevels, autoPlay);
   void loadRuffle(scene).catch((error) => {
     console.warn(`Ruffle reference failed to load ${scene.swf}`, error);
   });
@@ -488,7 +510,7 @@ async function navigateToSceneBySwf(swf: string, entryTarget?: SceneEntryTarget)
   activeScene = targetScene;
   if (/^segment\d+\.swf$/i.test(targetScene.swf)) loadedLevelSwfs[4] = targetScene.swf;
   select.value = String(scenes.indexOf(activeScene));
-  await loadScene(activeScene, entryTarget, true);
+  await loadScene(activeScene, entryTarget, true, true);
 }
 
 async function loadRuffle(scene: TourScene) {
@@ -510,6 +532,46 @@ async function loadRuffle(scene: TourScene) {
 
 function isDirectRenderMode() {
   return renderModeSelect.value === "direct";
+}
+
+let gsapScenePlayer: GsapScenePlayer | null = null;
+let gsapSceneLoadedFor = "";
+
+function isSceneRenderMode() {
+  return renderModeSelect.value === "scene";
+}
+
+function ensureScenePlayer() {
+  if (!gsapScenePlayer) {
+    gsapScenePlayer = new GsapScenePlayer(gsapSceneLayer);
+    gsapScenePlayer.onFrameChange = (frame) => {
+      if (!isSceneRenderMode()) return;
+      frameScrubber.value = String(frame);
+      status.dataset.mode = gsapScenePlayer!.isPlaying ? "playing" : "stopped";
+      status.textContent = `${gsapScenePlayer!.isPlaying ? "Playing" : "Ready at"} GSAP scene frame ${frame + 1}`;
+      updatePlayButton();
+    };
+    gsapScenePlayer.onPlaybackChange = () => {
+      if (isSceneRenderMode()) updatePlayButton();
+    };
+  }
+  return gsapScenePlayer;
+}
+
+async function ensureSceneLoaded(scene: TourScene) {
+  const player = ensureScenePlayer();
+  if (gsapSceneLoadedFor === scene.swf && player.loadedScene) return player;
+
+  const sceneName = scene.swf.replace(/\.swf$/i, "");
+  const loaded = await player.load(`/generated/${sceneName}/gsap-scene.json?v=${Date.now()}`);
+  if (loaded) {
+    gsapSceneLoadedFor = scene.swf;
+    frameScrubber.max = String(loaded.frameCount - 1);
+  } else {
+    gsapSceneLoadedFor = "";
+    status.textContent = `No gsap-scene.json for ${sceneName} (run npm run build:gsap-scenes)`;
+  }
+  return player;
 }
 
 function destroyDirectRenderer() {
@@ -661,9 +723,12 @@ function renderDirectMetadataDebug(renderer: GsapSwfRenderer, message: string) {
   debugList.append(item);
 }
 
-async function loadAssetTimeline(scene: TourScene, entryTarget?: SceneEntryTarget, preserveExternalLevels = false) {
+async function loadAssetTimeline(scene: TourScene, entryTarget?: SceneEntryTarget, preserveExternalLevels = false, autoPlay = false) {
   timeline?.kill();
   activeAssetTimeline = null;
+  isGsapPlaying = false;
+  lastPlayedFrameIndex = -1;
+  lastPlayedScene = "";
   destroyDirectRenderer();
   stopAwaitingLoop();
   stopCurrentVoiceover();
@@ -708,8 +773,11 @@ async function loadAssetTimeline(scene: TourScene, entryTarget?: SceneEntryTarge
     );
   }
   assetTimelineVersion += 1;
-  renderModeSelect.selectedIndex = 0;
-  renderModeSelect.value = "frame";
+  // Preserve an explicitly chosen GSAP Scene mode across scene switches.
+  if (renderModeSelect.value !== "scene") {
+    renderModeSelect.selectedIndex = 0;
+    renderModeSelect.value = "frame";
+  }
   assetStage.style.background = activeAssetTimeline.backgroundColor ?? "#ffffff";
   frameScrubber.max = String(activeAssetTimeline.frameCount - 1);
   const entryFrame = resolveSceneEntryFrame(activeAssetTimeline, entryTarget);
@@ -717,7 +785,7 @@ async function loadAssetTimeline(scene: TourScene, entryTarget?: SceneEntryTarge
   emptyMessage.hidden = true;
   assetName.textContent = `${activeAssetTimeline.frameCount} frames @ ${activeAssetTimeline.fps} fps`;
   buildGsapAssetPlayer(activeAssetTimeline);
-  goToFrame(entryFrame, false);
+  goToFrame(entryFrame, autoPlay);
 }
 
 async function fetchAssetTimeline(swf: string) {
@@ -811,10 +879,93 @@ function buildGsapAssetPlayer(assetTimeline: AssetTimeline) {
   });
 }
 
+function processPlaybackFrameActions(
+  assetTimeline: AssetTimeline,
+  frameIndex: number,
+): "continue" | "stopped" | "navigated" | "gotoFrame" {
+  if (shouldStopAtFrame(assetTimeline, frameIndex)) {
+    timeline?.pause(frameIndex / assetTimeline.fps);
+    isGsapPlaying = false;
+    if (frameIndex !== Number(frameScrubber.value)) frameScrubber.value = String(frameIndex);
+    setFrameStatus(assetTimeline, frameIndex, 0);
+    return "stopped";
+  }
+
+  const swfLoadActions = rootSwfLoadActionsAtFrame(assetTimeline, frameIndex);
+  for (const action of swfLoadActions) rememberLoadedLevel(action, assetTimeline, frameIndex);
+  const swfAction = primaryRootSwfNavigation(swfLoadActions);
+  if (swfAction?.swf) {
+    isRunningExtractedAction = true;
+    runtimeGlobals["nav.targSection"] = "";
+    queueShellLevelCallsForLoadedScene(assetTimeline, frameIndex, swfAction.swf);
+    status.textContent = `Loading ${swfAction.swf}`;
+    void navigateToSceneBySwf(swfAction.swf).finally(() => {
+      isRunningExtractedAction = false;
+    });
+    return "navigated";
+  }
+
+  const levelGoto = rootLevelGotoAtFrame(assetTimeline, frameIndex);
+  if (levelGoto) {
+    const targetSwf = loadedLevelSwfs[levelGoto.level];
+    if (targetSwf) {
+      isRunningExtractedAction = true;
+      runtimeGlobals["nav.targSection"] = "";
+      status.textContent = `Loading ${targetSwf}`;
+      void navigateToSceneBySwf(targetSwf, levelGoto.action).finally(() => {
+        isRunningExtractedAction = false;
+      });
+      return "navigated";
+    }
+  }
+
+  const extractedAction = rootTimelineActionAtFrame(assetTimeline, frameIndex);
+  const targetFrame = extractedAction ? resolveRuntimeFrame(extractedAction, assetTimeline, frameIndex) : -1;
+  if (extractedAction && targetFrame >= 0 && targetFrame !== frameIndex) {
+    isRunningExtractedAction = true;
+    goToFrame(targetFrame, extractedAction.command === "gotoAndPlay");
+    isRunningExtractedAction = false;
+    return "gotoFrame";
+  }
+
+  if (frameIndex !== Math.round(Number(frameScrubber.value))) {
+    triggerFrameSounds(assetTimeline, frameIndex);
+    runFrameFunctionCalls(assetTimeline, frameIndex);
+  }
+
+  return "continue";
+}
+
 function renderFrame(assetTimeline: AssetTimeline, index: number) {
   const frame = assetTimeline.frames[Math.max(0, Math.min(assetTimeline.frames.length - 1, index))];
   const mode = renderModeSelect.value;
   updateStaticReference(assetTimeline, frame.index);
+
+  if (mode !== "scene") {
+    gsapSceneLayer.hidden = true;
+    gsapScenePlayer?.pause();
+  }
+
+  if (mode === "scene") {
+    timeline?.pause();
+    isGsapPlaying = false;
+    stopAwaitingLoop();
+    clearButtonVisualState();
+    frameSvgRequest += 1;
+    frameStageImage.hidden = true;
+    frameStageInline.replaceChildren();
+    assetStage.querySelectorAll(".asset-instance").forEach((node) => node.remove());
+    renderedInstances.clear();
+    gsapDisplayLayer.hidden = true;
+    directSwfLayer.hidden = true;
+    externalLevelLayer.hidden = true;
+    awaitingLoopLayer.replaceChildren();
+    gsapSceneLayer.hidden = false;
+    void ensureSceneLoaded(activeScene).then((player) => {
+      if (isSceneRenderMode()) player.seekToFrame(frame.index);
+    });
+    return;
+  }
 
   if (mode === "direct") {
     timeline?.pause();
@@ -838,49 +989,30 @@ function renderFrame(assetTimeline: AssetTimeline, index: number) {
   directSwfLayer.hidden = true;
   externalLevelLayer.hidden = false;
 
-  if (!isRunningExtractedAction && isGsapPlaying && shouldStopAtFrame(assetTimeline, frame.index)) {
-    timeline?.pause(frame.index / assetTimeline.fps);
-    isGsapPlaying = false;
-    setFrameStatus(assetTimeline, frame.index, 0);
-    return;
-  }
-
   if (!isRunningExtractedAction && isGsapPlaying) {
-    const swfLoadActions = rootSwfLoadActionsAtFrame(assetTimeline, frame.index);
-    for (const action of swfLoadActions) rememberLoadedLevel(action, assetTimeline, frame.index);
-    const swfAction = primaryRootSwfNavigation(swfLoadActions);
-    if (swfAction?.swf) {
-      isRunningExtractedAction = true;
-      runtimeGlobals["nav.targSection"] = "";
-      queueShellLevelCallsForLoadedScene(assetTimeline, frame.index, swfAction.swf);
-      status.textContent = `Loading ${swfAction.swf}`;
-      void navigateToSceneBySwf(swfAction.swf).finally(() => {
-        isRunningExtractedAction = false;
-      });
-      return;
+    if (lastPlayedScene !== assetTimeline.scene) {
+      lastPlayedScene = assetTimeline.scene;
+      lastPlayedFrameIndex = -1;
     }
-
-    const levelGoto = rootLevelGotoAtFrame(assetTimeline, frame.index);
-    if (levelGoto) {
-      const targetSwf = loadedLevelSwfs[levelGoto.level];
-      if (targetSwf) {
-        isRunningExtractedAction = true;
-        runtimeGlobals["nav.targSection"] = "";
-        status.textContent = `Loading ${targetSwf}`;
-        void navigateToSceneBySwf(targetSwf, levelGoto.action).finally(() => {
-          isRunningExtractedAction = false;
-        });
+    const startWalk = lastPlayedFrameIndex >= 0 && lastPlayedFrameIndex < frame.index
+      ? lastPlayedFrameIndex + 1
+      : frame.index;
+    for (let walkFrame = startWalk; walkFrame <= frame.index; walkFrame += 1) {
+      const outcome = processPlaybackFrameActions(assetTimeline, walkFrame);
+      if (outcome === "stopped") {
+        lastPlayedFrameIndex = walkFrame;
         return;
       }
-    }
-
-    const extractedAction = rootTimelineActionAtFrame(assetTimeline, frame.index);
-    const targetFrame = extractedAction ? resolveRuntimeFrame(extractedAction, assetTimeline, frame.index) : -1;
-    if (extractedAction && targetFrame >= 0 && targetFrame !== frame.index) {
-      isRunningExtractedAction = true;
-      goToFrame(targetFrame, extractedAction.command === "gotoAndPlay");
-      isRunningExtractedAction = false;
-      return;
+      if (outcome === "navigated") {
+        lastPlayedFrameIndex = -1;
+        lastPlayedScene = "";
+        return;
+      }
+      if (outcome === "gotoFrame") {
+        lastPlayedFrameIndex = -1;
+        return;
+      }
+      lastPlayedFrameIndex = walkFrame;
     }
   }
 
@@ -967,8 +1099,69 @@ async function renderInlineFrameSvg(src: string, version: number, frameIndex: nu
   element?.classList.add("inline-frame-svg");
   applyDynamicTextOverrides();
   if (activeAssetTimeline) applyFrameActionTargetOverlays(activeAssetTimeline, frameIndex);
+  if (activeAssetTimeline) applyStoppedSpriteOverlays(activeAssetTimeline, frameIndex);
   const wiredTargets = wireInlineFrameControls(frameIndex);
   if (activeAssetTimeline) setFrameStatus(activeAssetTimeline, frameIndex, wiredTargets);
+}
+
+function applyStoppedSpriteOverlays(assetTimeline: AssetTimeline, frameIndex: number) {
+  const frame = assetTimeline.frames[frameIndex];
+  if (!frame) return;
+
+  const candidateIds = new Set(
+    frame.instances
+      .filter((instance) => {
+        const asset = assetTimeline.assets[String(instance.characterId)];
+        if (!asset || asset.kind !== "sprite" || !asset.frames?.length) return false;
+        const relativeFrame = Math.max(0, frame.index - instance.placedFrame);
+        return !hasReachedSpriteStop(assetTimeline, instance.characterId, relativeFrame);
+      })
+      .map((instance) => instance.characterId),
+  );
+
+  for (const instance of frame.instances) {
+    if (candidateIds.has(instance.characterId)) continue;
+    const asset = assetTimeline.assets[String(instance.characterId)];
+    if (!asset || asset.kind !== "sprite" || !asset.frames?.length) continue;
+    const relativeFrame = Math.max(0, frame.index - instance.placedFrame);
+    const stops = assetTimeline.control?.spriteStopFrames?.[String(instance.characterId)] ?? [];
+    if (!stops.length) continue;
+    const sortedStops = [...stops].sort((a, b) => a - b);
+    if (relativeFrame < sortedStops[0]) continue;
+    const stopFrame = sortedStops[0];
+    const targetFrameIndex = Math.max(0, Math.min(asset.frames.length - 1, stopFrame));
+
+    hideStaticSpriteSource(instance.characterId);
+
+    const element = document.createElement("div");
+    element.className = "stopped-sprite-instance";
+    element.style.zIndex = String(instance.depth);
+    const { a, b, c, d, tx, ty } = instance.matrix;
+    element.style.transform = `matrix(${a}, ${b}, ${c}, ${d}, ${tx}, ${ty})`;
+
+    const image = document.createElement("img");
+    image.className = "stopped-sprite-content";
+    image.decoding = "async";
+    image.draggable = false;
+    image.style.left = `${-asset.origin.x}px`;
+    image.style.top = `${-asset.origin.y}px`;
+    image.style.width = `${asset.origin.width}px`;
+    image.style.height = `${asset.origin.height}px`;
+    image.src = `/${asset.frames[targetFrameIndex]}`;
+    element.append(image);
+    frameStageInline.append(element);
+  }
+}
+
+function hideStaticSpriteSource(characterId: number) {
+  const target = String(characterId);
+  const nodes = frameStageInline.querySelectorAll<SVGGraphicsElement>("use, g");
+  for (const node of nodes) {
+    const value = node.getAttribute("ffdec:characterId") ?? node.getAttribute("ffdec:characterid");
+    if (value !== target) continue;
+    if (node.closest(".flash-button-overlay-layer")) continue;
+    node.style.visibility = "hidden";
+  }
 }
 
 function goToFrame(index: number, play: boolean) {
@@ -977,6 +1170,8 @@ function goToFrame(index: number, play: boolean) {
   const frame = Math.max(0, Math.min(activeAssetTimeline.frameCount - 1, index));
   timeline.pause(frame / activeAssetTimeline.fps);
   frameScrubber.value = String(frame);
+  lastPlayedFrameIndex = play ? frame - 1 : frame;
+  lastPlayedScene = activeAssetTimeline.scene;
   renderFrame(activeAssetTimeline, frame);
 
   const stoppedByFrameAction = play && shouldStopAtFrame(activeAssetTimeline, frame);
@@ -1759,7 +1954,11 @@ function restoreStaticHoverSources() {
 }
 
 function hideStaticAwaitingSource(characterId: number) {
-  for (const node of frameStageInline.querySelectorAll<SVGGraphicsElement>(`[ffdec\\:characterId="${characterId}"]`)) {
+  const target = String(characterId);
+  const nodes = frameStageInline.querySelectorAll<SVGGraphicsElement>("use, g");
+  for (const node of nodes) {
+    const value = node.getAttribute("ffdec:characterId") ?? node.getAttribute("ffdec:characterid");
+    if (value !== target) continue;
     if (node.closest(".flash-button-overlay-layer")) continue;
     if (node.style.visibility === "hidden") continue;
     node.style.visibility = "hidden";
@@ -2640,12 +2839,49 @@ async function ensureExternalLevel(level: number, swf: string) {
   return record;
 }
 
+const externalLevelSvgCache = new Map<string, string>();
+
+async function fetchExternalLevelSvg(src: string) {
+  const cached = externalLevelSvgCache.get(src);
+  if (cached !== undefined) return cached;
+  try {
+    const response = await fetch(`/${src}`);
+    if (!response.ok) {
+      externalLevelSvgCache.set(src, "");
+      return "";
+    }
+    let svg = await response.text();
+    svg = svg.replace(/<\?xml[^>]*>\s*/i, "");
+    svg = stripFrameSvgBackgroundRect(svg);
+    const blob = new Blob([svg], { type: "image/svg+xml" });
+    const url = URL.createObjectURL(blob);
+    externalLevelSvgCache.set(src, url);
+    return url;
+  } catch {
+    externalLevelSvgCache.set(src, "");
+    return "";
+  }
+}
+
+function stripFrameSvgBackgroundRect(svg: string): string {
+  return svg.replace(
+    /(<g\s+transform="matrix\([^"]*\)"\s*>\s*)<rect\b[^>]*\bfill="#[0-9a-fA-F]{3,8}"[^>]*\/>/i,
+    "$1",
+  );
+}
+
 function renderExternalLevelFrame(level: number, frame: number) {
   const record = externalLevels.get(level);
   if (!record?.timeline?.frameSvgs?.length) return false;
   record.frame = clampFrame(frame, record.timeline);
-  record.image.src = `/${record.timeline.frameSvgs[record.frame]}`;
+  const src = record.timeline.frameSvgs[record.frame];
   record.element.dataset.frame = String(record.frame);
+  void fetchExternalLevelSvg(src).then((url) => {
+    if (!url) return;
+    if (externalLevels.get(level) !== record) return;
+    if (record.timeline?.frameSvgs?.[record.frame] !== src) return;
+    record.image.src = url;
+  });
   return true;
 }
 

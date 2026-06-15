@@ -251,6 +251,19 @@ h2 {
   display: none;
 }
 
+.gsap-scene-layer {
+  position: absolute;
+  inset: 0;
+  width: 640px;
+  height: 480px;
+  z-index: 1;
+  overflow: hidden;
+}
+
+.gsap-scene-layer[hidden] {
+  display: none;
+}
+
 .direct-swf-layer {
   position: absolute;
   inset: 0;
@@ -511,6 +524,22 @@ h2 {
 }
 
 .awaiting-loop-content {
+  position: absolute;
+  display: block;
+  max-width: none;
+  transform-origin: 0 0;
+  user-select: none;
+}
+
+.stopped-sprite-instance {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+
+.stopped-sprite-content {
   position: absolute;
   display: block;
   max-width: none;
