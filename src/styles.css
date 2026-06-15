@@ -251,6 +251,37 @@ h2 {
   display: none;
 }
 
+.player-layer {
+  position: absolute;
+  inset: 0;
+  width: 640px;
+  height: 480px;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.player-layer[hidden] {
+  display: none;
+}
+
+.player-instance {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  will-change: transform, opacity;
+}
+
+.player-media {
+  display: block;
+}
+
+.player-text {
+  position: absolute;
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+
 .direct-swf-layer {
   position: absolute;
   inset: 0;

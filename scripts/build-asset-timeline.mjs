@@ -155,6 +155,38 @@ function discoverAssets(allTags) {
         origin: { x: 0, y: 0, width: 0, height: 0 },
       };
     }
+
+    // DefineEditText fields carry their own styling (font, size, color, box).
+    // Capture it for every field — not just the variable-loaded ones — so the
+    // player can render them in the original typeface.
+    if (tag.type === "DefineEditTextTag" && tag.characterID) {
+      const id = String(tag.characterID);
+      const bounds = tag.bounds;
+      const width = bounds ? (number(bounds.Xmax, 0) - number(bounds.Xmin, 0)) / 20 : 0;
+      const height = bounds ? (number(bounds.Ymax, 0) - number(bounds.Ymin, 0)) / 20 : 0;
+      const style = compactObject({
+        fontId: number(tag.fontId, 0) || undefined,
+        fontHeight: number(tag.fontHeight, 0) / 20,
+        leading: number(tag.leading, 0) / 20,
+        color: colorFromTag(tag.textColor),
+        align: textAlignFromTag(tag.align),
+        x: bounds ? number(bounds.Xmin, 0) / 20 : undefined,
+        y: bounds ? number(bounds.Ymin, 0) / 20 : undefined,
+        width: width || undefined,
+        height: height || undefined,
+        multiline: tag.multiline === "true",
+        wordWrap: tag.wordWrap === "true",
+        html: tag.html === "true",
+        text: normalizeLoadedText(String(tag.initialText ?? "")) || undefined,
+      });
+      defs[id] = {
+        id: Number(id),
+        kind: "text",
+        src: `generated/${scene}/texts/${id}.txt`,
+        origin: { x: style.x ?? 0, y: style.y ?? 0, width: width, height: height },
+        text: style,
+      };
+    }
   }
 
   for (const file of listDir("texts")) {
@@ -459,15 +491,23 @@ function discoverDynamicTexts(allTags) {
     if (comparableText(initialText) === comparableText(loadedText)) continue;
 
     const id = String(tag.characterID);
+    const bounds = tag.bounds;
+    const boundsWidth = bounds ? (number(bounds.Xmax, 0) - number(bounds.Xmin, 0)) / 20 : 0;
+    const boundsHeight = bounds ? (number(bounds.Ymax, 0) - number(bounds.Ymin, 0)) / 20 : 0;
     dynamicTexts[id] = compactObject({
       characterId: Number(id),
       variableName: tag.variableName,
       normalizedVariableName: variableName,
       text: loadedText,
+      fontId: number(tag.fontId, 0) || undefined,
       fontHeight: number(tag.fontHeight, 0) / 20,
       leading: number(tag.leading, 0) / 20,
       color: colorFromTag(tag.textColor),
       align: textAlignFromTag(tag.align),
+      x: bounds ? number(bounds.Xmin, 0) / 20 : undefined,
+      y: bounds ? number(bounds.Ymin, 0) / 20 : undefined,
+      width: boundsWidth || undefined,
+      height: boundsHeight || undefined,
       multiline: tag.multiline === "true",
       wordWrap: tag.wordWrap === "true",
       html: tag.html === "true",

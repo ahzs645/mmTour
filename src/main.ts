@@ -3,6 +3,8 @@ import { GsapDisplayListRenderer, type GsapDisplayDebugEntry } from "./gsap-disp
 import { GsapSwfRenderer } from "./engine/GsapSwfRenderer";
 import { parseSwfFile } from "./engine/SwfParser";
 import { scenes, type TourScene } from "./data";
+import { PlayerController } from "./app/PlayerController";
+import type { AssetTimeline as DecompiledTimeline } from "./data/timelineTypes";
 import "./styles.css";
 
 declare global {
@@ -250,6 +252,7 @@ app.innerHTML = `
           <option value="frame" selected>Frame SVG</option>
           <option value="asset">Asset Timeline</option>
           <option value="gsap">GSAP Display List</option>
+          <option value="player">Decompiled Player (beta)</option>
           <option value="direct">Direct SWF Renderer</option>
         </select>
       </label>
@@ -277,6 +280,7 @@ app.innerHTML = `
             <img id="frameStageImage" class="frame-stage-image" alt="" />
             <div id="frameStageInline" class="frame-stage-inline" aria-hidden="true"></div>
             <div id="gsapDisplayLayer" class="gsap-display-layer" aria-hidden="true"></div>
+            <div id="playerLayer" class="player-layer" aria-hidden="true" hidden></div>
             <div id="directSwfLayer" class="direct-swf-layer" aria-hidden="true"></div>
             <div id="externalLevelLayer" class="external-level-layer" aria-hidden="true"></div>
             <div id="awaitingLoopLayer" class="awaiting-loop-layer" aria-hidden="true"></div>
@@ -382,6 +386,39 @@ const frameSvgCache = new Map<string, string>();
 const assetTimelineCache = new Map<string, AssetTimeline>();
 const loadedFontFaceKeys = new Set<string>();
 const gsapDisplayRenderer = new GsapDisplayListRenderer(gsapDisplayLayer);
+const playerLayer = must<HTMLDivElement>("#playerLayer");
+const playerController = new PlayerController(playerLayer, {
+  onFrame: (frame, playing, label) => {
+    if (renderModeSelect.value !== "player") return;
+    frameScrubber.value = String(frame);
+    playBtn.textContent = playing ? "Pause" : "Play GSAP";
+    status.textContent = `${playing ? "Playing" : "Paused"} decompiled frame ${frame + 1}${label ? ` (${label})` : ""}`;
+  },
+});
+
+function isPlayerMode() {
+  return renderModeSelect.value === "player";
+}
+
+function activatePlayerMode() {
+  if (!activeAssetTimeline) return;
+  timeline?.pause();
+  isGsapPlaying = false;
+  directSwfRenderer?.pause();
+  directSwfLayer.hidden = true;
+  // Hide every other render surface; the player owns its own layer.
+  frameStageImage.hidden = true;
+  frameStageInline.replaceChildren();
+  assetStage.querySelectorAll(".asset-instance").forEach((node) => node.remove());
+  renderedInstances.clear();
+  gsapDisplayRenderer.clear();
+  gsapDisplayLayer.hidden = true;
+  awaitingLoopLayer.replaceChildren();
+  emptyMessage.hidden = true;
+  playerController.activate(activeAssetTimeline as unknown as DecompiledTimeline, Number(frameScrubber.value));
+  frameScrubber.max = String(playerController.frameCount - 1);
+  updatePlayButton();
+}
 const externalLevels = new Map<number, {
   swf: string;
   frame: number;
@@ -401,7 +438,9 @@ select.addEventListener("change", () => {
 });
 
 restartBtn.addEventListener("click", () => {
-  if (isDirectRenderMode()) {
+  if (isPlayerMode()) {
+    playerController.restart();
+  } else if (isDirectRenderMode()) {
     void restartDirectRenderer();
   } else {
     goToFrame(activeAssetTimeline?.entryFrame ?? 0, false);
@@ -412,6 +451,12 @@ restartBtn.addEventListener("click", () => {
 });
 
 playBtn.addEventListener("click", () => {
+  if (isPlayerMode()) {
+    playerController.toggle();
+    playBtn.textContent = playerController.isPlaying ? "Pause" : "Play GSAP";
+    return;
+  }
+
   if (isDirectRenderMode()) {
     void toggleDirectRendererPlayback();
     return;
@@ -433,6 +478,12 @@ playBtn.addEventListener("click", () => {
 });
 
 frameScrubber.addEventListener("input", () => {
+  if (isPlayerMode()) {
+    playerController.seekRootFrame(Number(frameScrubber.value));
+    playBtn.textContent = "Play GSAP";
+    return;
+  }
+
   if (isDirectRenderMode()) {
     isGsapPlaying = false;
     updatePlayButton();
@@ -449,6 +500,14 @@ frameScrubber.addEventListener("input", () => {
 
 renderModeSelect.addEventListener("change", () => {
   if (!activeAssetTimeline) return;
+  if (isPlayerMode()) {
+    activatePlayerMode();
+    return;
+  }
+  if (playerController.active) {
+    playerController.deactivate();
+    externalLevelLayer.hidden = false;
+  }
   renderFrame(activeAssetTimeline, Number(frameScrubber.value));
 });
 
@@ -664,6 +723,7 @@ function renderDirectMetadataDebug(renderer: GsapSwfRenderer, message: string) {
 async function loadAssetTimeline(scene: TourScene, entryTarget?: SceneEntryTarget, preserveExternalLevels = false) {
   timeline?.kill();
   activeAssetTimeline = null;
+  playerController.deactivate();
   destroyDirectRenderer();
   stopAwaitingLoop();
   stopCurrentVoiceover();
@@ -1875,6 +1935,12 @@ function setFrameStatus(assetTimeline: AssetTimeline, frameIndex: number, wiredT
 }
 
 function updatePlayButton() {
+  if (isPlayerMode()) {
+    playBtn.disabled = false;
+    playBtn.textContent = playerController.isPlaying ? "Pause" : "Play GSAP";
+    return;
+  }
+
   if (isDirectRenderMode()) {
     playBtn.disabled = false;
     playBtn.textContent = isGsapPlaying ? "Pause Direct" : "Play Direct";

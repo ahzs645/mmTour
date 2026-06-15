@@ -30,3 +30,4 @@ test-results/
 # Local env files
 .env
 .env.*
+scripts/_*.png
