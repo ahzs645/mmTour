@@ -170,7 +170,7 @@ function discoverAssets(allTags) {
         fontHeight: number(tag.fontHeight, 0) / 20,
         leading: number(tag.leading, 0) / 20,
         color: colorFromTag(tag.textColor),
-        align: textAlignFromTag(tag.align),
+        align: htmlTextAlign(tag, tag.initialText),
         x: bounds ? number(bounds.Xmin, 0) / 20 : undefined,
         y: bounds ? number(bounds.Ymin, 0) / 20 : undefined,
         width: width || undefined,
@@ -532,7 +532,7 @@ function discoverDynamicTexts(allTags) {
       fontHeight: number(tag.fontHeight, 0) / 20,
       leading: number(tag.leading, 0) / 20,
       color: colorFromTag(tag.textColor),
-      align: textAlignFromTag(tag.align),
+      align: htmlTextAlign(tag, loadedText),
       x: bounds ? number(bounds.Xmin, 0) / 20 : undefined,
       y: bounds ? number(bounds.Ymin, 0) / 20 : undefined,
       width: boundsWidth || undefined,
@@ -1717,6 +1717,18 @@ function textAlignFromTag(value) {
   if (String(value) === "2") return "center";
   if (String(value) === "3") return "justify";
   return "left";
+}
+
+/**
+ * Alignment for an edit-text field. For HTML fields the field's `align` attribute
+ * is just the placeholder format; the rendered HTML governs and defaults to LEFT
+ * (matching Flash/Ruffle) unless the content carries a <P ALIGN="…">. Non-HTML
+ * fields use the field's align attribute directly.
+ */
+function htmlTextAlign(tag, content) {
+  if (tag.html !== "true") return textAlignFromTag(tag.align);
+  const match = String(content ?? "").match(/ALIGN\s*=\s*["']?(LEFT|RIGHT|CENTER|JUSTIFY)/i);
+  return match ? match[1].toLowerCase() : "left";
 }
 
 function hex(value) {

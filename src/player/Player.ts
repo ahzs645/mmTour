@@ -21,7 +21,6 @@ export type PlayerOptions = {
 
 const ROOT_ID = -1;
 const MAX_GOTO_DEPTH = 24;
-const SOUND_COMMANDS = new Set(["attachSound", "playVO", "stopSound"]);
 
 /**
  * A focused AVM1 display-list runtime. The root timeline and every sprite become
@@ -331,7 +330,7 @@ export class Player {
 
   private flatten(
     clip: ClipInstance,
-    world: { a: number; b: number; c: number; d: number; tx: number; ty: number },
+    world: RenderNode["matrix"],
     worldOpacity: number,
     path: string,
     order: { n: number },
@@ -348,32 +347,58 @@ export class Player {
       const matrix = multiplyMatrix(world, instance.matrix);
       const opacity = worldOpacity * instance.opacity;
       const key = `${path}/${instance.depth}`;
+      const child = clip.childClips.get(instance.depth);
 
-      // Sprite with a nested timeline → recurse into its live child clip.
-      if (asset.kind === "sprite" && asset.timeline?.length) {
-        const child = clip.childClips.get(instance.depth);
-        if (child && child.characterId === asset.id) {
-          this.clipByPath.set(key, child);
-          this.flatten(child, matrix, opacity, key, order, out);
-          continue;
-        }
-      }
-
-      // Baked-frame sprite → emit its current frame's SVG.
+      // Sprite with baked frames → render the composited frame for visual fidelity
+      // (FFDec bakes masks/group-alpha the nested leaves would lose), and overlay
+      // transparent button hit areas from its nested timeline so it stays
+      // interactive and its frame scripts still run (logic lives in the tree).
       if (asset.kind === "sprite" && asset.frames?.length) {
-        const child = clip.childClips.get(instance.depth);
         const frameIndex = child ? clamp(child.currentFrame, 0, asset.frames.length - 1) : 0;
-        out.push(this.leafNode(key, order.n++, asset, asset.frames[frameIndex], matrix, opacity, instance, path, child?.currentFrame));
+        out.push(this.spriteNode(key, order.n++, asset, asset.frames[frameIndex], matrix, opacity, instance, child?.currentFrame));
+        if (child && asset.timeline?.length) this.collectButtons(child, matrix, key, order, out);
         continue;
       }
 
-      // Leaf: shape / image / text / button.
-      const src = asset.kind === "button" ? asset.states?.up?.src ?? asset.src ?? "" : asset.src ?? "";
-      out.push(this.leafNode(key, order.n++, asset, src, matrix, opacity, instance, path));
+      // Sprite with only a nested timeline (no baked frames) → render the tree.
+      if (asset.kind === "sprite" && asset.timeline?.length && child && child.characterId === asset.id) {
+        this.clipByPath.set(key, child);
+        this.flatten(child, matrix, opacity, key, order, out);
+        continue;
+      }
+
+      if (asset.kind === "button") {
+        out.push(this.buttonNode(key, order.n++, asset, matrix, instance, path));
+        continue;
+      }
+
+      out.push(this.leafNode(key, order.n++, asset, asset.src ?? "", matrix, opacity, instance));
     }
   }
 
-  private leafNode(
+  /** Overlay only the transparent button hit areas living inside a baked sprite. */
+  private collectButtons(clip: ClipInstance, world: RenderNode["matrix"], path: string, order: { n: number }, out: RenderNode[]) {
+    this.clipByPath.set(path, clip);
+    const frames = this.framesFor(clip);
+    if (!frames) return;
+    const frame = frames[clip.currentFrame];
+    if (!frame) return;
+
+    for (const instance of frame.instances) {
+      const asset = this.getAsset(instance.characterId);
+      if (!asset) continue;
+      const matrix = multiplyMatrix(world, instance.matrix);
+      const key = `${path}/${instance.depth}`;
+      if (asset.kind === "button") {
+        out.push(this.buttonNode(key, order.n++, asset, matrix, instance, path));
+      } else if (asset.kind === "sprite") {
+        const child = clip.childClips.get(instance.depth);
+        if (child) this.collectButtons(child, matrix, key, order, out);
+      }
+    }
+  }
+
+  private spriteNode(
     key: string,
     order: number,
     asset: TimelineAsset,
@@ -381,7 +406,6 @@ export class Player {
     matrix: RenderNode["matrix"],
     opacity: number,
     instance: TimelineFrame["instances"][number],
-    ownerPath: string,
     spriteFrame?: number,
   ): RenderNode {
     return {
@@ -397,8 +421,54 @@ export class Player {
       colorTransform: instance.colorTransform,
       clipDepth: instance.clipDepth,
       spriteFrame,
+    };
+  }
+
+  /** A transparent, sized hit area over a button (its visual is in the baked sprite frame). */
+  private buttonNode(
+    key: string,
+    order: number,
+    asset: TimelineAsset,
+    matrix: RenderNode["matrix"],
+    instance: TimelineFrame["instances"][number],
+    ownerPath: string,
+  ): RenderNode {
+    return {
+      key,
+      order,
+      characterId: asset.id,
+      kind: "button",
+      name: instance.name,
+      src: "",
+      origin: asset.origin,
+      matrix,
+      opacity: 1,
+      buttonOwnerPath: ownerPath,
+    };
+  }
+
+  private leafNode(
+    key: string,
+    order: number,
+    asset: TimelineAsset,
+    src: string,
+    matrix: RenderNode["matrix"],
+    opacity: number,
+    instance: TimelineFrame["instances"][number],
+  ): RenderNode {
+    return {
+      key,
+      order,
+      characterId: asset.id,
+      kind: asset.kind,
+      name: instance.name,
+      src,
+      origin: asset.origin,
+      matrix,
+      opacity,
+      colorTransform: instance.colorTransform,
+      clipDepth: instance.clipDepth,
       text: asset.kind === "text" ? this.resolveTextField(asset.id, asset) : undefined,
-      buttonOwnerPath: asset.kind === "button" ? ownerPath : undefined,
     };
   }
 

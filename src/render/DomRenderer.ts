@@ -45,7 +45,8 @@ export class DomRenderer {
     const live = new Set<string>();
 
     for (const node of renderNodes) {
-      if (!node.src && node.kind !== "text") continue;
+      // Buttons render as transparent hit areas (visual lives in the baked sprite).
+      if (!node.src && node.kind !== "text" && node.kind !== "button") continue;
       live.add(node.key);
 
       let rendered = this.nodes.get(node.key);
@@ -103,6 +104,12 @@ export class DomRenderer {
       text.className = "player-text";
       this.styleText(text, node);
       return text;
+    }
+    if (node.kind === "button") {
+      // Transparent hit area; the button's artwork is part of the baked sprite frame.
+      const hit = document.createElement("div");
+      hit.className = "player-hit";
+      return hit;
     }
     const image = document.createElement("img");
     image.decoding = "async";
