@@ -3,6 +3,7 @@ import { loadTimeline } from "../data/TimelineLoader";
 import { DomRenderer } from "../render/DomRenderer";
 import { FontRegistry } from "../render/TextRenderer";
 import { Player } from "../player/Player";
+import { VariableStore } from "../player/VariableStore";
 import { SoundController } from "../audio/SoundController";
 
 export type PlayerControllerOptions = {
@@ -10,6 +11,9 @@ export type PlayerControllerOptions = {
 };
 
 type Level = { player: Player; layer: HTMLElement; swf: string };
+
+/** The level a movie auto-loaded by the host timeline lands on (e.g. intro→4). */
+const PARSE_LEVEL = /^_level(\d+)/;
 
 /**
  * Drives the decompiled player and its Flash levels. The selected scene is
@@ -23,6 +27,12 @@ export class PlayerController {
   private readonly fonts = new FontRegistry();
   private readonly sound = new SoundController();
   private readonly levels = new Map<number, Level>();
+  /** Shared AVM1 variable scope (tour globals live on _level0, read cross-level). */
+  private readonly store = new VariableStore();
+  /** Levels already (re)loaded in the current sync burst — first load per level wins. */
+  private loadBurst = new Set<number>();
+  /** Cross-level function calls whose target level hasn't loaded yet. */
+  private pendingCalls: { level: number; name: string }[] = [];
   private mainSwf = "";
   private playing = false;
 
@@ -66,6 +76,9 @@ export class PlayerController {
       level.layer.remove();
     }
     this.levels.clear();
+    this.store.reset();
+    this.pendingCalls = [];
+    this.loadBurst.clear();
     this.sound.destroy();
     this.container.hidden = true;
     this.container.replaceChildren();
@@ -109,6 +122,11 @@ export class PlayerController {
       this.levels.delete(level);
     }
 
+    // Seed the shared variable scope from this timeline's own globalDefaults
+    // (e.g. _level0's bkgd.OSVersion). Existing values win so _level0 stays
+    // authoritative for tour globals other levels read.
+    this.store.seed((timeline.control as { globalDefaults?: Record<string, unknown> } | undefined)?.globalDefaults);
+
     this.fonts.register(timeline);
     const layer = document.createElement("div");
     layer.className = "player-level";
@@ -123,17 +141,59 @@ export class PlayerController {
       onFrame: level === 0 ? (frame, playing) => this.options.onFrame?.(frame, playing, this.main?.currentLabel() ?? "") : undefined,
       onSound: (action) => this.sound.handle(action),
       onNavigate: (action) => this.handleNavigate(action),
+      store: this.store,
+      onCallFunction: (target, name) => this.dispatchCall(target, name),
     });
     this.levels.set(level, { player, layer, swf });
     // Levels loaded after playback has started must catch up (e.g. the shell's
     // intro/_level4 loads async, after the main Play already fired).
     if (this.playing) player.play();
+    this.afterLevelLoaded(level);
+  }
+
+  /**
+   * Once the host (_level0) has auto-loaded the level its intro lives on, run the
+   * SWF's OWN intro→interactive transition through the engine (the function that
+   * loads a movie into that level). For the XP tour that's `LoadInitialInteractive`:
+   * it swaps the played-out intro for the category menu and calls
+   * `_level6.startNavEntrance`, which is OSVersion-gated so the nav goes to the
+   * Pro vs Personal toolbar from the SWF's own data. Nothing here is scene- or
+   * frame-specific — an unrelated SWF is driven entirely from its own functions.
+   */
+  private afterLevelLoaded(level: number) {
+    const host = this.main;
+    if (!host || level <= 0) return; // only react to companion levels of the host
+    // Flush any cross-level calls that were waiting on this level to exist.
+    const ready = this.pendingCalls.filter((c) => c.level === level);
+    if (ready.length) {
+      this.pendingCalls = this.pendingCalls.filter((c) => c.level !== level);
+      const player = this.levels.get(level)?.player;
+      for (const c of ready) player?.callFunction(c.name);
+    }
+    const entry = host.interactiveEntryFor(level);
+    if (entry) host.callFunction(entry);
+  }
+
+  /** Resolve an absolute `_levelN[.path]` function-call target to that level's Player. */
+  private dispatchCall(target: string, name: string) {
+    const match = PARSE_LEVEL.exec(target);
+    if (!match) return;
+    const level = Number(match[1]);
+    const player = this.levels.get(level)?.player;
+    if (player) player.callFunction(name);
+    else this.pendingCalls.push({ level, name }); // target level not loaded yet
   }
 
   private handleNavigate(action: ControlAction) {
-    if ((action.command === "loadMovieNum" || action.command === "loadMovie") && action.swf) {
-      void this.loadLevel(Number(action.level ?? 0), action.swf);
-    }
+    if ((action.command !== "loadMovieNum" && action.command !== "loadMovie") || !action.swf) return;
+    const level = Number(action.level ?? 0);
+    // First load per level within a synchronous burst wins (a transition that
+    // loads several movies into one level — segment4 then segment5 — should show
+    // the first; the rest are later, interaction-driven swaps).
+    if (this.loadBurst.has(level)) return;
+    if (this.loadBurst.size === 0) queueMicrotask(() => this.loadBurst.clear());
+    this.loadBurst.add(level);
+    void this.loadLevel(level, action.swf);
   }
 
   private async loadLevel(level: number, swf: string) {

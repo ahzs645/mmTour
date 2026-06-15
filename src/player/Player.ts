@@ -7,16 +7,28 @@ import type {
 } from "../data/timelineTypes";
 import type { DomRenderer } from "../render/DomRenderer";
 import { ClipInstance } from "./ClipInstance";
+import { evalCondition } from "./conditions";
 import { IDENTITY, multiplyMatrix } from "./matrix";
 import { Ticker } from "./Ticker";
 import { clamp, type RenderNode } from "./types";
+import type { VariableStore, VarValue } from "./VariableStore";
 
 export type ButtonEvent = "rollOver" | "rollOut" | "press" | "release";
+
+/** A user-defined AVM1 function: variable assignments + gated timeline actions. */
+type FunctionDef = {
+  assignments: { target: string; value: VarValue }[];
+  actions: ControlAction[];
+};
 
 export type PlayerOptions = {
   onFrame?: (rootFrame: number, playing: boolean) => void;
   onNavigate?: (action: ControlAction) => void;
   onSound?: (action: ControlAction) => void;
+  /** Shared tour variable store (seeded from control.globalDefaults). */
+  store?: VariableStore;
+  /** Dispatch a function call whose target is another level (`_levelN[.path].fn`). */
+  onCallFunction?: (target: string, name: string, args: string) => void;
 };
 
 const ROOT_ID = -1;
@@ -45,6 +57,8 @@ export class Player {
   private readonly rootActions = new Map<number, ControlAction[]>();
   private readonly spriteActions = new Map<string, ControlAction[]>();
   private readonly spriteStop = new Map<number, Set<number>>();
+  private readonly functions = new Map<string, FunctionDef>();
+  private readonly store?: VariableStore;
 
   private root: ClipInstance;
   private clipByPath = new Map<string, ClipInstance>();
@@ -72,6 +86,9 @@ export class Player {
       const key = `${record.spriteId}:${record.frame}`;
       this.spriteActions.set(key, [...(this.spriteActions.get(key) ?? []), ...actions]);
     }
+
+    this.store = options.store;
+    this.buildFunctionTable();
 
     this.ticker = new Ticker(timeline.fps || 20, () => this.onTick());
     this.root = this.buildRoot(this.startFrame);
@@ -147,6 +164,120 @@ export class Player {
         target.playing = action.command === "gotoAndPlay";
         this.enterFrame(target, frame, 0);
         this.render();
+      }
+    }
+  }
+
+  // --- AVM1 function dispatch -------------------------------------------
+  // The tour's inter-level orchestration (bring nav on stage, swap intro→menu,
+  // pick the OS edition) lives in named AVM1 functions gated by `OSVersion`.
+  // We reconstruct each function from the extracted data — its variable
+  // `assignments` (definedFunctions) plus its gated timeline `actions`
+  // (frameActions tagged with the same functionName) — and execute them against
+  // a shared VariableStore, so behaviour comes from the SWF's own data, not
+  // hard-coded scene logic.
+
+  private buildFunctionTable() {
+    const control = this.timeline.control as
+      | { definedFunctions?: Record<string, { functionName?: string; assignments?: { target?: string; value?: unknown }[] }>; frameActions?: { actions?: ControlAction[] }[] }
+      | undefined;
+    for (const def of Object.values(control?.definedFunctions ?? {})) {
+      const name = def?.functionName;
+      if (!name) continue;
+      const entry = this.functions.get(name) ?? { assignments: [], actions: [] };
+      for (const a of def.assignments ?? []) {
+        if (typeof a?.target === "string" && (typeof a.value === "string" || typeof a.value === "number" || typeof a.value === "boolean")) {
+          entry.assignments.push({ target: a.target, value: a.value });
+        }
+      }
+      this.functions.set(name, entry);
+    }
+    for (const record of control?.frameActions ?? []) {
+      for (const action of record.actions ?? []) {
+        if (!action.functionName) continue;
+        const entry = this.functions.get(action.functionName) ?? { assignments: [], actions: [] };
+        entry.actions.push(action);
+        this.functions.set(action.functionName, entry);
+      }
+    }
+  }
+
+  hasFunction(name: string): boolean {
+    return this.functions.has(name);
+  }
+
+  /**
+   * Invoke a named AVM1 function: run its gated actions, then apply its variable
+   * assignments. (Order matters — AVM1 guards like `if (blnDisableSkip) return`
+   * read the variable BEFORE the body sets it, so gates evaluate against the
+   * pre-call store and assignments land after.)
+   */
+  callFunction(name: string): boolean {
+    const def = this.functions.get(name);
+    if (!def) return false;
+    for (const action of def.actions) {
+      if (this.store && !evalCondition(action.functionBranchCondition, this.store)) continue;
+      this.runFunctionAction(action);
+    }
+    if (this.store) for (const a of def.assignments) this.store.set(a.target, a.value);
+    this.render();
+    return true;
+  }
+
+  /**
+   * The function (if any) that performs this SWF's intro→interactive hand-off:
+   * one that loads a movie into `level` (the level currently holding the played-
+   * out intro). Discovered from data, so it isn't tied to a specific function
+   * name or scene.
+   */
+  interactiveEntryFor(level: number): string | undefined {
+    for (const [name, def] of this.functions) {
+      if (def.actions.some((a) => (a.command === "loadMovieNum" || a.command === "loadMovie") && Number(a.level) === level)) {
+        return name;
+      }
+    }
+    return undefined;
+  }
+
+  private runFunctionAction(action: ControlAction) {
+    switch (action.command) {
+      case "stop":
+        this.root.playing = false;
+        break;
+      case "play":
+        this.root.playing = true;
+        break;
+      case "gotoAndPlay":
+      case "gotoAndStop": {
+        const target = this.resolveTarget(this.root, action.target);
+        const frame = this.resolveFrame(action, target);
+        if (target && frame >= 0) {
+          target.playing = action.command === "gotoAndPlay";
+          this.enterFrame(target, frame, 0);
+        }
+        break;
+      }
+      case "loadMovieNum":
+      case "loadMovie":
+        this.options.onNavigate?.(action);
+        break;
+      case "callFunctions":
+        this.runCallFunctions(action);
+        break;
+      default:
+        break;
+    }
+  }
+
+  private runCallFunctions(action: ControlAction) {
+    for (const call of action.functionCalls ?? []) {
+      const target = call.target ?? "self";
+      if (target === "self" || target === "this" || target === "_root") {
+        this.callFunction(call.functionName);
+      } else {
+        // Absolute level targets (`_level6`, `_level0.x`) are routed to the
+        // controller, which maps the level back to its Player.
+        this.options.onCallFunction?.(target, call.functionName, call.arguments ?? "");
       }
     }
   }
@@ -242,6 +373,9 @@ export class Player {
         case "loadMovieNum":
         case "loadMovie":
           this.options.onNavigate?.(action);
+          break;
+        case "callFunctions":
+          this.runCallFunctions(action);
           break;
         default:
           break;

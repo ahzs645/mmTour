@@ -102,6 +102,8 @@ export type ControlAction = {
   swf?: string;
   level?: number;
   functionCalls?: FunctionCall[];
+  /** Name of the AVM1 function this action belongs to (when context is "function"). */
+  functionName?: string;
   /** "timeline" actions run on frame entry; "function"/"branch" are conditional. */
   executionContext?: "timeline" | "function" | "branch" | string;
   supported?: boolean;
