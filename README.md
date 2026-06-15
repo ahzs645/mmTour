@@ -124,6 +124,43 @@ OpenFL SWF is used as an architecture reference for MovieClip/SimpleButton/displ
 docs/openfl-swf-reference.md
 ```
 
+## GSAP scene converter and player
+
+The newest path converts each SWF into a self-contained, web-native scene
+format and runs it with a real GSAP timeline, with no SWF and no Ruffle at
+runtime.
+
+```text
+timeline.json (per-frame symbol snapshots)
+  -> scripts/build-gsap-scene.mjs
+  -> gsap-scene.json (one tween track per symbol instance)
+  -> src/gsap-scene-player.ts builds a gsap.timeline() of real gsap.to() tweens
+```
+
+The converter splits the timeline into per-instance tracks (one per
+depth/character span), then compresses constant-velocity runs into keyframes so
+linear interpolation between them reproduces the original Flash frame data
+exactly at every integer frame. Sprite cell changes are emitted as discrete
+source swaps; symbol motion (matrix and opacity) becomes component-wise GSAP
+tweens that scrub and play smoothly.
+
+Build the scene files (also part of `npm run convert`):
+
+```sh
+npm run build:gsap-scenes
+```
+
+Run the standalone player at:
+
+```text
+http://127.0.0.1:5173/scene-player.html
+```
+
+This is the GSAP-native replacement for static `Frame SVG` playback. Remaining
+work is color-transform fidelity, masks/clip depth, nested sprite timelines, and
+wiring ActionScript control flow (stops are honored today; gotos and button
+interactions are not yet driven by the player).
+
 ## Flash to GSAP mapping
 
 The conversion target should normalize SWF concepts into web concepts like this:
