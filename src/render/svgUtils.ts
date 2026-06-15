@@ -36,6 +36,28 @@ export function matrixToSvg(matrix: DOMMatrix): string {
   return `matrix(${matrix.a}, ${matrix.b}, ${matrix.c}, ${matrix.d}, ${matrix.e}, ${matrix.f})`;
 }
 
+/**
+ * Prefix every internal id (and its #ref / url(#ref) uses) in an SVG string so
+ * that multiple inline SVGs on the same page can't collide. FFDec reuses ids
+ * like "shape1" across symbols, so without this `<use href="#id">` resolves
+ * document-wide to the wrong element and nested art renders incompletely.
+ */
+export function namespaceSvgIds(svgText: string, prefix: string): string {
+  const ids = new Set<string>();
+  for (const match of svgText.matchAll(/\sid="([^"]+)"/g)) ids.add(match[1]);
+  if (!ids.size) return svgText;
+
+  let out = svgText;
+  for (const id of ids) {
+    const safe = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    out = out
+      .replace(new RegExp(`\\sid="${safe}"`, "g"), ` id="${prefix}${id}"`)
+      .replace(new RegExp(`href="#${safe}"`, "g"), `href="#${prefix}${id}"`)
+      .replace(new RegExp(`url\\(#${safe}\\)`, "g"), `url(#${prefix}${id})`);
+  }
+  return out;
+}
+
 export function walkVisibleSvgTree(
   element: Element,
   matrix: DOMMatrix,

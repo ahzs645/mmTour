@@ -4,6 +4,7 @@ import type { AssetTimeline, ControlAction } from "../data/timelineTypes";
 import type { RenderNode } from "../player/types";
 import { applyColorTransform } from "./colorTransform";
 import { installButtonOverlays } from "./ButtonOverlay";
+import { namespaceSvgIds } from "./svgUtils";
 
 type RenderedNode = {
   element: HTMLDivElement;
@@ -165,7 +166,8 @@ export class DomRenderer {
     void fetchSvgText(src).then((svgText) => {
       // A newer frame may have superseded this injection.
       if (container.dataset.pendingSrc !== src || !svgText) return;
-      container.innerHTML = svgText;
+      // Namespace ids per depth so the 3 inline icon SVGs don't collide.
+      container.innerHTML = namespaceSvgIds(svgText, `d${depth}_`);
       const svg = container.querySelector("svg");
       if (!svg) return;
       // Native px sizing (FFDec sprite SVGs have no viewBox); just stop overlays

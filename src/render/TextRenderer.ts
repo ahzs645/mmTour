@@ -18,7 +18,9 @@ export class FontRegistry {
       this.families.set(asset.id, family);
       if (this.registered.has(asset.id)) continue;
       this.registered.add(asset.id);
-      const face = new FontFace(family, `url(${assetUrl(asset.src)})`);
+      // Font filenames often contain spaces (e.g. "47_Franklin Gothic.ttf");
+      // encode the URL so the FontFace fetch doesn't silently fail.
+      const face = new FontFace(family, `url("${encodeURI(assetUrl(asset.src))}")`);
       face
         .load()
         .then((loaded) => document.fonts.add(loaded))

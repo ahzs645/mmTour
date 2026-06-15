@@ -413,9 +413,12 @@ function activatePlayerMode() {
   gsapDisplayLayer.hidden = true;
   awaitingLoopLayer.replaceChildren();
   emptyMessage.hidden = true;
-  playerController.activate(activeAssetTimeline as unknown as DecompiledTimeline, 0);
+  playerController.activate(activeAssetTimeline as unknown as DecompiledTimeline);
   frameScrubber.max = String(playerController.frameCount - 1);
-  frameScrubber.value = "0";
+  frameScrubber.value = String(playerController.currentFrame);
+  // Autoplay like Ruffle: the root holds on its menu stop() while nested clips
+  // (icon attract animations) play and loop on their own playheads.
+  playerController.play();
   updatePlayButton();
 }
 const externalLevels = new Map<number, {

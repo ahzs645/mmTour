@@ -38,6 +38,7 @@ export class Player {
   private rootPlaying = true;
   private clips = new Map<number, ClipEntry>();
   private lastNodes: RenderNode[] = [];
+  private readonly startFrame: number;
 
   constructor(timeline: AssetTimeline, renderer: DomRenderer, options: PlayerOptions = {}) {
     this.timeline = timeline;
@@ -62,9 +63,12 @@ export class Player {
 
     this.ticker = new Ticker(timeline.fps || 20, () => this.onTick());
 
-    // Start at the very beginning so intro animation, music and voiceover play
-    // through to the scene's own stop() — entryFrame is a legacy nav resume point.
-    this.enterRootFrame(0);
+    // Segments are designed to be entered at their menu (entryFrame); frames
+    // before it are an attract loop the shell normally fills, so starting there
+    // matches what Ruffle shows.
+    this.startFrame = clamp(timeline.entryFrame ?? 0, 0, this.frameCountValue - 1);
+    this.enterRootFrame(this.startFrame);
+    this.primeAmbientSound();
     this.render();
   }
 
@@ -92,10 +96,10 @@ export class Player {
   }
 
   play() {
-    // If the root was pinned on a stop() frame, nudge it forward so Play resumes.
-    if (!this.rootPlaying && this.stopFrames.has(this.rootFrame)) {
-      this.rootPlaying = true;
-    }
+    // Start the clock. The root only advances if it isn't pinned by a stop();
+    // a menu stop holds the root while nested clips keep animating — exactly
+    // how Flash/Ruffle behave. Navigation happens via button actions, not by
+    // forcing the root past its stop.
     this.ticker.play();
   }
 
@@ -119,7 +123,23 @@ export class Player {
   }
 
   restart() {
-    this.seekRootFrame(0);
+    this.seekRootFrame(this.startFrame);
+    this.primeAmbientSound();
+  }
+
+  /**
+   * Start the looping shell music even when entering at a menu frame past its
+   * attachSound. One-shot voiceovers (intro narration) are intentionally skipped.
+   */
+  private primeAmbientSound() {
+    if (!this.options.onSound) return;
+    let music: ControlAction | undefined;
+    for (let frame = 0; frame <= this.rootFrame; frame += 1) {
+      for (const action of this.rootActionsAt(frame)) {
+        if (action.command === "attachSound" && action.soundRole === "music") music = action;
+      }
+    }
+    if (music) this.options.onSound(music);
   }
 
   /**
