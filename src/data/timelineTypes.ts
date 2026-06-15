@@ -79,6 +79,7 @@ export type ActionCommand =
   | "gotoAndStop"
   | "doRelease"
   | "loadMovieNum"
+  | "loadMovie"
   | "loadVariables"
   | "playVO"
   | "markSndSegment"

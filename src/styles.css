@@ -264,6 +264,14 @@ h2 {
   display: none;
 }
 
+.player-level {
+  position: absolute;
+  inset: 0;
+  width: 640px;
+  height: 480px;
+  pointer-events: none;
+}
+
 .player-instance {
   position: absolute;
   left: 0;

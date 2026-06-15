@@ -238,6 +238,10 @@ export class Player {
         case "stopSound":
           this.options.onSound?.(action);
           break;
+        case "loadMovieNum":
+        case "loadMovie":
+          this.options.onNavigate?.(action);
+          break;
         default:
           break;
       }

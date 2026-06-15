@@ -413,7 +413,7 @@ function activatePlayerMode() {
   gsapDisplayLayer.hidden = true;
   awaitingLoopLayer.replaceChildren();
   emptyMessage.hidden = true;
-  playerController.activate(activeAssetTimeline as unknown as DecompiledTimeline);
+  playerController.activate(activeAssetTimeline as unknown as DecompiledTimeline, activeScene.swf);
   frameScrubber.max = String(playerController.frameCount - 1);
   frameScrubber.value = String(playerController.currentFrame);
   // Autoplay like Ruffle: the root holds on its menu stop() while nested clips
