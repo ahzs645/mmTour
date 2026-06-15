@@ -5,26 +5,49 @@ import { applyColorTransform } from "./colorTransform";
 
 // Mask shapes are inlined into the <mask> (Chrome won't rasterize an <image>-
 // referenced SVG inside a mask). Their fills are forced white → a robust
-// luminance mask. Cached by src; fetched once.
-const maskShapeCache = new Map<string, string>();
+// Mask shapes are inlined into the <clipPath>. CRITICAL: Chrome ignores nested
+// <g transform> inside a clipPath, so we strip the FFDec shape's root <g matrix>,
+// capture that matrix, and bake every transform into a SINGLE matrix on the path.
+type ParsedShape = { gMatrix: Matrix; body: string };
+const maskShapeCache = new Map<string, ParsedShape | null>();
 const maskShapeLoading = new Set<string>();
 
-function loadMaskShape(src: string): string | undefined {
+type Matrix = { a: number; b: number; c: number; d: number; tx: number; ty: number };
+const IDENTITY: Matrix = { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 };
+
+function matMul(p: Matrix, c: Matrix): Matrix {
+  return {
+    a: p.a * c.a + p.c * c.b,
+    b: p.b * c.a + p.d * c.b,
+    c: p.a * c.c + p.c * c.d,
+    d: p.b * c.c + p.d * c.d,
+    tx: p.a * c.tx + p.c * c.ty + p.tx,
+    ty: p.b * c.tx + p.d * c.ty + p.ty,
+  };
+}
+
+function loadMaskShape(src: string): ParsedShape | null | undefined {
   if (maskShapeCache.has(src)) return maskShapeCache.get(src);
   if (!maskShapeLoading.has(src)) {
     maskShapeLoading.add(src);
     void fetch(assetUrl(src))
       .then((response) => (response.ok ? response.text() : ""))
       .then((text) => {
-        const inner = text
-          .replace(/<\?xml[^>]*\?>/i, "")
-          .replace(/<svg[^>]*>/i, "")
-          .replace(/<\/svg>/i, "")
-          .replace(/fill="[^"]*"/g, 'fill="#ffffff"')
-          .replace(/stroke="[^"]*"/g, 'stroke="#ffffff"');
-        maskShapeCache.set(src, inner);
+        const inner = text.replace(/<\?xml[^>]*\?>/i, "").replace(/<svg[^>]*>/i, "").replace(/<\/svg>\s*$/i, "");
+        // Pull off the shape's root <g transform="matrix(...)"> wrapper.
+        const g = inner.match(/<g\s+transform="matrix\(([^)]+)\)"\s*>([\s\S]*)<\/g>\s*$/i);
+        let gMatrix = IDENTITY;
+        let body = inner;
+        if (g) {
+          const n = g[1].split(/[\s,]+/).map(Number);
+          if (n.length === 6 && n.every(Number.isFinite)) gMatrix = { a: n[0], b: n[1], c: n[2], d: n[3], tx: n[4], ty: n[5] };
+          body = g[2];
+        }
+        // Force fills so the path defines a clip region (color is irrelevant for clipPath).
+        body = body.replace(/fill="[^"]*"/g, 'fill="#ffffff"').replace(/stroke="[^"]*"/g, 'stroke="none"');
+        maskShapeCache.set(src, { gMatrix, body });
       })
-      .catch(() => maskShapeCache.set(src, ""));
+      .catch(() => maskShapeCache.set(src, null));
   }
   return undefined;
 }
@@ -39,22 +62,27 @@ function svgImage(v: MaskVisual, extra = ""): string {
   );
 }
 
-/** Build an inline SVG string that masks `items` to the `mask` shape. */
+/** Build an inline SVG string that clips `items` to the `mask` shape's geometry. */
 function maskGroupSvg(group: { mask: MaskVisual; items: MaskVisual[] }, key: string): string {
   const open = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="640" height="480" style="position:absolute;left:0;top:0;overflow:visible">`;
-  const maskContent = loadMaskShape(group.mask.src);
-  // Until the mask shape loads, show the items unmasked (a brief frame at most).
-  if (maskContent === undefined || maskContent === "") {
+  const shape = loadMaskShape(group.mask.src);
+  // Until the mask shape loads (or if it failed), show the items unclipped.
+  if (!shape) {
     return `${open}${group.items.map((it) => svgImage(it)).join("")}</svg>`;
   }
 
-  const maskId = `m${key.replace(/\W/g, "_")}`;
+  // Bake mask-matrix ∘ origin-shift ∘ shape-g into ONE matrix on a single <g>, so the
+  // clipPath has no nested <g transform> (which Chrome silently ignores).
   const m = group.mask.matrix;
-  const maskBody = `<g transform="matrix(${m.a},${m.b},${m.c},${m.d},${m.tx},${m.ty}) translate(${-group.mask.origin.x},${-group.mask.origin.y})">${maskContent}</g>`;
-  const items = group.items
-    .map((it) => svgImage(it, ` mask="url(#${maskId})"${it.opacity !== 1 ? ` opacity="${it.opacity}"` : ""}`))
-    .join("");
-  return `${open}<defs><mask id="${maskId}" maskUnits="userSpaceOnUse">${maskBody}</mask></defs>${items}</svg>`;
+  const o = group.mask.origin;
+  const combined = matMul(matMul(m, { a: 1, b: 0, c: 0, d: 1, tx: -o.x, ty: -o.y }), shape.gMatrix);
+  const clipId = `c${key.replace(/\W/g, "_")}`;
+  // Chrome ignores transforms on a <g> inside a clipPath, so bake the matrix onto each
+  // <path>/<polygon> directly (the only reliable form).
+  const tf = `matrix(${combined.a},${combined.b},${combined.c},${combined.d},${combined.tx},${combined.ty})`;
+  const clipBody = shape.body.replace(/<(path|polygon|rect|ellipse|circle)\b/g, `<$1 transform="${tf}"`);
+  const items = group.items.map((it) => svgImage(it, it.opacity !== 1 ? ` opacity="${it.opacity}"` : "")).join("");
+  return `${open}<defs><clipPath id="${clipId}" clipPathUnits="userSpaceOnUse">${clipBody}</clipPath></defs><g clip-path="url(#${clipId})">${items}</g></svg>`;
 }
 
 type RenderedNode = {

@@ -1570,10 +1570,13 @@ function actionBytesStartWith(actionBytes, opcodeHex) {
 function matrixFromTag(matrix) {
   const hasScale = matrix.hasScale === "true";
   const hasRotate = matrix.hasRotate === "true";
+  // SWF MATRIX → SVG/CSS matrix(a,b,c,d,e,f):
+  //   x' = ScaleX*x + RotateSkew1*y + tx   → a=ScaleX, c=RotateSkew1
+  //   y' = RotateSkew0*x + ScaleY*y  + ty   → b=RotateSkew0, d=ScaleY
   return {
     a: hasScale ? number(matrix.scaleX, 1) : 1,
-    b: hasRotate ? number(matrix.rotateSkew1, 0) : 0,
-    c: hasRotate ? number(matrix.rotateSkew0, 0) : 0,
+    b: hasRotate ? number(matrix.rotateSkew0, 0) : 0,
+    c: hasRotate ? number(matrix.rotateSkew1, 0) : 0,
     d: hasScale ? number(matrix.scaleY, 1) : 1,
     tx: number(matrix.translateX, 0) / 20,
     ty: number(matrix.translateY, 0) / 20,
