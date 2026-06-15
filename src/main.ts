@@ -2,7 +2,7 @@ import { gsap } from "gsap";
 import { GsapDisplayListRenderer, type GsapDisplayDebugEntry } from "./gsap-display-list-renderer";
 import { GsapSwfRenderer } from "./engine/GsapSwfRenderer";
 import { parseSwfFile } from "./engine/SwfParser";
-import { scenes, type TourScene } from "./data";
+import { scenes, type TourScene } from "./data/scenes";
 import { PlayerController } from "./app/PlayerController";
 import type { AssetTimeline as DecompiledTimeline } from "./data/timelineTypes";
 import "./styles.css";
@@ -249,10 +249,8 @@ app.innerHTML = `
       <label>
         Render mode
         <select id="renderMode">
-          <option value="frame" selected>Frame SVG</option>
-          <option value="asset">Asset Timeline</option>
-          <option value="gsap">GSAP Display List</option>
-          <option value="player">Decompiled Player (beta)</option>
+          <option value="player" selected>Decompiled Player</option>
+          <option value="frame">Frame SVG (reference)</option>
           <option value="direct">Direct SWF Renderer</option>
         </select>
       </label>
@@ -272,7 +270,7 @@ app.innerHTML = `
 
       <article class="panel">
         <div class="panel-title">
-          <h2>GSAP Asset Timeline</h2>
+          <h2>Decompiled Player</h2>
           <span id="assetName"></span>
         </div>
         <div class="stage-wrap">
@@ -315,7 +313,7 @@ app.innerHTML = `
       </article>
       <article class="notes">
         <h2>Asset Pipeline</h2>
-        <p>Frame SVG mode uses FFDec-exported root SVG frames from the original SWF vectors, bitmaps, and text. Asset Timeline mode exposes placed symbols for inspection. GSAP Display List mode keeps those symbols as live DOM nodes and updates them through GSAP.</p>
+        <p>Decompiled Player (default) drives the extracted symbols like Flash: a root playhead plus an independent playhead per sprite, embedded-font text, button hover/click, and sound — played entirely from the decompiled assets, no SWF at runtime. Frame SVG (reference) renders FFDec full-frame SVGs for fidelity comparison; Direct SWF Renderer parses the raw SWF in-browser.</p>
       </article>
       <article class="notes">
         <h2>Current Scope</h2>
@@ -350,7 +348,7 @@ const debugSummary = must<HTMLSpanElement>("#debugSummary");
 const debugList = must<HTMLDivElement>("#debugList");
 
 renderModeSelect.selectedIndex = 0;
-renderModeSelect.value = "frame";
+renderModeSelect.value = "player";
 
 let activeScene = scenes.find((scene) => scene.swf === "segment4.swf") ?? scenes[0];
 let rufflePlayer: RuffleElement | null = null;
@@ -415,8 +413,9 @@ function activatePlayerMode() {
   gsapDisplayLayer.hidden = true;
   awaitingLoopLayer.replaceChildren();
   emptyMessage.hidden = true;
-  playerController.activate(activeAssetTimeline as unknown as DecompiledTimeline, Number(frameScrubber.value));
+  playerController.activate(activeAssetTimeline as unknown as DecompiledTimeline, 0);
   frameScrubber.max = String(playerController.frameCount - 1);
+  frameScrubber.value = "0";
   updatePlayButton();
 }
 const externalLevels = new Map<number, {
@@ -768,16 +767,22 @@ async function loadAssetTimeline(scene: TourScene, entryTarget?: SceneEntryTarge
     );
   }
   assetTimelineVersion += 1;
-  renderModeSelect.selectedIndex = 0;
-  renderModeSelect.value = "frame";
+  // The decompiled player is the primary experience; other modes remain for
+  // comparison via the dropdown.
+  renderModeSelect.value = "player";
   assetStage.style.background = activeAssetTimeline.backgroundColor ?? "#ffffff";
   frameScrubber.max = String(activeAssetTimeline.frameCount - 1);
   const entryFrame = resolveSceneEntryFrame(activeAssetTimeline, entryTarget);
-  frameScrubber.value = String(entryFrame);
   emptyMessage.hidden = true;
   assetName.textContent = `${activeAssetTimeline.frameCount} frames @ ${activeAssetTimeline.fps} fps`;
+  // Build the flat GSAP timeline that the legacy comparison modes depend on.
   buildGsapAssetPlayer(activeAssetTimeline);
-  goToFrame(entryFrame, false);
+  frameScrubber.value = String(entryFrame);
+  if (isPlayerMode()) {
+    activatePlayerMode();
+  } else {
+    goToFrame(entryFrame, false);
+  }
 }
 
 async function fetchAssetTimeline(swf: string) {
@@ -872,6 +877,9 @@ function buildGsapAssetPlayer(assetTimeline: AssetTimeline) {
 }
 
 function renderFrame(assetTimeline: AssetTimeline, index: number) {
+  // The decompiled player owns its own layer and render loop.
+  if (renderModeSelect.value === "player") return;
+
   const frame = assetTimeline.frames[Math.max(0, Math.min(assetTimeline.frames.length - 1, index))];
   const mode = renderModeSelect.value;
   updateStaticReference(assetTimeline, frame.index);

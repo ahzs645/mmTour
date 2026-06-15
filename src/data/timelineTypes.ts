@@ -100,6 +100,10 @@ export type ControlAction = {
   supported?: boolean;
   source?: string;
   functionBranchCondition?: string;
+  /** Sound action fields (attachSound/playVO/stopSound). */
+  sound?: string;
+  soundSrc?: string;
+  soundRole?: "music" | "vo" | string;
 };
 
 /** One frame's extracted actions. `frame` is a 0-based root frame index. */

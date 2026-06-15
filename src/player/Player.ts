@@ -9,7 +9,11 @@ export type PlayerOptions = {
   onFrame?: (rootFrame: number, playing: boolean) => void;
   /** Called when the root timeline requests loading another SWF/level (deferred handling). */
   onNavigate?: (action: ControlAction) => void;
+  /** Called for sound frame actions as a frame is entered during playback. */
+  onSound?: (action: ControlAction) => void;
 };
+
+const SOUND_COMMANDS = new Set(["attachSound", "playVO", "stopSound"]);
 
 type ClipEntry = { clip: MovieClip };
 
@@ -58,7 +62,9 @@ export class Player {
 
     this.ticker = new Ticker(timeline.fps || 20, () => this.onTick());
 
-    this.enterRootFrame(timeline.entryFrame ?? 0);
+    // Start at the very beginning so intro animation, music and voiceover play
+    // through to the scene's own stop() — entryFrame is a legacy nav resume point.
+    this.enterRootFrame(0);
     this.render();
   }
 
@@ -113,7 +119,7 @@ export class Player {
   }
 
   restart() {
-    this.seekRootFrame(this.timeline.entryFrame ?? 0);
+    this.seekRootFrame(0);
   }
 
   /**
@@ -164,8 +170,12 @@ export class Player {
 
     // 2. The root playhead only advances when it isn't pinned by a stop().
     if (this.rootPlaying) {
+      const previous = this.rootFrame;
       const next = this.rootFrame + 1 >= this.frameCountValue ? 0 : this.rootFrame + 1;
       this.enterRootFrame(next);
+      // Fire sound effects only for frames genuinely entered during playback,
+      // not on scrub/seek — so dragging the scrubber stays silent.
+      if (this.rootFrame !== previous) this.fireFrameSounds(this.rootFrame);
     }
 
     this.render();
@@ -220,6 +230,13 @@ export class Player {
 
   private rootActionsAt(frame: number): ControlAction[] {
     return this.rootActions.get(frame) ?? [];
+  }
+
+  private fireFrameSounds(frame: number) {
+    if (!this.options.onSound) return;
+    for (const action of this.rootActionsAt(frame)) {
+      if (action.command && SOUND_COMMANDS.has(action.command)) this.options.onSound(action);
+    }
   }
 
   private resolveFrame(action: ControlAction): number {

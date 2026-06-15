@@ -2,6 +2,7 @@ import type { AssetTimeline } from "../data/timelineTypes";
 import { DomRenderer } from "../render/DomRenderer";
 import { FontRegistry } from "../render/TextRenderer";
 import { Player } from "../player/Player";
+import { SoundController } from "../audio/SoundController";
 
 /** Sprites that own a button must render inline so hit areas can overlay them. */
 function collectInteractiveSpriteIds(timeline: AssetTimeline): Set<number> {
@@ -25,6 +26,7 @@ export class PlayerController {
   private readonly layer: HTMLElement;
   private readonly options: PlayerControllerOptions;
   private readonly fonts = new FontRegistry();
+  private readonly sound = new SoundController();
   private player: Player | null = null;
   private timeline: AssetTimeline | null = null;
 
@@ -62,6 +64,7 @@ export class PlayerController {
     });
     this.player = new Player(timeline, renderer, {
       onFrame: (frame, playing) => this.options.onFrame?.(frame, playing, this.player?.currentLabel() ?? ""),
+      onSound: (action) => this.sound.handle(action),
     });
     if (typeof entryFrame === "number") this.player.seekRootFrame(entryFrame);
     this.emitFrame();
@@ -70,21 +73,26 @@ export class PlayerController {
   deactivate() {
     this.player?.destroy();
     this.player = null;
+    this.sound.destroy();
     this.layer.hidden = true;
     this.layer.replaceChildren();
   }
 
   play() {
     this.player?.play();
+    this.sound.resume();
   }
 
   pause() {
     this.player?.pause();
+    this.sound.suspend();
     this.emitFrame();
   }
 
   toggle() {
     this.player?.toggle();
+    if (this.player?.isPlaying) this.sound.resume();
+    else this.sound.suspend();
   }
 
   seekRootFrame(frame: number) {
