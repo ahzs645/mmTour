@@ -124,6 +124,67 @@ OpenFL SWF is used as an architecture reference for MovieClip/SimpleButton/displ
 docs/openfl-swf-reference.md
 ```
 
+## GSAP scene converter and player
+
+The newest path converts each SWF into a self-contained, web-native scene
+format and runs it with a real GSAP timeline, with no SWF and no Ruffle at
+runtime.
+
+```text
+timeline.json (per-frame symbol snapshots)
+  -> scripts/build-gsap-scene.mjs
+  -> gsap-scene.json (one tween track per symbol instance)
+  -> src/gsap-scene-player.ts builds a gsap.timeline() of real gsap.to() tweens
+```
+
+The converter splits the timeline into per-instance tracks (one per
+depth/character span), then compresses constant-velocity runs into keyframes so
+linear interpolation between them reproduces the original Flash frame data
+exactly at every integer frame. Sprite cell changes are emitted as discrete
+source swaps; symbol motion (matrix and opacity) becomes component-wise GSAP
+tweens that scrub and play smoothly.
+
+Build the scene files (also part of `npm run convert`):
+
+```sh
+npm run build:gsap-scenes
+```
+
+Run the standalone player at:
+
+```text
+http://127.0.0.1:5173/scene-player.html
+```
+
+The player is modular under `src/gsap-scene/`:
+
+```text
+types.ts          shared scene/track/runtime types
+media.ts          DOM element + media creation (shape/image/sprite/text/button)
+tweens.ts         real gsap.to() segments driving matrix + opacity
+color-transform.ts exact feColorMatrix filters (multiply + add)
+masking.ts        clipDepth masking via affine-mapped clip-path polygons
+control-flow.ts   stop frames, label resolution, goto navigation
+player.ts         orchestrator composing the modules
+```
+
+It now drives the timeline like Flash: stop frames pause playback, timeline
+gotos retime the timeline, and button releases navigate (gotoAndPlay parks on a
+destination stop). Color transforms (full CXFORMWITHALPHA multiply + add) and
+clip-depth masks are extracted by `build-asset-timeline` and applied by the
+player. It is available both on the standalone page and as the **GSAP Scene
+(tweens)** render mode in the main comparison app beside Ruffle.
+
+Smoke-check the player against every converted scene (screenshots + metrics):
+
+```sh
+npm run verify:gsap-scene
+```
+
+Remaining work is nested sprite timelines (sprite cells are frame-stepped, deep
+nested clips are not yet tweened), non-rectangular mask shapes (approximated by
+their bounding box today), and cross-SWF level navigation.
+
 ## Flash to GSAP mapping
 
 The conversion target should normalize SWF concepts into web concepts like this:

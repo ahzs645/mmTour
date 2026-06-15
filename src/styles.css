@@ -251,6 +251,19 @@ h2 {
   display: none;
 }
 
+.gsap-scene-layer {
+  position: absolute;
+  inset: 0;
+  width: 640px;
+  height: 480px;
+  z-index: 1;
+  overflow: hidden;
+}
+
+.gsap-scene-layer[hidden] {
+  display: none;
+}
+
 .direct-swf-layer {
   position: absolute;
   inset: 0;
