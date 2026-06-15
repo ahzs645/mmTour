@@ -46,6 +46,7 @@ function buildGsapScene(timeline) {
   const frames = [...timeline.frames].sort((a, b) => a.index - b.index);
   const assets = timeline.assets || {};
   const spriteStopFrames = timeline.control?.spriteStopFrames || {};
+  const buttonByPlacedChar = buildButtonMap(timeline.control?.buttonActions || {});
 
   // Index every frame's depth -> instance for sequential walking.
   const frameByIndex = new Map(frames.map((frame) => [frame.index, frame]));
@@ -61,7 +62,7 @@ function buildGsapScene(timeline) {
     if (!track) return;
     open.delete(depth);
     track.deathFrame = deathFrame;
-    tracks.push(finalizeTrack(track, fps));
+    tracks.push(finalizeTrack(track, fps, buttonByPlacedChar));
   };
 
   for (let f = 0; f <= maxFrame; f += 1) {
@@ -142,10 +143,44 @@ function buildGsapScene(timeline) {
     labels: timeline.labels ?? {},
     control: {
       stopFrames: timeline.control?.stopFrames ?? [],
+      nav: buildNav(timeline.control?.frameActions ?? []),
     },
     tracks,
   };
 }
+
+/** Map every placed character (owner sprites + the button id) to its release. */
+function buildButtonMap(buttonActions) {
+  const map = new Map();
+  for (const [buttonId, info] of Object.entries(buttonActions)) {
+    const release = info.release;
+    if (!release || typeof release.frame !== "number") continue;
+    const command = release.command === "gotoAndStop" ? "gotoAndStop" : "gotoAndPlay";
+    const entry = { command, target: release.frame, label: release.label };
+    const owners = [...(info.ownerSpriteIds ?? []), Number(buttonId)];
+    for (const owner of owners) {
+      if (!map.has(owner)) map.set(owner, entry);
+    }
+  }
+  return map;
+}
+
+/** Timeline-scoped goto actions with a resolved destination frame. */
+function buildNav(frameActions) {
+  const nav = [];
+  for (const frameAction of frameActions) {
+    for (const action of frameAction.actions ?? []) {
+      const context = action.executionContext;
+      if (context && context !== "timeline") continue;
+      if (action.supported === false) continue;
+      if ((action.command === "gotoAndPlay" || action.command === "gotoAndStop") && typeof action.frame === "number") {
+        nav.push({ frame: frameAction.frame, command: action.command, target: action.frame });
+      }
+    }
+  }
+  return nav;
+}
+
 
 function resolveMediaSrc(asset, frameIndex, placedFrame, spriteStopFrames) {
   if (asset.kind === "sprite" && asset.frames?.length) {
@@ -167,7 +202,7 @@ function resolveSpriteFrame(asset, relativeFrame, spriteStopFrames) {
   return relativeFrame % frameCount;
 }
 
-function finalizeTrack(track, fps) {
+function finalizeTrack(track, fps, buttonByPlacedChar) {
   const samples = track.samples;
   const keys = compressKeyframes(samples);
 
@@ -183,6 +218,7 @@ function finalizeTrack(track, fps) {
 
   const isText = track.kind === "text";
   const primarySrc = cells[0]?.src ?? "";
+  const release = buttonByPlacedChar.get(track.characterId);
 
   return {
     id: track.id,
@@ -199,6 +235,7 @@ function finalizeTrack(track, fps) {
     // Static media keep one src; sprites carry per-frame cells.
     src: track.kind === "sprite" ? undefined : primarySrc,
     cells: track.kind === "sprite" && cells.length > 1 ? cells : undefined,
+    release: release ? { command: release.command, target: release.target, label: release.label } : undefined,
     keys,
   };
 }

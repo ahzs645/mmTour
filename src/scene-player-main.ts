@@ -1,4 +1,4 @@
-import { GsapScenePlayer } from "./gsap-scene-player";
+import { GsapScenePlayer } from "./gsap-scene";
 import { scenes } from "./data";
 import "./styles.css";
 

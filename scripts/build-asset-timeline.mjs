@@ -284,6 +284,7 @@ function buildFrames(allTags) {
       const existing = displayList.get(depth) ?? { depth, characterId: 0, matrix: identityMatrix(), opacity: 1, name: "" };
       const characterId = Number(tag.characterId);
       const hasNewCharacter = characterId > 0;
+      const clipDepth = Number(tag.clipDepth);
       const next = {
         ...existing,
         depth,
@@ -292,6 +293,12 @@ function buildFrames(allTags) {
         name: tag.name ?? existing.name,
         matrix: tag.matrix ? matrixFromTag(tag.matrix) : existing.matrix,
         opacity: tag.colorTransform ? opacityFromTag(tag.colorTransform) : existing.opacity,
+        colorTransform: tag.colorTransform
+          ? colorTransformFromTag(tag.colorTransform)
+          : (hasNewCharacter ? undefined : existing.colorTransform),
+        clipDepth: clipDepth > 0
+          ? clipDepth
+          : (hasNewCharacter ? undefined : existing.clipDepth),
       };
       displayList.set(depth, next);
       continue;
@@ -303,6 +310,7 @@ function buildFrames(allTags) {
         label,
         instances: [...displayList.values()]
           .filter((instance) => instance.characterId > 0)
+          .map(pruneInstance)
           .sort((a, b) => a.depth - b.depth),
       });
       label = "";
@@ -1538,6 +1546,33 @@ function opacityFromTag(transform) {
   const mult = number(transform.alphaMultTerm, 256) / 256;
   const add = number(transform.alphaAddTerm, 0) / 255;
   return Math.max(0, Math.min(1, mult + add));
+}
+
+// Full SWF color transform (multiply + add) normalized for the renderers:
+// mult terms become 1.0-relative factors, add terms stay in -255..255.
+// Alpha is carried for completeness but applied via `opacity`. Returns null
+// when the transform is the identity so callers can omit it.
+function colorTransformFromTag(transform) {
+  const rm = number(transform.redMultTerm, 256) / 256;
+  const gm = number(transform.greenMultTerm, 256) / 256;
+  const bm = number(transform.blueMultTerm, 256) / 256;
+  const am = number(transform.alphaMultTerm, 256) / 256;
+  const ra = number(transform.redAddTerm, 0);
+  const ga = number(transform.greenAddTerm, 0);
+  const ba = number(transform.blueAddTerm, 0);
+  const aa = number(transform.alphaAddTerm, 0);
+  const isIdentity = rm === 1 && gm === 1 && bm === 1 && am === 1
+    && ra === 0 && ga === 0 && ba === 0 && aa === 0;
+  if (isIdentity) return null;
+  return { rm, gm, bm, am, ra, ga, ba, aa };
+}
+
+// Drop undefined optional fields so frames stay compact.
+function pruneInstance(instance) {
+  const pruned = { ...instance };
+  if (pruned.colorTransform == null) delete pruned.colorTransform;
+  if (pruned.clipDepth == null) delete pruned.clipDepth;
+  return pruned;
 }
 
 function colorFromTag(color) {
