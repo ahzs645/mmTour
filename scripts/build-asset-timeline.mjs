@@ -317,6 +317,7 @@ function buildFrames(allTags) {
       const existing = displayList.get(depth) ?? { depth, characterId: 0, matrix: identityMatrix(), opacity: 1, name: "" };
       const characterId = Number(tag.characterId);
       const hasNewCharacter = characterId > 0;
+      const clipDepth = Number(tag.clipDepth) || 0;
       const next = {
         ...existing,
         depth,
@@ -325,6 +326,8 @@ function buildFrames(allTags) {
         name: tag.name ?? existing.name,
         matrix: tag.matrix ? matrixFromTag(tag.matrix) : existing.matrix,
         opacity: tag.colorTransform ? opacityFromTag(tag.colorTransform) : existing.opacity,
+        // A PlaceObject2 with clipDepth > 0 is a mask clipping depths (depth, clipDepth].
+        clipDepth: clipDepth > 0 ? clipDepth : hasNewCharacter ? undefined : existing.clipDepth,
       };
       displayList.set(depth, next);
       continue;

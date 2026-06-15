@@ -1,7 +1,61 @@
 import { gsap } from "gsap";
 import { assetUrl } from "../data/TimelineLoader";
-import type { RenderNode } from "../player/types";
+import type { MaskVisual, RenderNode } from "../player/types";
 import { applyColorTransform } from "./colorTransform";
+
+// Mask shapes are inlined into the <mask> (Chrome won't rasterize an <image>-
+// referenced SVG inside a mask). Their fills are forced white → a robust
+// luminance mask. Cached by src; fetched once.
+const maskShapeCache = new Map<string, string>();
+const maskShapeLoading = new Set<string>();
+
+function loadMaskShape(src: string): string | undefined {
+  if (maskShapeCache.has(src)) return maskShapeCache.get(src);
+  if (!maskShapeLoading.has(src)) {
+    maskShapeLoading.add(src);
+    void fetch(assetUrl(src))
+      .then((response) => (response.ok ? response.text() : ""))
+      .then((text) => {
+        const inner = text
+          .replace(/<\?xml[^>]*\?>/i, "")
+          .replace(/<svg[^>]*>/i, "")
+          .replace(/<\/svg>/i, "")
+          .replace(/fill="[^"]*"/g, 'fill="#ffffff"')
+          .replace(/stroke="[^"]*"/g, 'stroke="#ffffff"');
+        maskShapeCache.set(src, inner);
+      })
+      .catch(() => maskShapeCache.set(src, ""));
+  }
+  return undefined;
+}
+
+function svgImage(v: MaskVisual, extra = ""): string {
+  const m = v.matrix;
+  const url = assetUrl(v.src);
+  return (
+    `<image href="${url}" xlink:href="${url}" x="${-v.origin.x}" y="${-v.origin.y}" ` +
+    `width="${v.origin.width}" height="${v.origin.height}" ` +
+    `transform="matrix(${m.a},${m.b},${m.c},${m.d},${m.tx},${m.ty})"${extra}/>`
+  );
+}
+
+/** Build an inline SVG string that masks `items` to the `mask` shape. */
+function maskGroupSvg(group: { mask: MaskVisual; items: MaskVisual[] }, key: string): string {
+  const open = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="640" height="480" style="position:absolute;left:0;top:0;overflow:visible">`;
+  const maskContent = loadMaskShape(group.mask.src);
+  // Until the mask shape loads, show the items unmasked (a brief frame at most).
+  if (maskContent === undefined || maskContent === "") {
+    return `${open}${group.items.map((it) => svgImage(it)).join("")}</svg>`;
+  }
+
+  const maskId = `m${key.replace(/\W/g, "_")}`;
+  const m = group.mask.matrix;
+  const maskBody = `<g transform="matrix(${m.a},${m.b},${m.c},${m.d},${m.tx},${m.ty}) translate(${-group.mask.origin.x},${-group.mask.origin.y})">${maskContent}</g>`;
+  const items = group.items
+    .map((it) => svgImage(it, ` mask="url(#${maskId})"${it.opacity !== 1 ? ` opacity="${it.opacity}"` : ""}`))
+    .join("");
+  return `${open}<defs><mask id="${maskId}" maskUnits="userSpaceOnUse">${maskBody}</mask></defs>${items}</svg>`;
+}
 
 type RenderedNode = {
   element: HTMLDivElement;
@@ -45,6 +99,11 @@ export class DomRenderer {
     const live = new Set<string>();
 
     for (const node of renderNodes) {
+      if (node.maskGroup) {
+        live.add(node.key);
+        this.applyMaskGroup(node);
+        continue;
+      }
       // Buttons render as transparent hit areas (visual lives in the baked sprite).
       if (!node.src && node.kind !== "text" && node.kind !== "button") continue;
       live.add(node.key);
@@ -66,6 +125,25 @@ export class DomRenderer {
         this.nodes.delete(key);
       }
     }
+  }
+
+  /**
+   * Render a mask group: an inline SVG that alpha-masks the clipped items to the
+   * mask shape (SWF clipDepth). Rebuilt each frame — groups are small. All
+   * matrices are already in stage space, so the SVG sits at the stage origin.
+   */
+  private applyMaskGroup(node: RenderNode) {
+    let rendered = this.nodes.get(node.key);
+    if (!rendered) {
+      const element = document.createElement("div");
+      element.className = "player-instance";
+      this.layer.append(element);
+      rendered = { element, media: element, characterId: -1, kind: node.kind, src: "" };
+      this.nodes.set(node.key, rendered);
+    }
+    rendered.element.style.zIndex = String(node.order);
+    rendered.element.style.transform = "none";
+    rendered.element.innerHTML = maskGroupSvg(node.maskGroup!, node.key);
   }
 
   private createNode(node: RenderNode): RenderedNode {

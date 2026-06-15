@@ -21,6 +21,7 @@ export type PlayerOptions = {
 
 const ROOT_ID = -1;
 const MAX_GOTO_DEPTH = 24;
+const ZERO_ORIGIN = { x: 0, y: 0, width: 0, height: 0 };
 
 /**
  * A focused AVM1 display-list runtime. The root timeline and every sprite become
@@ -348,13 +349,46 @@ export class Player {
     const frame = frames[clip.currentFrame];
     if (!frame) return;
 
+    // Active masks (SWF clipDepth): a mask collects the instances at depths it
+    // clips, and is emitted as one alpha-masked SVG group once its range ends.
+    const maskStack: Array<{ key: string; order: number; clipDepth: number; group: NonNullable<RenderNode["maskGroup"]> }> = [];
+    const flushMasks = (depth: number) => {
+      while (maskStack.length && depth > maskStack[maskStack.length - 1].clipDepth) {
+        const mask = maskStack.pop()!;
+        out.push({ key: mask.key, order: mask.order, characterId: 0, kind: "shape", name: "", src: "", origin: ZERO_ORIGIN, matrix: world, opacity: 1, maskGroup: mask.group });
+      }
+    };
+
     for (const instance of frame.instances) {
+      flushMasks(instance.depth);
       const asset = this.getAsset(instance.characterId);
       if (!asset) continue;
       const matrix = multiplyMatrix(world, instance.matrix);
       const opacity = worldOpacity * instance.opacity;
       const key = `${path}/${instance.depth}`;
       const child = clip.childClips.get(instance.depth);
+
+      // A mask: capture its shape, then clip the instances below it (up to clipDepth).
+      if (instance.clipDepth) {
+        const src = this.visualSrc(asset, child);
+        if (src) {
+          maskStack.push({
+            key: `${key}#mask`,
+            order: order.n++,
+            clipDepth: instance.clipDepth,
+            group: { mask: { characterId: asset.id, src, origin: asset.origin, matrix, opacity: 1 }, items: [] },
+          });
+        }
+        continue;
+      }
+
+      // Inside an active mask → collect the instance as a masked item, not a normal node.
+      const activeMask = maskStack[maskStack.length - 1];
+      if (activeMask && instance.depth <= activeMask.clipDepth) {
+        const src = this.visualSrc(asset, child);
+        if (src) activeMask.group.items.push({ characterId: asset.id, src, origin: asset.origin, matrix, opacity });
+        continue;
+      }
 
       // Sprite with baked frames → render the composited frame for visual fidelity
       // (FFDec bakes masks/group-alpha the nested leaves would lose), and overlay
@@ -381,6 +415,17 @@ export class Player {
 
       out.push(this.leafNode(key, order.n++, asset, asset.src ?? "", matrix, opacity, instance));
     }
+    flushMasks(Number.POSITIVE_INFINITY);
+  }
+
+  /** The artwork URL an instance would render (for use as a mask shape or masked item). */
+  private visualSrc(asset: TimelineAsset, child: ClipInstance | undefined): string {
+    if (asset.kind === "sprite" && asset.frames?.length) {
+      const frameIndex = child ? clamp(child.currentFrame, 0, asset.frames.length - 1) : 0;
+      return asset.frames[frameIndex] ?? "";
+    }
+    if (asset.kind === "button") return asset.states?.up?.src ?? asset.src ?? "";
+    return asset.src ?? "";
   }
 
   /** Overlay only the transparent button hit areas living inside a baked sprite. */

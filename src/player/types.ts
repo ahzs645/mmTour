@@ -27,6 +27,23 @@ export type RenderNode = {
   buttonOwnerPath?: string;
   /** The clip's own playhead frame, when this node is a sprite (for debug). */
   spriteFrame?: number;
+  /**
+   * When set, this node is a mask group: `mask` is the clipping shape and `items`
+   * are the instances clipped to it (SWF clipDepth). Rendered as an inline SVG
+   * alpha-mask. Matrices are already in stage space.
+   */
+  maskGroup?: {
+    mask: MaskVisual;
+    items: MaskVisual[];
+  };
+};
+
+export type MaskVisual = {
+  characterId: number;
+  src: string;
+  origin: { x: number; y: number; width: number; height: number };
+  matrix: import("../data/timelineTypes").Matrix;
+  opacity: number;
 };
 
 export function clamp(value: number, min: number, max: number): number {
