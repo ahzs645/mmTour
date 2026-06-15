@@ -1,26 +1,35 @@
-import type { AssetTimeline, ControlAction, DynamicText, TimelineAsset } from "../data/timelineTypes";
+import type {
+  AssetTimeline,
+  ButtonActionRecord,
+  ControlAction,
+  TimelineAsset,
+  TimelineFrame,
+} from "../data/timelineTypes";
 import type { DomRenderer } from "../render/DomRenderer";
-import { MovieClip } from "./MovieClip";
+import { ClipInstance } from "./ClipInstance";
+import { IDENTITY, multiplyMatrix } from "./matrix";
 import { Ticker } from "./Ticker";
 import { clamp, type RenderNode } from "./types";
 
+export type ButtonEvent = "rollOver" | "rollOut" | "press" | "release";
+
 export type PlayerOptions = {
-  /** Called after each rendered frame with the root playhead state. */
   onFrame?: (rootFrame: number, playing: boolean) => void;
-  /** Called when the root timeline requests loading another SWF/level (deferred handling). */
   onNavigate?: (action: ControlAction) => void;
-  /** Called for sound frame actions as a frame is entered during playback. */
   onSound?: (action: ControlAction) => void;
 };
 
+const ROOT_ID = -1;
+const MAX_GOTO_DEPTH = 24;
 const SOUND_COMMANDS = new Set(["attachSound", "playVO", "stopSound"]);
 
-type ClipEntry = { clip: MovieClip };
-
 /**
- * Drives the decompiled timeline like a Flash player: one root playhead plus an
- * independent playhead per on-stage sprite. The Ticker keeps time moving so
- * nested clips keep looping even while the root is pinned on a stop() frame.
+ * A focused AVM1 display-list runtime. The root timeline and every sprite become
+ * ClipInstances with independent playheads; each clip's frame scripts run on
+ * entry (stop/play/gotoAndPlay/Stop) with self/_parent/_root resolution. Each
+ * frame the tree is flattened to stage-space RenderNodes (matrices composed
+ * down), so a sprite plays its own animation and `_root.gotoAndPlay("robust")`
+ * drives the root into the section — matching Flash/Ruffle.
  */
 export class Player {
   private readonly timeline: AssetTimeline;
@@ -29,55 +38,53 @@ export class Player {
   private readonly ticker: Ticker;
 
   private readonly assets: Record<string, TimelineAsset>;
-  private readonly stopFrames: Set<number>;
-  private readonly frameCountValue: number;
-  /** 0-based root frame index → timeline-scoped actions that run on entry. */
-  private readonly rootActions = new Map<number, ControlAction[]>();
-
-  private rootFrame = 0;
-  private rootPlaying = true;
-  private clips = new Map<number, ClipEntry>();
-  private lastNodes: RenderNode[] = [];
+  private readonly rootFrames: TimelineFrame[];
   private readonly startFrame: number;
+
+  private readonly rootStop: Set<number>;
+  private readonly rootActions = new Map<number, ControlAction[]>();
+  private readonly spriteActions = new Map<string, ControlAction[]>();
+  private readonly spriteStop = new Map<number, Set<number>>();
+
+  private root: ClipInstance;
+  private clipByPath = new Map<string, ClipInstance>();
+  private lastNodes: RenderNode[] = [];
 
   constructor(timeline: AssetTimeline, renderer: DomRenderer, options: PlayerOptions = {}) {
     this.timeline = timeline;
     this.renderer = renderer;
     this.options = options;
     this.assets = timeline.assets ?? {};
-    this.frameCountValue = Math.max(1, timeline.frameCount || timeline.frames.length);
-    this.stopFrames = new Set(timeline.control?.stopFrames ?? []);
+    this.rootFrames = timeline.frames ?? [];
+    this.rootStop = new Set(timeline.control?.stopFrames ?? []);
+    this.startFrame = clamp(timeline.entryFrame ?? 0, 0, Math.max(0, this.rootFrames.length - 1));
 
-    // frameActions is an array of {frame, actions[]} records (frame is 0-based).
-    // Only "timeline"-scoped actions run on frame entry; function/branch-scoped
-    // ones are conditional and must not fire unconditionally.
+    // Root frame scripts: array of {frame, actions[]}; keep timeline-scoped only.
     for (const record of timeline.control?.frameActions ?? []) {
-      const actions = (record.actions ?? []).filter(
-        (action) => !action.executionContext || action.executionContext === "timeline",
-      );
+      const actions = (record.actions ?? []).filter((a) => !a.executionContext || a.executionContext === "timeline");
+      if (actions.length) this.rootActions.set(record.frame, [...(this.rootActions.get(record.frame) ?? []), ...actions]);
+    }
+    // Per-sprite frame scripts: flat list of {spriteId, frame, actions[]}.
+    for (const record of (timeline.control?.spriteActions ?? []) as Array<{ spriteId?: number; frame?: number; actions?: ControlAction[] }>) {
+      if (typeof record.spriteId !== "number" || typeof record.frame !== "number") continue;
+      const actions = (record.actions ?? []).filter((a) => !a.executionContext || a.executionContext === "timeline");
       if (!actions.length) continue;
-      const existing = this.rootActions.get(record.frame);
-      if (existing) existing.push(...actions);
-      else this.rootActions.set(record.frame, actions);
+      const key = `${record.spriteId}:${record.frame}`;
+      this.spriteActions.set(key, [...(this.spriteActions.get(key) ?? []), ...actions]);
     }
 
     this.ticker = new Ticker(timeline.fps || 20, () => this.onTick());
-
-    // Segments are designed to be entered at their menu (entryFrame); frames
-    // before it are an attract loop the shell normally fills, so starting there
-    // matches what Ruffle shows.
-    this.startFrame = clamp(timeline.entryFrame ?? 0, 0, this.frameCountValue - 1);
-    this.enterRootFrame(this.startFrame);
+    this.root = this.buildRoot(this.startFrame);
     this.primeAmbientSound();
     this.render();
   }
 
   get frameCount(): number {
-    return this.frameCountValue;
+    return Math.max(1, this.rootFrames.length);
   }
 
   get currentFrame(): number {
-    return this.rootFrame;
+    return this.root.currentFrame;
   }
 
   get isPlaying(): boolean {
@@ -85,10 +92,10 @@ export class Player {
   }
 
   currentLabel(): string {
-    const frame = this.timeline.frames[this.rootFrame];
+    const frame = this.rootFrames[this.root.currentFrame];
     if (frame?.label) return frame.label;
     const labels = this.timeline.labels ?? {};
-    return Object.entries(labels).find(([, index]) => index === this.rootFrame)?.[0] ?? "";
+    return Object.entries(labels).find(([, index]) => index === this.root.currentFrame)?.[0] ?? "";
   }
 
   debugNodes(): RenderNode[] {
@@ -96,10 +103,6 @@ export class Player {
   }
 
   play() {
-    // Start the clock. The root only advances if it isn't pinned by a stop();
-    // a menu stop holds the root while nested clips keep animating — exactly
-    // how Flash/Ruffle behave. Navigation happens via button actions, not by
-    // forcing the root past its stop.
     this.ticker.play();
   }
 
@@ -112,14 +115,11 @@ export class Player {
     else this.play();
   }
 
-  /** Scrub the root playhead. Clips re-seed from this root frame. */
   seekRootFrame(frame: number) {
     this.ticker.pause();
-    this.clips.clear();
-    this.rootPlaying = true;
-    this.enterRootFrame(frame);
+    this.root = this.buildRoot(clamp(frame, 0, this.frameCount - 1));
     this.render();
-    this.options.onFrame?.(this.rootFrame, false);
+    this.options.onFrame?.(this.root.currentFrame, false);
   }
 
   restart() {
@@ -127,213 +127,298 @@ export class Player {
     this.primeAmbientSound();
   }
 
-  /**
-   * Start the looping shell music even when entering at a menu frame past its
-   * attachSound. One-shot voiceovers (intro narration) are intentionally skipped.
-   */
-  private primeAmbientSound() {
-    if (!this.options.onSound) return;
-    let music: ControlAction | undefined;
-    for (let frame = 0; frame <= this.rootFrame; frame += 1) {
-      for (const action of this.rootActionsAt(frame)) {
-        if (action.command === "attachSound" && action.soundRole === "music") music = action;
-      }
-    }
-    if (music) this.options.onSound(music);
-  }
-
-  /**
-   * Run a button's release action. `self`/`_parent` targets drive the clip that
-   * hosts the button (the owner sprite at ownerDepth); `_root`/`_level0` drive
-   * the root timeline. This matches how the tour's menu buttons play their own
-   * sprite ("show screenshots") rather than jumping the root.
-   */
-  dispatchButtonAction(action: ControlAction, ownerDepth: number) {
-    if (action.command !== "gotoAndPlay" && action.command !== "gotoAndStop") return;
-    const target = this.resolveFrame(action);
-    if (target < 0) return;
-    const play = action.command === "gotoAndPlay";
-    const scope = action.target ?? "self";
-
-    if (scope === "_root" || scope === "_level0" || scope === "root") {
-      this.rootPlaying = play;
-      this.enterRootFrame(target);
-      this.render();
-      return;
-    }
-
-    const entry = this.clips.get(ownerDepth);
-    if (entry) {
-      if (play) entry.clip.gotoAndPlay(target);
-      else entry.clip.gotoAndStop(target);
-      this.render();
-      return;
-    }
-
-    // No tracked owner clip — fall back to the root timeline.
-    this.rootPlaying = play;
-    this.enterRootFrame(target);
-    this.render();
-  }
-
   destroy() {
     this.ticker.destroy();
     this.renderer.clear();
-    this.clips.clear();
   }
 
-  // --- internals --------------------------------------------------------
+  /** Dispatch a button event from the owning clip (identified by its tree path). */
+  handleButtonEvent(ownerPath: string, characterId: number, event: ButtonEvent) {
+    const record = this.timeline.control?.buttonActions?.[String(characterId)] as ButtonActionRecord | undefined;
+    const action = record?.[event];
+    if (!action) return;
+    const owner = this.clipByPath.get(ownerPath) ?? this.root;
+
+    if (action.functionCalls?.length && this.options.onNavigate) this.options.onNavigate(action);
+    if (action.command === "gotoAndPlay" || action.command === "gotoAndStop") {
+      const target = this.resolveTarget(owner, action.target);
+      const frame = this.resolveFrame(action, target);
+      if (target && frame >= 0) {
+        target.playing = action.command === "gotoAndPlay";
+        this.enterFrame(target, frame, 0);
+        this.render();
+      }
+    }
+  }
+
+  // --- tree construction ------------------------------------------------
+
+  private buildRoot(frame: number): ClipInstance {
+    const root = new ClipInstance(ROOT_ID, "_root", null);
+    this.enterFrame(root, frame, 0);
+    return root;
+  }
+
+  // --- per-frame advance ------------------------------------------------
 
   private onTick() {
-    // 1. Independent clip playheads advance every tick, regardless of the root.
-    for (const { clip } of this.clips.values()) clip.advance();
-
-    // 2. The root playhead only advances when it isn't pinned by a stop().
-    if (this.rootPlaying) {
-      const previous = this.rootFrame;
-      const next = this.rootFrame + 1 >= this.frameCountValue ? 0 : this.rootFrame + 1;
-      this.enterRootFrame(next);
-      // Fire sound effects only for frames genuinely entered during playback,
-      // not on scrub/seek — so dragging the scrubber stays silent.
-      if (this.rootFrame !== previous) this.fireFrameSounds(this.rootFrame);
-    }
-
+    this.tickClip(this.root);
     this.render();
-    // Report the clock state (time is running, clips loop) rather than the root
-    // playhead state, which may be pinned on a stop() while the scene plays on.
-    this.options.onFrame?.(this.rootFrame, this.ticker.isPlaying);
+    this.options.onFrame?.(this.root.currentFrame, this.ticker.isPlaying);
   }
 
-  /** Set the root playhead to a frame and run that frame's actions (stop/goto). */
-  private enterRootFrame(frame: number, depth = 0) {
-    this.rootFrame = clamp(frame, 0, this.frameCountValue - 1);
-    if (depth > 32) return;
+  private tickClip(clip: ClipInstance) {
+    const frameCount = this.frameCountFor(clip);
+    if (clip.playing && frameCount > 1) {
+      const next = clip.currentFrame + 1 >= frameCount ? 0 : clip.currentFrame + 1;
+      this.enterFrame(clip, next, 0);
+    } else if (clip.enteredFrame < 0) {
+      this.enterFrame(clip, clip.currentFrame, 0);
+    }
+    for (const child of clip.childClips.values()) this.tickClip(child);
+  }
 
-    for (const action of this.rootActionsAt(this.rootFrame)) {
+  /** Move a clip to a frame: reconcile children, run entry script, apply stops. */
+  private enterFrame(clip: ClipInstance, frame: number, depth: number) {
+    clip.currentFrame = clamp(frame, 0, Math.max(0, this.frameCountFor(clip) - 1));
+    this.reconcile(clip);
+
+    if (clip.enteredFrame !== clip.currentFrame) {
+      clip.enteredFrame = clip.currentFrame;
+      if (depth < MAX_GOTO_DEPTH) this.runScript(clip, depth);
+    }
+    if (this.stopFramesFor(clip).has(clip.currentFrame)) clip.playing = false;
+  }
+
+  /** Create/prune child clips for the clip's current frame. */
+  private reconcile(clip: ClipInstance) {
+    const frames = this.framesFor(clip);
+    if (!frames) return; // leaf-rendered sprite (baked frames only) — no children
+    const instances = frames[clip.currentFrame]?.instances ?? [];
+
+    const live = new Set<number>();
+    for (const instance of instances) {
+      const asset = this.getAsset(instance.characterId);
+      if (!asset || !this.isClipAsset(asset)) continue;
+      live.add(instance.depth);
+      const existing = clip.childClips.get(instance.depth);
+      if (!existing || existing.characterId !== instance.characterId) {
+        const child = new ClipInstance(instance.characterId, instance.name, clip);
+        clip.childClips.set(instance.depth, child);
+        this.enterFrame(child, 0, 0);
+      }
+    }
+    for (const [depth] of clip.childClips) {
+      if (!live.has(depth)) clip.childClips.delete(depth);
+    }
+  }
+
+  private runScript(clip: ClipInstance, depth: number) {
+    for (const action of this.actionsFor(clip)) {
       switch (action.command) {
         case "stop":
-          this.rootPlaying = false;
+          clip.playing = false;
           break;
         case "play":
-          this.rootPlaying = true;
+          clip.playing = true;
           break;
-        case "gotoAndPlay": {
-          const target = this.resolveFrame(action);
-          if (target >= 0 && target !== this.rootFrame) {
-            this.rootPlaying = true;
-            this.enterRootFrame(target, depth + 1);
-            return;
-          }
-          break;
-        }
+        case "gotoAndPlay":
         case "gotoAndStop": {
-          const target = this.resolveFrame(action);
-          this.rootPlaying = false;
-          if (target >= 0 && target !== this.rootFrame) {
-            this.enterRootFrame(target, depth + 1);
-            return;
-          }
+          const target = this.resolveTarget(clip, action.target);
+          const frame = this.resolveFrame(action, target);
+          if (!target || frame < 0) break;
+          target.playing = action.command === "gotoAndPlay";
+          if (target !== clip || frame !== clip.currentFrame) this.enterFrame(target, frame, depth + 1);
           break;
         }
-        case "loadMovieNum":
-        case "loadVariables":
-        case "doRelease":
-          this.options.onNavigate?.(action);
+        case "attachSound":
+        case "playVO":
+        case "stopSound":
+          this.options.onSound?.(action);
           break;
         default:
           break;
       }
     }
-
-    if (this.stopFrames.has(this.rootFrame)) this.rootPlaying = false;
   }
 
-  private rootActionsAt(frame: number): ControlAction[] {
-    return this.rootActions.get(frame) ?? [];
-  }
+  // --- target / frame resolution ---------------------------------------
 
-  private fireFrameSounds(frame: number) {
-    if (!this.options.onSound) return;
-    for (const action of this.rootActionsAt(frame)) {
-      if (action.command && SOUND_COMMANDS.has(action.command)) this.options.onSound(action);
+  private resolveTarget(clip: ClipInstance, target: string | undefined): ClipInstance | null {
+    if (!target || target === "self" || target === "this") return clip;
+    if (target === "_root" || target === "_level0" || target === "root") return this.root;
+    if (target === "_parent") return clip.parent ?? clip;
+
+    // Dotted path like "_root.s1.mc" — walk by instance name.
+    const parts = target.split(".").filter(Boolean);
+    let node: ClipInstance | null =
+      parts[0] === "_root" || parts[0] === "_level0" ? this.root : parts[0] === "_parent" ? clip.parent : clip;
+    const rest = parts[0]?.startsWith("_") ? parts.slice(1) : parts;
+    for (const name of rest) {
+      if (!node) return null;
+      node = this.findChildByName(node, name);
     }
+    return node;
   }
 
-  private resolveFrame(action: ControlAction): number {
-    if (typeof action.frame === "number") return action.frame;
+  private findChildByName(clip: ClipInstance, name: string): ClipInstance | null {
+    for (const child of clip.childClips.values()) {
+      if (child.name === name) return child;
+    }
+    return null;
+  }
+
+  private resolveFrame(action: ControlAction, target: ClipInstance | null): number {
     if (action.label) {
+      // Sprite-local label first, then root labels.
+      const localFrames = target ? this.framesFor(target) : null;
+      const local = localFrames?.findIndex((f) => f.label === action.label) ?? -1;
+      if (local >= 0) return local;
       const labels = this.timeline.labels ?? {};
       if (action.label in labels) return labels[action.label];
     }
+    if (typeof action.frame === "number") return action.frame;
     return -1;
   }
 
+  // --- timeline data helpers -------------------------------------------
+
+  private framesFor(clip: ClipInstance): TimelineFrame[] | null {
+    if (clip.characterId === ROOT_ID) return this.rootFrames;
+    return this.assets[String(clip.characterId)]?.timeline ?? null;
+  }
+
+  private frameCountFor(clip: ClipInstance): number {
+    if (clip.characterId === ROOT_ID) return Math.max(1, this.rootFrames.length);
+    const asset = this.assets[String(clip.characterId)];
+    return Math.max(1, asset?.timeline?.length ?? asset?.frames?.length ?? 1);
+  }
+
+  private stopFramesFor(clip: ClipInstance): Set<number> {
+    if (clip.characterId === ROOT_ID) return this.rootStop;
+    let set = this.spriteStop.get(clip.characterId);
+    if (!set) {
+      set = new Set(this.timeline.control?.spriteStopFrames?.[String(clip.characterId)] ?? []);
+      this.spriteStop.set(clip.characterId, set);
+    }
+    return set;
+  }
+
+  private actionsFor(clip: ClipInstance): ControlAction[] {
+    if (clip.characterId === ROOT_ID) return this.rootActions.get(clip.currentFrame) ?? [];
+    return this.spriteActions.get(`${clip.characterId}:${clip.currentFrame}`) ?? [];
+  }
+
+  private isClipAsset(asset: TimelineAsset): boolean {
+    return asset.kind === "sprite" && Boolean(asset.timeline?.length || asset.frames?.length);
+  }
+
+  /** Resolve a placed character; buttons are stored under a `button:<id>` key. */
+  private getAsset(characterId: number): TimelineAsset | undefined {
+    return this.assets[String(characterId)] ?? this.assets[`button:${characterId}`];
+  }
+
+  // --- render (flatten tree to stage-space nodes) ----------------------
+
   private render() {
-    const frame = this.timeline.frames[this.rootFrame];
-    if (!frame) return;
-
     const nodes: RenderNode[] = [];
-    const liveDepths = new Set<number>();
-
-    for (const instance of frame.instances) {
-      const asset = this.assets[String(instance.characterId)];
-      if (!asset) continue;
-      liveDepths.add(instance.depth);
-
-      let src = asset.src ?? "";
-      let spriteFrame: number | undefined;
-      if (asset.kind === "sprite" && asset.frames?.length) {
-        const clip = this.ensureClip(instance.depth, asset);
-        spriteFrame = clip.currentFrame;
-        src = asset.frames[clip.currentFrame] ?? asset.frames[0] ?? "";
-      } else if (asset.kind === "button") {
-        src = asset.states?.up?.src ?? asset.src ?? "";
-      }
-
-      nodes.push({
-        depth: instance.depth,
-        characterId: instance.characterId,
-        kind: asset.kind,
-        name: instance.name,
-        src,
-        origin: asset.origin,
-        matrix: instance.matrix,
-        opacity: instance.opacity,
-        colorTransform: instance.colorTransform,
-        clipDepth: instance.clipDepth,
-        spriteFrame,
-        text: asset.kind === "text" ? this.resolveTextField(instance.characterId, asset) : undefined,
-      });
-    }
-
-    // Drop clips whose depth left the stage so a re-placed instance restarts.
-    for (const depth of [...this.clips.keys()]) {
-      if (!liveDepths.has(depth)) this.clips.delete(depth);
-    }
-
+    this.clipByPath = new Map();
+    this.clipByPath.set("0", this.root);
+    this.flatten(this.root, IDENTITY, 1, "0", { n: 0 }, nodes);
     this.renderer.apply(nodes);
     this.lastNodes = nodes;
   }
 
-  private ensureClip(depth: number, asset: TimelineAsset): MovieClip {
-    const existing = this.clips.get(depth);
-    if (existing && existing.clip.characterId === asset.id) return existing.clip;
+  private flatten(
+    clip: ClipInstance,
+    world: { a: number; b: number; c: number; d: number; tx: number; ty: number },
+    worldOpacity: number,
+    path: string,
+    order: { n: number },
+    out: RenderNode[],
+  ) {
+    const frames = this.framesFor(clip);
+    if (!frames) return;
+    const frame = frames[clip.currentFrame];
+    if (!frame) return;
 
-    const stopFrames = this.timeline.control?.spriteStopFrames?.[String(asset.id)] ?? [];
-    const clip = new MovieClip(asset.id, asset.frames?.length ?? 1, stopFrames, 0);
-    this.clips.set(depth, { clip });
-    return clip;
+    for (const instance of frame.instances) {
+      const asset = this.getAsset(instance.characterId);
+      if (!asset) continue;
+      const matrix = multiplyMatrix(world, instance.matrix);
+      const opacity = worldOpacity * instance.opacity;
+      const key = `${path}/${instance.depth}`;
+
+      // Sprite with a nested timeline → recurse into its live child clip.
+      if (asset.kind === "sprite" && asset.timeline?.length) {
+        const child = clip.childClips.get(instance.depth);
+        if (child && child.characterId === asset.id) {
+          this.clipByPath.set(key, child);
+          this.flatten(child, matrix, opacity, key, order, out);
+          continue;
+        }
+      }
+
+      // Baked-frame sprite → emit its current frame's SVG.
+      if (asset.kind === "sprite" && asset.frames?.length) {
+        const child = clip.childClips.get(instance.depth);
+        const frameIndex = child ? clamp(child.currentFrame, 0, asset.frames.length - 1) : 0;
+        out.push(this.leafNode(key, order.n++, asset, asset.frames[frameIndex], matrix, opacity, instance, path, child?.currentFrame));
+        continue;
+      }
+
+      // Leaf: shape / image / text / button.
+      const src = asset.kind === "button" ? asset.states?.up?.src ?? asset.src ?? "" : asset.src ?? "";
+      out.push(this.leafNode(key, order.n++, asset, src, matrix, opacity, instance, path));
+    }
   }
 
-  /**
-   * Merge a text field's own styling (asset.text, present for every edit-text)
-   * with any loaded-variable override (control.dynamicTexts). The dynamic entry
-   * wins for content; the asset styling provides font/size/color/box.
-   */
-  private resolveTextField(characterId: number, asset: TimelineAsset): DynamicText | undefined {
+  private leafNode(
+    key: string,
+    order: number,
+    asset: TimelineAsset,
+    src: string,
+    matrix: RenderNode["matrix"],
+    opacity: number,
+    instance: TimelineFrame["instances"][number],
+    ownerPath: string,
+    spriteFrame?: number,
+  ): RenderNode {
+    return {
+      key,
+      order,
+      characterId: asset.id,
+      kind: asset.kind,
+      name: instance.name,
+      src,
+      origin: asset.origin,
+      matrix,
+      opacity,
+      colorTransform: instance.colorTransform,
+      clipDepth: instance.clipDepth,
+      spriteFrame,
+      text: asset.kind === "text" ? this.resolveTextField(asset.id, asset) : undefined,
+      buttonOwnerPath: asset.kind === "button" ? ownerPath : undefined,
+    };
+  }
+
+  private resolveTextField(characterId: number, asset: TimelineAsset) {
     const base = asset.text;
     const dynamic = this.timeline.control?.dynamicTexts?.[String(characterId)];
     if (base && dynamic) return { ...base, ...dynamic };
     return base ?? dynamic;
+  }
+
+  // --- ambient sound ----------------------------------------------------
+
+  private primeAmbientSound() {
+    if (!this.options.onSound) return;
+    let music: ControlAction | undefined;
+    for (let frame = 0; frame <= this.root.currentFrame; frame += 1) {
+      for (const action of this.rootActions.get(frame) ?? []) {
+        if (action.command === "attachSound" && action.soundRole === "music") music = action;
+      }
+    }
+    if (music) this.options.onSound(music);
   }
 }

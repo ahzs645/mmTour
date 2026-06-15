@@ -1,24 +1,30 @@
 import type { AssetKind, ColorTransform, DynamicText, Matrix, Origin } from "../data/timelineTypes";
 
 /**
- * One resolved item to draw for the current composite frame. Produced by the
- * Player each tick and handed to the DomRenderer, which diffs it against the
- * live DOM by depth.
+ * One resolved leaf to draw for the current composite frame. The Player walks
+ * the nested clip tree, composes matrices to stage space, and emits these in
+ * paint order. The DomRenderer diffs them by `key` (a stable tree path).
  */
 export type RenderNode = {
-  depth: number;
+  /** Stable identity across frames: the tree path of depths, e.g. "0/2/6". */
+  key: string;
+  /** Paint order (z-index) = tree traversal order. */
+  order: number;
   characterId: number;
   kind: AssetKind;
   name: string;
-  /** Current artwork URL for this node (sprite frame, shape, image, button state). */
+  /** Current artwork URL (sprite frame, shape, image, button state). */
   src: string;
   origin: Origin;
+  /** World matrix (composed parent→child) in stage space. */
   matrix: Matrix;
   opacity: number;
   colorTransform?: ColorTransform;
   clipDepth?: number;
   /** Styling + content for dynamic/static text fields. */
   text?: DynamicText;
+  /** For buttons: the tree path of the owning clip, used to dispatch actions. */
+  buttonOwnerPath?: string;
   /** The clip's own playhead frame, when this node is a sprite (for debug). */
   spriteFrame?: number;
 };

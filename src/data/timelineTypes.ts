@@ -39,6 +39,12 @@ export type TimelineAsset = {
   src?: string;
   /** Baked per-frame SVGs for a sprite symbol, one entry per internal sprite frame. */
   frames?: string[];
+  /**
+   * Nested display-list timeline for a sprite symbol: the placed child instances
+   * per internal frame. Preserves the MovieClip nesting (vs the baked `frames`),
+   * enabling true nested playheads and _parent/_root navigation in the runtime.
+   */
+  timeline?: TimelineFrame[];
   /** Button up/over/down/hit state artwork. */
   states?: Partial<Record<"up" | "over" | "down" | "hit", ButtonState>>;
   /** Styling for a text/edit-text field (font, size, color, box, initial content). */

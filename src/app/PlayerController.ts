@@ -1,23 +1,8 @@
-import type { AssetTimeline, ButtonActionRecord } from "../data/timelineTypes";
+import type { AssetTimeline } from "../data/timelineTypes";
 import { DomRenderer } from "../render/DomRenderer";
 import { FontRegistry } from "../render/TextRenderer";
 import { Player } from "../player/Player";
 import { SoundController } from "../audio/SoundController";
-
-/**
- * Map each button-owning sprite to its button's actions. Hovering/clicking the
- * sprite then plays its rollOver/rollOut/release animations exactly like the
- * source (e.g. an icon expands on hover, navigates on click).
- */
-function collectSpriteButtonActions(timeline: AssetTimeline): Map<number, ButtonActionRecord> {
-  const byOwner = new Map<number, ButtonActionRecord>();
-  for (const record of Object.values(timeline.control?.buttonActions ?? {})) {
-    for (const spriteId of record.ownerSpriteIds ?? []) {
-      if (!byOwner.has(spriteId)) byOwner.set(spriteId, record);
-    }
-  }
-  return byOwner;
-}
 
 export type PlayerControllerOptions = {
   onFrame?: (rootFrame: number, playing: boolean, label: string) => void;
@@ -62,12 +47,9 @@ export class PlayerController {
     this.timeline = timeline;
     this.layer.hidden = false;
     this.fonts.register(timeline);
-    const spriteButtonActions = collectSpriteButtonActions(timeline);
     const renderer = new DomRenderer(this.layer, {
       resolveFontFamily: (fontId) => this.fonts.resolveFamily(fontId),
-      interactiveSpriteIds: new Set(spriteButtonActions.keys()),
-      resolveButtonActions: (spriteId) => spriteButtonActions.get(spriteId),
-      dispatchButton: (action, ownerDepth) => this.player?.dispatchButtonAction(action, ownerDepth),
+      onButtonEvent: (ownerPath, characterId, event) => this.player?.handleButtonEvent(ownerPath, characterId, event),
     });
     this.player = new Player(timeline, renderer, {
       onFrame: (frame, playing) => this.options.onFrame?.(frame, playing, this.player?.currentLabel() ?? ""),

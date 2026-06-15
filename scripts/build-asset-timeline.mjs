@@ -33,6 +33,7 @@ const globalDefaults = discoverGlobalDefaults();
 
 const assets = discoverAssets(tags);
 const frames = buildFrames(tags);
+attachSpriteTimelines(assets, tags);
 const labels = Object.fromEntries(frames.filter((frame) => frame.label).map((frame) => [frame.label, frame.index]));
 const entryFrame = discoverEntryFrame(labels);
 const spriteStopFrames = discoverSpriteStopFrames();
@@ -342,6 +343,34 @@ function buildFrames(allTags) {
   }
 
   return snapshots;
+}
+
+/**
+ * Extract each DefineSprite's internal display-list timeline (the same way the
+ * root timeline is built) and attach it to the sprite asset. This preserves the
+ * nested MovieClip structure FFDec otherwise flattens into baked per-frame SVGs,
+ * giving the runtime the data it needs to drive nested playheads and _parent/
+ * _root navigation. Baked `frames[]` SVGs are kept for leaf rendering.
+ */
+function attachSpriteTimelines(assetDefs, allTags) {
+  for (const tag of allTags) {
+    if (tag?.type !== "DefineSpriteTag" || !tag.spriteId) continue;
+    const id = String(tag.spriteId);
+    const asset = assetDefs[id];
+    if (!asset || asset.kind !== "sprite") continue;
+
+    const subTags = asArray(tag.subTags?.item);
+    const spriteFrames = buildFrames(subTags);
+    // Only attach when there is an actual nested display list (placed children),
+    // so trivial single-shape sprites don't bloat the timeline JSON.
+    if (!spriteFrames.some((frame) => frame.instances.length)) continue;
+
+    asset.timeline = spriteFrames.map((frame) => compactObject({
+      index: frame.index,
+      label: frame.label || undefined,
+      instances: frame.instances,
+    }));
+  }
 }
 
 function discoverEntryFrame(frameLabels) {
