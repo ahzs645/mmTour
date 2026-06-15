@@ -177,16 +177,19 @@ export class Player {
     for (const child of clip.childClips.values()) this.tickClip(child);
   }
 
-  /** Move a clip to a frame: reconcile children, run entry script, apply stops. */
+  /** Move a clip to a frame: reconcile children, then run the frame's entry scripts.
+   *  stop() is a frame-entry script, so it (and the stop-frame pin) only apply when a
+   *  frame is NEWLY entered — re-issuing gotoAndPlay to the current frame resumes
+   *  playback (this is what makes a button's rollOver "gotoAndPlay(currentFrame)"
+   *  expand the clip instead of immediately re-stopping it). */
   private enterFrame(clip: ClipInstance, frame: number, depth: number) {
     clip.currentFrame = clamp(frame, 0, Math.max(0, this.frameCountFor(clip) - 1));
     this.reconcile(clip);
 
-    if (clip.enteredFrame !== clip.currentFrame) {
-      clip.enteredFrame = clip.currentFrame;
-      if (depth < MAX_GOTO_DEPTH) this.runScript(clip, depth);
-    }
+    if (clip.enteredFrame === clip.currentFrame) return;
+    clip.enteredFrame = clip.currentFrame;
     if (this.stopFramesFor(clip).has(clip.currentFrame)) clip.playing = false;
+    if (depth < MAX_GOTO_DEPTH) this.runScript(clip, depth);
   }
 
   /** Create/prune child clips for the clip's current frame. */
