@@ -1,7 +1,9 @@
 import type {
   AssetTimeline,
+  BodyStatement,
   ButtonActionRecord,
   ControlAction,
+  DefinedFunction,
   TimelineAsset,
   TimelineFrame,
 } from "../data/timelineTypes";
@@ -15,11 +17,21 @@ import type { VariableStore, VarValue } from "./VariableStore";
 
 export type ButtonEvent = "rollOver" | "rollOut" | "press" | "release";
 
-/** A user-defined AVM1 function: variable assignments + gated timeline actions. */
+/** A user-defined AVM1 function: gated self-timeline actions (frameActions) plus a
+ *  branch-aware body (assignments + method-calls), parameterised by `parameters`. */
 type FunctionDef = {
-  assignments: { target: string; value: VarValue }[];
+  parameters: string[];
   actions: ControlAction[];
+  body: BodyStatement[];
 };
+
+/** Local parameter bindings for the currently-executing function call. */
+type Locals = Record<string, VarValue | undefined>;
+
+/** Timeline commands that, with a target, are clip controls (vs function calls). */
+const TIMELINE_COMMANDS = new Set(["gotoAndPlay", "gotoAndStop", "play", "stop", "nextFrame", "prevFrame"]);
+/** AVM1 "wait until condition / timer" helpers handled as a runtime primitive. */
+const WAITER_FUNCTIONS = new Set(["waitForVal", "startTimer"]);
 
 export type PlayerOptions = {
   onFrame?: (rootFrame: number, playing: boolean) => void;
@@ -29,6 +41,11 @@ export type PlayerOptions = {
   store?: VariableStore;
   /** Dispatch a function call whose target is another level (`_levelN[.path].fn`). */
   onCallFunction?: (target: string, name: string, args: string) => void;
+  /** Run a timeline command (gotoAndPlay/Stop) on a named clip in another level
+   *  (e.g. `_level6.yellowPro.gotoAndPlay("over")` — the nav's section highlight). */
+  onClipCommand?: (target: string, command: string, frame: VarValue) => void;
+  /** Register an AVM1 waiter (`waitForVal`/`startTimer`) whose callback the host polls. */
+  onWaiter?: (kind: string, args: (VarValue | undefined)[]) => void;
   /** Load a `loadVariables` text file (`&key=value&…`) into this level's text vars. */
   onLoadVariables?: (action: ControlAction) => void;
   /** Whether the current voice-over segment has finished (drives VO-gated holds). */
@@ -119,6 +136,11 @@ export class Player {
     return this.root.currentFrame;
   }
 
+  /** Root clip instance — used by the host to resolve named clips for cross-level commands. */
+  get rootClip(): ClipInstance {
+    return this.root;
+  }
+
   get isPlaying(): boolean {
     return this.ticker.isPlaying;
   }
@@ -172,16 +194,19 @@ export class Player {
     if (!action) return;
     const owner = this.clipByPath.get(ownerPath) ?? this.root;
 
-    if (action.functionCalls?.length && this.options.onNavigate) this.options.onNavigate(action);
+    // A button release that calls functions (e.g. Skip Intro → `_level0.LoadInitialInteractive()`)
+    // runs through the same dispatcher as frame scripts (cross-level calls, clip commands, waiters).
+    if (action.functionCalls?.length) this.runCallFunctions(action, owner);
+    if (action.command === "loadMovieNum" || action.command === "loadMovie") this.options.onNavigate?.(action);
     if (action.command === "gotoAndPlay" || action.command === "gotoAndStop") {
       const target = this.resolveTarget(owner, action.target);
       const frame = this.resolveFrame(action, target);
       if (target && frame >= 0) {
         target.playing = action.command === "gotoAndPlay";
         this.enterFrame(target, frame, 0);
-        this.render();
       }
     }
+    this.render();
   }
 
   // --- AVM1 function dispatch -------------------------------------------
@@ -195,23 +220,21 @@ export class Player {
 
   private buildFunctionTable() {
     const control = this.timeline.control as
-      | { definedFunctions?: Record<string, { functionName?: string; assignments?: { target?: string; value?: unknown }[] }>; frameActions?: { actions?: ControlAction[] }[] }
+      | { definedFunctions?: DefinedFunction[] | Record<string, DefinedFunction>; frameActions?: { actions?: ControlAction[] }[] }
       | undefined;
+    const newDef = (): FunctionDef => ({ parameters: [], actions: [], body: [] });
     for (const def of Object.values(control?.definedFunctions ?? {})) {
       const name = def?.functionName;
       if (!name) continue;
-      const entry = this.functions.get(name) ?? { assignments: [], actions: [] };
-      for (const a of def.assignments ?? []) {
-        if (typeof a?.target === "string" && (typeof a.value === "string" || typeof a.value === "number" || typeof a.value === "boolean")) {
-          entry.assignments.push({ target: a.target, value: a.value });
-        }
-      }
+      const entry = this.functions.get(name) ?? newDef();
+      if (def.parameters?.length) entry.parameters = def.parameters;
+      if (def.body?.length) entry.body.push(...def.body);
       this.functions.set(name, entry);
     }
     for (const record of control?.frameActions ?? []) {
       for (const action of record.actions ?? []) {
         if (!action.functionName) continue;
-        const entry = this.functions.get(action.functionName) ?? { assignments: [], actions: [] };
+        const entry = this.functions.get(action.functionName) ?? newDef();
         entry.actions.push(action);
         this.functions.set(action.functionName, entry);
       }
@@ -225,7 +248,7 @@ export class Player {
         if (!action.functionName) continue;
         let fns = this.spriteFunctions.get(record.spriteId);
         if (!fns) this.spriteFunctions.set(record.spriteId, (fns = new Map()));
-        const entry = fns.get(action.functionName) ?? { assignments: [], actions: [] };
+        const entry = fns.get(action.functionName) ?? newDef();
         entry.actions.push(action);
         fns.set(action.functionName, entry);
       }
@@ -237,21 +260,146 @@ export class Player {
   }
 
   /**
-   * Invoke a named AVM1 function: run its gated actions, then apply its variable
-   * assignments. (Order matters — AVM1 guards like `if (blnDisableSkip) return`
-   * read the variable BEFORE the body sets it, so gates evaluate against the
-   * pre-call store and assignments land after.)
+   * Invoke a named AVM1 function. Arguments (a raw `"a",b,…` string) bind to the
+   * function's parameters as locals; its self-timeline actions (gated gotos) run
+   * first, then its branch-aware body — assignments and method-calls each guarded
+   * by their if/else condition. This is what drives the tour's orchestration:
+   * `sceneStarting("BestForBusiness")` sets `currScene`, and `showSceneMenu()`
+   * fires only the active section's `_level6.<button>.gotoAndPlay("over")`.
    */
-  callFunction(name: string): boolean {
+  callFunction(name: string, argsRaw?: string, callerLocals?: Locals): boolean {
     const def = this.functions.get(name);
     if (!def) return false;
+    const locals = this.bindParams(def.parameters, argsRaw, callerLocals);
     for (const action of def.actions) {
       if (this.store && !evalCondition(action.functionBranchCondition, this.store)) continue;
       this.runFunctionAction(action);
     }
-    if (this.store) for (const a of def.assignments) this.store.set(a.target, a.value);
+    for (const statement of def.body) {
+      if (!this.branchPasses(statement.branchCondition, locals)) continue;
+      this.runBodyStatement(statement, locals);
+    }
     this.render();
     return true;
+  }
+
+  /** Bind a call's raw argument string to a function's parameter names. */
+  private bindParams(parameters: string[], argsRaw?: string, callerLocals?: Locals): Locals {
+    const locals: Locals = {};
+    if (!parameters.length) return locals;
+    const values = this.parseArgs(argsRaw, callerLocals);
+    parameters.forEach((param, i) => { locals[param] = values[i]; });
+    return locals;
+  }
+
+  /** Split a raw arg string on top-level commas and resolve each to a value. */
+  private parseArgs(argsRaw: string | undefined, locals?: Locals): (VarValue | undefined)[] {
+    if (!argsRaw?.trim()) return [];
+    const parts: string[] = [];
+    let depth = 0, quote = "", start = 0;
+    for (let i = 0; i < argsRaw.length; i++) {
+      const c = argsRaw[i];
+      if (quote) { if (c === quote && argsRaw[i - 1] !== "\\") quote = ""; continue; }
+      if (c === '"' || c === "'") quote = c;
+      else if (c === "(" || c === "[") depth++;
+      else if (c === ")" || c === "]") depth--;
+      else if (c === "," && depth === 0) { parts.push(argsRaw.slice(start, i)); start = i + 1; }
+    }
+    parts.push(argsRaw.slice(start));
+    return parts.map((p) => this.resolveExpr(p.trim(), locals));
+  }
+
+  /** Resolve an assignment RHS / argument expression to a value (param refs → locals). */
+  private resolveExpr(raw: string, locals?: Locals): VarValue | undefined {
+    const e = raw.trim();
+    if (e === "") return undefined;
+    if ((e.startsWith('"') && e.endsWith('"')) || (e.startsWith("'") && e.endsWith("'"))) return e.slice(1, -1);
+    if (e === "true") return true;
+    if (e === "false") return false;
+    if (/^-?\d+(\.\d+)?$/.test(e)) return Number(e);
+    if (locals && e in locals) return locals[e];
+    // A bare identifier/path is a variable read (e.g. a flag); fall back to the literal.
+    if (/^[A-Za-z_$][\w$.]*$/.test(e)) return this.store?.get(e) ?? undefined;
+    return e; // array literals etc. — kept as their source text
+  }
+
+  /** Re-serialise a call's arguments to a literal string for crossing a level boundary. */
+  private resolveArgsString(argsRaw: string | undefined, locals?: Locals): string {
+    return this.parseArgs(argsRaw, locals)
+      .map((v) => (typeof v === "string" ? JSON.stringify(v) : String(v)))
+      .join(",");
+  }
+
+  /** Evaluate a body statement's if/else guard, substituting local parameters. */
+  private branchPasses(condition: string | undefined, locals: Locals): boolean {
+    if (!condition || !this.store) return condition ? false : true;
+    return evalCondition(this.localizeCondition(condition, locals), this.store);
+  }
+
+  /** Substitute bound parameter names in a condition with their literal values. */
+  private localizeCondition(condition: string, locals: Locals): string {
+    let out = condition;
+    for (const [name, value] of Object.entries(locals)) {
+      if (value === undefined) continue;
+      const literal = typeof value === "string" ? JSON.stringify(value) : String(value);
+      out = out.replace(new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"), literal);
+    }
+    return out;
+  }
+
+  private runBodyStatement(statement: BodyStatement, locals: Locals) {
+    if (statement.kind === "assign") {
+      const value = this.resolveExpr(statement.rawValue, locals);
+      if (this.store && value !== undefined) this.store.set(statement.target, value);
+      return;
+    }
+    this.runBodyCall(statement, locals);
+  }
+
+  /** Dispatch a body call: a waiter, a clip command, or a (possibly cross-level) function call. */
+  private runBodyCall(call: Extract<BodyStatement, { kind: "call" }>, locals: Locals) {
+    const fn = call.functionName;
+    const target = call.target;
+    if (WAITER_FUNCTIONS.has(fn)) {
+      this.options.onWaiter?.(fn, this.parseArgs(call.arguments, locals));
+      return;
+    }
+    if (TIMELINE_COMMANDS.has(fn) && target) {
+      const frame = this.parseArgs(call.arguments, locals)[0] ?? 0;
+      if (/^_level\d+/i.test(target)) this.options.onClipCommand?.(target, fn, frame);
+      else this.runNamedClipCommand(this.root, target, fn, frame);
+      return;
+    }
+    if (!target || target === "self" || target === "this" || target === "_root" || target === "_level0") {
+      this.callFunction(fn, call.arguments, locals);
+    } else if (/^_level\d+/i.test(target)) {
+      this.options.onCallFunction?.(target, fn, this.resolveArgsString(call.arguments, locals));
+    } else {
+      const clip = this.resolveTarget(this.root, target) ?? this.findClipByName(this.root, target);
+      if (clip) this.callClipFunction(clip, fn);
+    }
+  }
+
+  /** Run a timeline command on a clip resolved by name/path (e.g. `yellowPro.gotoAndPlay("over")`). */
+  runNamedClipCommand(from: ClipInstance, path: string, command: string, frame: VarValue): boolean {
+    const clip = this.resolveTarget(from, path) ?? this.findClipByName(from, path) ?? this.findClipByName(this.root, path);
+    if (!clip) return false;
+    const frameIndex = this.resolveClipFrame(clip, frame);
+    if (frameIndex < 0) return false;
+    clip.playing = command === "gotoAndPlay";
+    this.enterFrame(clip, frameIndex, 0);
+    this.render();
+    return true;
+  }
+
+  /** Resolve a label or 1-based frame number against a clip's own timeline. */
+  private resolveClipFrame(clip: ClipInstance, frame: VarValue): number {
+    if (typeof frame === "number") return frame > 0 ? frame - 1 : 0;
+    const frames = this.framesFor(clip);
+    const byLabel = frames?.findIndex((f) => f.label === frame) ?? -1;
+    if (byLabel >= 0) return byLabel;
+    const n = Number(frame);
+    return Number.isFinite(n) ? Math.max(0, n - 1) : -1;
   }
 
   private runFunctionAction(action: ControlAction) {
@@ -287,17 +435,24 @@ export class Player {
   private runCallFunctions(action: ControlAction, clip: ClipInstance = this.root) {
     for (const call of action.functionCalls ?? []) {
       const target = call.target ?? "self";
-      if (target === "self" || target === "this" || target === "_root") {
-        this.callFunction(call.functionName);
-      } else if (target.startsWith("_level")) {
+      const fn = call.functionName;
+      if (WAITER_FUNCTIONS.has(fn)) {
+        this.options.onWaiter?.(fn, this.parseArgs(call.arguments));
+      } else if (TIMELINE_COMMANDS.has(fn) && target !== "self" && target !== "this" && target !== "_root") {
+        const frame = this.parseArgs(call.arguments)[0] ?? 0;
+        if (/^_level\d+/i.test(target)) this.options.onClipCommand?.(target, fn, frame);
+        else this.runNamedClipCommand(clip, target, fn, frame);
+      } else if (target === "self" || target === "this" || target === "_root") {
+        this.callFunction(fn, call.arguments);
+      } else if (/^_level\d+/i.test(target)) {
         // Absolute level targets (`_level6`, `_level0.x`) are routed to the
         // controller, which maps the level back to its Player.
-        this.options.onCallFunction?.(target, call.functionName, call.arguments ?? "");
+        this.options.onCallFunction?.(target, fn, this.resolveArgsString(call.arguments));
       } else {
         // A named nested clip (from `tellTarget("clip")`): resolve it locally and
         // run the clip's own sprite-scoped function (e.g. doFade → gotoAndPlay).
         const targetClip = this.resolveTarget(clip, target) ?? this.findClipByName(clip, target);
-        if (targetClip) this.callClipFunction(targetClip, call.functionName);
+        if (targetClip) this.callClipFunction(targetClip, fn);
       }
     }
   }
@@ -479,6 +634,13 @@ export class Player {
         case "callFunctions":
           this.runCallFunctions(action, clip);
           break;
+        case "setVariable": {
+          // A frame-script `target = value` assignment into the shared store — the
+          // orchestration polls these flags (e.g. `nav.bln_CoreNavLoaded = 1`).
+          const value = this.resolveExpr(action.rawValue ?? String(action.value ?? ""));
+          if (this.store && action.target && value !== undefined) this.store.set(action.target, value);
+          break;
+        }
         default:
           break;
       }
@@ -687,11 +849,16 @@ export class Player {
         out.push(this.buttonNode(key, order.n++, asset, matrix, instance, path));
         this.collectButtonText(asset, matrix, key, order, out, instance);
       } else if (asset.kind === "text") {
+        // editText baked into a sprite is mispositioned by FFDec (glyphs at the field
+        // registration, ignoring its bounds offset/alignment), so we strip the baked copy
+        // and re-draw it here at the field's own bounds. A variable-bound field waits for
+        // its loadVariables() value; a static field (e.g. the "Best for Business" nav
+        // heading) draws its own text.
         const field = this.resolveTextField(asset.id, asset);
-        // Only overlay fields we have a loaded value for (otherwise the baked frame is authoritative).
-        if (field?.normalizedVariableName && this.textVars.has(field.normalizedVariableName)) {
-          out.push(this.leafNode(key, order.n++, asset, asset.src ?? "", matrix, instance.opacity, instance));
-        }
+        const show = field?.normalizedVariableName
+          ? this.textVars.has(field.normalizedVariableName)
+          : Boolean(field?.text && String(field.text).trim());
+        if (show) out.push(this.leafNode(key, order.n++, asset, asset.src ?? "", matrix, instance.opacity, instance));
       } else if (asset.kind === "sprite") {
         const child = clip.childClips.get(instance.depth);
         if (child) this.collectButtons(child, matrix, key, order, out);

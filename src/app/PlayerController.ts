@@ -3,7 +3,7 @@ import { assetUrl, loadTimeline } from "../data/TimelineLoader";
 import { DomRenderer } from "../render/DomRenderer";
 import { FontRegistry } from "../render/TextRenderer";
 import { Player } from "../player/Player";
-import { VariableStore } from "../player/VariableStore";
+import { VariableStore, type VarValue } from "../player/VariableStore";
 import { SoundController } from "../audio/SoundController";
 
 export type PlayerControllerOptions = {
@@ -32,7 +32,9 @@ export class PlayerController {
   /** Levels already (re)loaded in the current sync burst — first load per level wins. */
   private loadBurst = new Set<number>();
   /** Cross-level function calls whose target level hasn't loaded yet. */
-  private pendingCalls: { level: number; name: string }[] = [];
+  private pendingCalls: { level: number; name: string; args?: string }[] = [];
+  /** Active AVM1 waiters (`waitForVal`): poll a store flag, then fire callBack on its level. */
+  private waiters: { level: number; obj: string; val: VarValue; cb: number }[] = [];
   private mainSwf = "";
   private playing = false;
 
@@ -78,6 +80,7 @@ export class PlayerController {
     this.levels.clear();
     this.store.reset();
     this.pendingCalls = [];
+    this.waiters = [];
     this.loadBurst.clear();
     this.sound.destroy();
     this.container.hidden = true;
@@ -138,11 +141,17 @@ export class PlayerController {
       onButtonEvent: (ownerPath, characterId, event) => this.levels.get(level)?.player.handleButtonEvent(ownerPath, characterId, event),
     });
     const player = new Player(timeline, renderer, {
-      onFrame: level === 0 ? (frame, playing) => this.options.onFrame?.(frame, playing, this.main?.currentLabel() ?? "") : undefined,
+      // Level 0 ticks every frame (even when stopped), so poll waiters here.
+      onFrame:
+        level === 0
+          ? (frame, playing) => { this.checkWaiters(); this.options.onFrame?.(frame, playing, this.main?.currentLabel() ?? ""); }
+          : undefined,
       onSound: (action) => this.sound.handle(action),
       onNavigate: (action) => this.handleNavigate(action),
       store: this.store,
-      onCallFunction: (target, name) => this.dispatchCall(target, name),
+      onCallFunction: (target, name, args) => this.dispatchCall(target, name, args),
+      onClipCommand: (target, command, frame) => this.dispatchClipCommand(target, command, frame),
+      onWaiter: (kind, args) => this.registerWaiter(level, kind, args),
       onLoadVariables: (action) => this.handleLoadVariables(level, action),
       isVoiceDone: () => this.sound.isVoiceDone(),
     });
@@ -161,7 +170,40 @@ export class PlayerController {
     if (!ready.length) return;
     this.pendingCalls = this.pendingCalls.filter((c) => c.level !== level);
     const player = this.levels.get(level)?.player;
-    for (const c of ready) player?.callFunction(c.name);
+    for (const c of ready) player?.callFunction(c.name, c.args);
+  }
+
+  /** Register an AVM1 waiter. `waitForVal(obj, val, cb)` fires `callBack(cb)` on its
+   *  owning level once `obj == val`; checked each tick (see checkWaiters). The tour
+   *  uses it to defer the section highlight until the nav reports `bln_CoreNavLoaded`. */
+  private registerWaiter(level: number, kind: string, args: (VarValue | undefined)[]) {
+    if (kind !== "waitForVal") return; // startTimer (time-based) isn't on the highlight path
+    const [obj, val, cb] = args;
+    if (typeof obj !== "string" || val === undefined) return;
+    this.waiters.push({ level, obj, val, cb: Number(cb ?? 0) });
+    this.checkWaiters(); // the watched flag may already hold (nav loaded before the showcase)
+  }
+
+  /** Fire any waiter whose watched store value now equals its target, then drop it. */
+  private checkWaiters() {
+    if (!this.waiters.length) return;
+    const still: typeof this.waiters = [];
+    for (const w of this.waiters) {
+      if (String(this.store.get(w.obj) ?? "") === String(w.val)) this.dispatchCall(`_level${w.level}`, "callBack", String(w.cb));
+      else still.push(w);
+    }
+    this.waiters = still;
+  }
+
+  /** Run a timeline command on a named clip in another level — the nav section
+   *  highlight (`_level6.yellowPro.gotoAndPlay("over")`). */
+  private dispatchClipCommand(target: string, command: string, frame: VarValue) {
+    const match = PARSE_LEVEL.exec(target);
+    if (!match) return;
+    const player = this.levels.get(Number(match[1]))?.player;
+    if (!player) return;
+    const path = target.replace(/^_level\d+\.?/i, ""); // "_level6.yellowPro" → "yellowPro"
+    if (path) player.runNamedClipCommand(player.rootClip, path, command, frame);
   }
 
   /** Fetch a `loadVariables` text file (`&key=value&…`) and feed it to the level's text fields. */
@@ -178,13 +220,13 @@ export class PlayerController {
   }
 
   /** Resolve an absolute `_levelN[.path]` function-call target to that level's Player. */
-  private dispatchCall(target: string, name: string) {
+  private dispatchCall(target: string, name: string, args?: string) {
     const match = PARSE_LEVEL.exec(target);
     if (!match) return;
     const level = Number(match[1]);
     const player = this.levels.get(level)?.player;
-    if (player) player.callFunction(name);
-    else this.pendingCalls.push({ level, name }); // target level not loaded yet
+    if (player) player.callFunction(name, args);
+    else this.pendingCalls.push({ level, name, args }); // target level not loaded yet
   }
 
   private handleNavigate(action: ControlAction) {

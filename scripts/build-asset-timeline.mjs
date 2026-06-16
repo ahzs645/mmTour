@@ -20,6 +20,9 @@ const parser = new XMLParser({
   isArray: (name) => name === "item",
 });
 
+/** Timeline commands on `self` — handled by the frameActions path, not the function body. */
+const SELF_TIMELINE_COMMANDS = new Set(["gotoAndPlay", "gotoAndStop", "play", "stop", "nextFrame", "prevFrame", "stopAllSounds"]);
+
 const swf = parser.parse(readFileSync(xmlPath, "utf8")).swf;
 const tags = asArray(swf.tags?.item);
 const width = rectSize(swf.displayRect?.Xmax, swf.displayRect?.Xmin);
@@ -652,6 +655,9 @@ function discoverDefinedFunctions() {
       const body = source.slice(bodyStart + 1, bodyEnd);
       const assignments = discoverFunctionAssignments(body);
       const calls = discoverFunctionBodyCalls(body);
+      // Branch-aware body: ordered assignments + method-calls, each with the if/else
+      // guard it runs under (so e.g. showSceneMenu only fires the active section's button).
+      const statements = parseStatements(body);
       functions.push(compactObject({
         functionName: match[1],
         parameters: match[2].split(",").map((param) => param.trim()).filter(Boolean),
@@ -659,6 +665,7 @@ function discoverDefinedFunctions() {
         ...(sprite ? { spriteId: Number(sprite[1]) } : {}),
         ...(assignments.length ? { assignments } : {}),
         ...(calls.length ? { calls } : {}),
+        ...(statements.length ? { body: statements } : {}),
         source: sourcePath,
       }));
     }
@@ -1140,13 +1147,32 @@ function discoverFrameActions(frameLabels) {
       const frameMatch = normalized.match(/\/frame_(\d+)\/DoAction\.as$/);
       const frame = Number(frameMatch?.[1] ?? 1) - 1;
       const sourcePath = `scripts/${normalized.split("/scripts/").pop()}`;
+      const body = readFileSync(file, "utf8");
       return {
         frame,
         source: sourcePath,
-        actions: summarizeActionScript(readFileSync(file, "utf8"), frameLabels, sourcePath, "root"),
+        // Frame commands (gotoAndPlay/stop/loadMovie/…) plus top-level variable
+        // assignments (e.g. `nav.bln_CoreNavLoaded = 1`) the orchestration polls for.
+        actions: [...summarizeActionScript(body, frameLabels, sourcePath, "root"), ...frameVariableActions(body, sourcePath)],
       };
     })
     .sort((a, b) => a.frame - b.frame);
+}
+
+/** Top-level `target = value;` assignments in a frame script, as setVariable actions. */
+function frameVariableActions(body, sourcePath) {
+  return parseStatements(body)
+    .filter((statement) => statement.kind === "assign")
+    .map((statement) => compactObject({
+      command: "setVariable",
+      target: statement.target,
+      value: statement.value,
+      rawValue: statement.rawValue,
+      branchCondition: statement.branchCondition,
+      executionContext: statement.branchCondition ? "branch" : "timeline",
+      supported: true,
+      source: sourcePath,
+    }));
 }
 
 function discoverSpriteActions(frameLabels) {
@@ -1553,6 +1579,124 @@ function findMatchingBrace(source, openIndex) {
   return source.length - 1;
 }
 
+function matchParenFrom(source, openIndex) {
+  let depth = 0;
+  for (let i = openIndex; i < source.length; i += 1) {
+    if (source[i] === "(") depth += 1;
+    else if (source[i] === ")") { depth -= 1; if (depth === 0) return i; }
+  }
+  return source.length;
+}
+
+function skipNoiseFrom(source, i) {
+  for (;;) {
+    while (i < source.length && /\s/.test(source[i])) i += 1;
+    if (source.startsWith("//", i)) { const nl = source.indexOf("\n", i); i = nl < 0 ? source.length : nl + 1; continue; }
+    if (source.startsWith("/*", i)) { const e = source.indexOf("*/", i); i = e < 0 ? source.length : e + 2; continue; }
+    break;
+  }
+  return i;
+}
+
+function findStatementEnd(source, i) {
+  let depth = 0;
+  let quote = "";
+  for (; i < source.length; i += 1) {
+    const c = source[i];
+    if (quote) { if (c === quote && source[i - 1] !== "\\") quote = ""; continue; }
+    if (c === '"' || c === "'") quote = c;
+    else if (c === "(" || c === "{" || c === "[") depth += 1;
+    else if (c === ")" || c === "}" || c === "]") depth -= 1;
+    else if (c === ";" && depth === 0) return i;
+  }
+  return source.length;
+}
+
+/**
+ * Parse an ActionScript function/frame body into an ordered list of statements,
+ * each tagged with the combined if/else branch condition under which it runs. The
+ * tour's orchestration functions (e.g. `showSceneMenu`) are if/else chains that
+ * call `_level6.<button>.gotoAndPlay("over")` for the active section — without the
+ * conditions the runtime can't pick the right branch. `else` arms become the
+ * negation of their prior siblings, so each statement carries a self-contained,
+ * `evalCondition`-ready guard. Statement kinds: `assign` (target/rawValue) and
+ * `call` (target/functionName/arguments). Nested function defs are skipped.
+ */
+function parseStatements(src) {
+  const out = [];
+  parseBlock(src, []);
+  return out;
+
+  function parseBlock(code, condStack) {
+    let i = 0;
+    while (i < code.length) {
+      i = skipNoiseFrom(code, i);
+      if (i >= code.length) break;
+      const rest = code.slice(i);
+      if (/^if\s*\(/.test(rest)) { i = parseIf(code, i, condStack); continue; }
+      const fn = /^function\b[^{]*\{/.exec(rest);
+      if (fn) { i = findMatchingBrace(code, i + fn[0].length - 1) + 1; continue; }
+      if (code[i] === "{") { const e = findMatchingBrace(code, i); parseBlock(code.slice(i + 1, e), condStack); i = e + 1; continue; }
+      const semi = findStatementEnd(code, i);
+      emitStatement(code.slice(i, semi).trim(), condStack);
+      i = semi + 1;
+    }
+  }
+
+  function parseIf(code, start, condStack) {
+    let i = start;
+    const priors = [];
+    for (;;) {
+      const m = /^if\s*\(/.exec(code.slice(i));
+      if (!m) break;
+      const condOpen = i + m[0].length - 1;
+      const condClose = matchParenFrom(code, condOpen);
+      const cond = code.slice(condOpen + 1, condClose).trim();
+      const [block, after] = readBlock(code, condClose + 1);
+      parseBlock(block, [...condStack, [...priors.map((c) => `!(${c})`), `(${cond})`].join(" && ")]);
+      priors.push(cond);
+      i = skipNoiseFrom(code, after);
+      if (/^else\s+if\b/.test(code.slice(i))) { i += /^else\s+/.exec(code.slice(i))[0].length; continue; }
+      if (/^else\b/.test(code.slice(i))) {
+        i += /^else\s*/.exec(code.slice(i))[0].length;
+        const [eblock, eafter] = readBlock(code, i);
+        parseBlock(eblock, [...condStack, priors.map((c) => `!(${c})`).join(" && ") || "true"]);
+        i = eafter;
+      }
+      break;
+    }
+    return i;
+  }
+
+  function readBlock(code, from) {
+    const j = skipNoiseFrom(code, from);
+    if (code[j] === "{") { const e = findMatchingBrace(code, j); return [code.slice(j + 1, e), e + 1]; }
+    const semi = findStatementEnd(code, j);
+    return [code.slice(j, semi), semi + 1];
+  }
+
+  function emitStatement(stmt, condStack) {
+    if (!stmt) return;
+    const branchCondition = condStack.length ? condStack.map((c) => `(${c})`).join(" && ") : undefined;
+    const call = /^([A-Za-z_$][\w$.]*)\s*\(([\s\S]*)\)$/.exec(stmt);
+    if (call) {
+      const path = call[1];
+      const dot = path.lastIndexOf(".");
+      const target = dot > 0 ? path.slice(0, dot) : undefined;
+      const functionName = dot > 0 ? path.slice(dot + 1) : path;
+      if (functionName === "trace" || functionName === "var") return;
+      // Self timeline commands (gotoAndPlay(60), stop()) are handled by frameActions.
+      if (!target && SELF_TIMELINE_COMMANDS.has(functionName)) return;
+      out.push(compactObject({ kind: "call", target, functionName, arguments: call[2].trim() || undefined, branchCondition }));
+      return;
+    }
+    const asg = /^(?:var\s+)?([A-Za-z_$][\w$.]*)\s*=\s*([\s\S]+)$/.exec(stmt);
+    if (asg && !/^[=<>!]/.test(asg[2])) {
+      out.push(compactObject({ kind: "assign", target: asg[1], value: parseActionScriptLiteral(asg[2]), rawValue: asg[2].trim(), branchCondition }));
+    }
+  }
+}
+
 function contextAt(contexts, index) {
   return contexts.find((context) => index > context.bodyStart && index < context.end);
 }
@@ -1700,17 +1844,18 @@ function buttonDynamicTextField(svgPath, isDynamic) {
 }
 
 /**
- * Strip baked dynamic-text `<use>`s from sprite frame SVGs. FFDec bakes an editText's
- * INITIAL content into the composited frame — and for left-aligned fields it positions
- * the glyphs at the field registration, not the (negative) bounds offset, so the text
- * renders mispositioned/clipped (e.g. nav "Skip Intro" appeared center-truncated). The
- * runtime overlays the live loadVariables() value at the correct position, so drop the
- * baked copy to avoid a mispositioned double.
+ * Strip baked editText `<use>`s from sprite frame SVGs. FFDec bakes an editText's content
+ * into the composited frame positioned at the field REGISTRATION — ignoring the field's
+ * bounds offset and alignment — so it renders mispositioned/clipped (the nav "Skip Intro"
+ * appeared center-truncated; the right-aligned "Best for Business" heading baked off the
+ * sprite's right edge). The runtime re-draws every editText at its own bounds (loadVariables
+ * value, or the field's static text), so drop the baked copy. DefineText statics (no editText
+ * styling, i.e. no `.text`) are positioned correctly by FFDec and left untouched.
  */
 function stripBakedDynamicText(assetDefs) {
   const ids = new Set(
     Object.values(assetDefs)
-      .filter((a) => a?.kind === "text" && a?.text?.normalizedVariableName)
+      .filter((a) => a?.kind === "text" && a?.text)
       .map((a) => a.id),
   );
   const spritesDir = join(publicDir, "sprites");

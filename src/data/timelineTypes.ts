@@ -93,12 +93,29 @@ export type ActionCommand =
   | "markSndSegment"
   | "attachSound"
   | "stopSound"
-  | "callFunctions";
+  | "callFunctions"
+  | "setVariable";
 
 export type FunctionCall = {
   target: string;
   functionName: string;
   arguments: string;
+};
+
+/** One statement of a parsed AVM1 function body, guarded by its if/else chain. */
+export type BodyStatement =
+  | { kind: "assign"; target: string; value?: string | number | boolean; rawValue: string; branchCondition?: string }
+  | { kind: "call"; target?: string; functionName: string; arguments?: string; branchCondition?: string };
+
+/** A user-defined AVM1 function as extracted (definedFunctions entry). */
+export type DefinedFunction = {
+  functionName: string;
+  parameters?: string[];
+  scope?: "root" | "sprite" | string;
+  spriteId?: number;
+  assignments?: { target: string; value?: unknown; rawValue?: string }[];
+  body?: BodyStatement[];
+  source?: string;
 };
 
 export type ControlAction = {
@@ -119,6 +136,9 @@ export type ControlAction = {
   functionBranchCondition?: string;
   /** if/else guard for a "branch"-context inline frame action; "else" pairs with the preceding arm. */
   branchCondition?: string;
+  /** setVariable fields: a frame-script `target = value` assignment. */
+  value?: string | number | boolean;
+  rawValue?: string;
   /** Sound action fields (attachSound/playVO/stopSound). */
   sound?: string;
   soundSrc?: string;

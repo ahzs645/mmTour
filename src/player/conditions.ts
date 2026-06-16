@@ -32,6 +32,11 @@ function evalFactor(expr: string, store: VariableStore): boolean {
   let e = expr.trim();
   // Strip a wrapping paren group: (….)
   while (e.startsWith("(") && matchingParen(e) === e.length - 1) e = e.slice(1, -1).trim();
+  // Re-enter the precedence chain for any top-level boolean ops BEFORE handling `!`
+  // (which binds tighter than `&&`/`||`) — so `!(a && b) && c` parses as `(!(a&&b)) && c`,
+  // not `!((a&&b) && c)`. A stripped group like `(a == "Pro" && b)` is handled here too.
+  if (splitTop(e, "||").length > 1) return evalOr(e, store);
+  if (splitTop(e, "&&").length > 1) return evalAnd(e, store);
   if (e.startsWith("!")) return !evalFactor(e.slice(1), store);
 
   for (const op of ["==", "!=", "<=", ">=", "<", ">"] as const) {
