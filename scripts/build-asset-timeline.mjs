@@ -326,6 +326,8 @@ function buildFrames(allTags) {
         name: tag.name ?? existing.name,
         matrix: tag.matrix ? matrixFromTag(tag.matrix) : existing.matrix,
         opacity: tag.colorTransform ? opacityFromTag(tag.colorTransform) : existing.opacity,
+        // Colour tint (RGB mult+add) lives on the placement, separate from alpha.
+        colorTransform: tag.colorTransform ? colorTransformFromTag(tag.colorTransform) : existing.colorTransform,
         // A PlaceObject2 with clipDepth > 0 is a mask clipping depths (depth, clipDepth].
         clipDepth: clipDepth > 0 ? clipDepth : hasNewCharacter ? undefined : existing.clipDepth,
       };
@@ -1613,6 +1615,25 @@ function opacityFromTag(transform) {
   const mult = number(transform.alphaMultTerm, 256) / 256;
   const add = number(transform.alphaAddTerm, 0) / 255;
   return Math.max(0, Math.min(1, mult + add));
+}
+
+/**
+ * Extract the RGB part of a CXFORMWITHALPHA as normalized mult (term/256) + add
+ * (term/255) per channel. Alpha is handled separately via `opacity`, so this
+ * returns only the colour tint (e.g. the tour-shell swoosh's #6699cc stroke is
+ * lightened toward white). Returns undefined when the RGB transform is identity.
+ */
+function colorTransformFromTag(transform) {
+  if (!transform) return undefined;
+  const rm = number(transform.redMultTerm, 256) / 256;
+  const gm = number(transform.greenMultTerm, 256) / 256;
+  const bm = number(transform.blueMultTerm, 256) / 256;
+  const ra = number(transform.redAddTerm, 0) / 255;
+  const ga = number(transform.greenAddTerm, 0) / 255;
+  const ba = number(transform.blueAddTerm, 0) / 255;
+  if (rm === 1 && gm === 1 && bm === 1 && ra === 0 && ga === 0 && ba === 0) return undefined;
+  const round = (n) => Math.round(n * 1000) / 1000;
+  return { rm: round(rm), gm: round(gm), bm: round(bm), ra: round(ra), ga: round(ga), ba: round(ba) };
 }
 
 function colorFromTag(color) {

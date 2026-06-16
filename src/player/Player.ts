@@ -29,6 +29,13 @@ export type PlayerOptions = {
   store?: VariableStore;
   /** Dispatch a function call whose target is another level (`_levelN[.path].fn`). */
   onCallFunction?: (target: string, name: string, args: string) => void;
+  /**
+   * Fired once when the root finishes its forward entrance and starts holding —
+   * i.e. a timeline `gotoAndPlay` loops the root back to an earlier frame. The
+   * shell uses this to time its intro→interactive hand-off to AFTER the intro
+   * fly-in has played, rather than snapping straight to the settled state.
+   */
+  onRootHold?: () => void;
 };
 
 const ROOT_ID = -1;
@@ -59,6 +66,7 @@ export class Player {
   private readonly spriteStop = new Map<number, Set<number>>();
   private readonly functions = new Map<string, FunctionDef>();
   private readonly store?: VariableStore;
+  private rootHoldFired = false;
 
   private root: ClipInstance;
   private clipByPath = new Map<string, ClipInstance>();
@@ -134,6 +142,7 @@ export class Player {
 
   seekRootFrame(frame: number) {
     this.ticker.pause();
+    this.rootHoldFired = false;
     this.root = this.buildRoot(clamp(frame, 0, this.frameCount - 1));
     this.render();
     this.options.onFrame?.(this.root.currentFrame, false);
@@ -361,6 +370,12 @@ export class Player {
           const target = this.resolveTarget(clip, action.target);
           const frame = this.resolveFrame(action, target);
           if (!target || frame < 0) break;
+          // The root looping back to an earlier frame = it finished its forward
+          // entrance and is now holding (e.g. the intro fly-in's hold-loop).
+          if (clip === this.root && target === this.root && frame < clip.currentFrame && !this.rootHoldFired) {
+            this.rootHoldFired = true;
+            this.options.onRootHold?.();
+          }
           target.playing = action.command === "gotoAndPlay";
           if (target !== clip || frame !== clip.currentFrame) this.enterFrame(target, frame, depth + 1);
           break;

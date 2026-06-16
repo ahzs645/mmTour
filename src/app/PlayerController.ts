@@ -143,12 +143,13 @@ export class PlayerController {
       onNavigate: (action) => this.handleNavigate(action),
       store: this.store,
       onCallFunction: (target, name) => this.dispatchCall(target, name),
+      onRootHold: level > 0 ? () => this.runInteractiveEntry(level) : undefined,
     });
     this.levels.set(level, { player, layer, swf });
     // Levels loaded after playback has started must catch up (e.g. the shell's
     // intro/_level4 loads async, after the main Play already fired).
     if (this.playing) player.play();
-    this.afterLevelLoaded(level);
+    this.flushPendingCalls(level);
   }
 
   /**
@@ -160,16 +161,24 @@ export class PlayerController {
    * Pro vs Personal toolbar from the SWF's own data. Nothing here is scene- or
    * frame-specific — an unrelated SWF is driven entirely from its own functions.
    */
-  private afterLevelLoaded(level: number) {
-    const host = this.main;
-    if (!host || level <= 0) return; // only react to companion levels of the host
-    // Flush any cross-level calls that were waiting on this level to exist.
+  /** Flush cross-level calls that were waiting on `level` to exist. */
+  private flushPendingCalls(level: number) {
     const ready = this.pendingCalls.filter((c) => c.level === level);
-    if (ready.length) {
-      this.pendingCalls = this.pendingCalls.filter((c) => c.level !== level);
-      const player = this.levels.get(level)?.player;
-      for (const c of ready) player?.callFunction(c.name);
-    }
+    if (!ready.length) return;
+    this.pendingCalls = this.pendingCalls.filter((c) => c.level !== level);
+    const player = this.levels.get(level)?.player;
+    for (const c of ready) player?.callFunction(c.name);
+  }
+
+  /**
+   * Run the host's intro→interactive transition for `level` — but only AFTER that
+   * level has played its forward entrance (its `onRootHold` fired). So the intro
+   * fly-in plays first, then the menu + nav entrance come on, instead of snapping
+   * straight to the settled state.
+   */
+  private runInteractiveEntry(level: number) {
+    const host = this.main;
+    if (!host) return;
     const entry = host.interactiveEntryFor(level);
     if (entry) host.callFunction(entry);
   }
