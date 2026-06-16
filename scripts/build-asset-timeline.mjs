@@ -37,6 +37,7 @@ const globalDefaults = discoverGlobalDefaults();
 const assets = discoverAssets(tags);
 const frames = buildFrames(tags);
 attachSpriteTimelines(assets, tags);
+markOverflowingSprites(assets);
 const labels = Object.fromEntries(frames.filter((frame) => frame.label).map((frame) => [frame.label, frame.index]));
 const entryFrame = discoverEntryFrame(labels);
 const spriteStopFrames = discoverSpriteStopFrames();
@@ -394,6 +395,42 @@ function attachSpriteTimelines(assetDefs, allTags) {
       label: frame.label || undefined,
       instances: frame.instances,
     }));
+  }
+}
+
+/**
+ * Flag sprites whose animated content slides OUTSIDE their own bounds — FFDec bakes each
+ * frame clipped to the sprite bounds, so moving content (e.g. the nav cascade buttons
+ * sliding vertically through their ~28px-tall *ProAnim sprites) gets dropped from the baked
+ * frame, making it flicker. The runtime renders these from the display-list tree instead
+ * (the instances persist there, unclipped). Skip sprites that use a clip-mask (clipDepth) —
+ * those rely on the baked composite, which the tree can't reproduce.
+ */
+function markOverflowingSprites(assetDefs) {
+  for (const asset of Object.values(assetDefs)) {
+    if (asset?.kind !== "sprite" || !asset.timeline?.length || !asset.frames?.length) continue;
+    const b = asset.origin;
+    if (!b || !b.width || !b.height) continue;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, hasMask = false, any = false;
+    for (const frame of asset.timeline) {
+      for (const ins of frame.instances ?? []) {
+        if (ins.clipDepth) hasMask = true;
+        const child = assetDefs[String(ins.characterId)] ?? assetDefs[`button:${ins.characterId}`];
+        const o = child?.origin;
+        if (!o || (!o.width && !o.height)) continue;
+        const m = ins.matrix ?? { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 };
+        for (const [cx, cy] of [[o.x, o.y], [o.x + o.width, o.y], [o.x, o.y + o.height], [o.x + o.width, o.y + o.height]]) {
+          const x = m.a * cx + m.c * cy + m.tx;
+          const y = m.b * cx + m.d * cy + m.ty;
+          minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); any = true;
+        }
+      }
+    }
+    if (!any || hasMask) continue;
+    const T = 20; // tolerance for minor/rounding overflow
+    if (minX < b.x - T || minY < b.y - T || maxX > b.x + b.width + T || maxY > b.y + b.height + T) {
+      asset.overflowsBounds = true;
+    }
   }
 }
 

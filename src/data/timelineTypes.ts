@@ -47,6 +47,9 @@ export type TimelineAsset = {
   timeline?: TimelineFrame[];
   /** Button up/over/down/hit state artwork. */
   states?: Partial<Record<"up" | "over" | "down" | "hit", ButtonState>>;
+  /** This sprite's animated content slides outside its own bounds, so its baked frames clip
+   *  the moving content — render it from the nested timeline (tree) instead of the baked frame. */
+  overflowsBounds?: boolean;
   /** Styling for a text/edit-text field (font, size, color, box, initial content). */
   text?: DynamicText;
   /**

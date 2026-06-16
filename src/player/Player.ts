@@ -831,14 +831,16 @@ export class Player {
       // (FFDec bakes masks/group-alpha the nested leaves would lose), and overlay
       // transparent button hit areas from its nested timeline so it stays
       // interactive and its frame scripts still run (logic lives in the tree).
-      if (asset.kind === "sprite" && asset.frames?.length) {
+      if (asset.kind === "sprite" && asset.frames?.length && !asset.overflowsBounds) {
         const frameIndex = child ? clamp(child.currentFrame, 0, asset.frames.length - 1) : 0;
         out.push(this.spriteNode(key, order.n++, asset, asset.frames[frameIndex], matrix, opacity, instance, child?.currentFrame));
         if (child && asset.timeline?.length) this.collectButtons(child, matrix, key, order, out);
         continue;
       }
 
-      // Sprite with only a nested timeline (no baked frames) → render the tree.
+      // Sprite whose animated content slides outside its baked-frame bounds (e.g. the nav
+      // cascade buttons), or a sprite with only a nested timeline (no baked frames) →
+      // render from the display-list tree so the moving content isn't clipped/dropped.
       if (asset.kind === "sprite" && asset.timeline?.length && child && child.characterId === asset.id) {
         this.clipByPath.set(key, child);
         this.flatten(child, matrix, opacity, key, order, out);
