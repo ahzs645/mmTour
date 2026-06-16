@@ -1844,18 +1844,18 @@ function buttonDynamicTextField(svgPath, isDynamic) {
 }
 
 /**
- * Strip baked editText `<use>`s from sprite frame SVGs. FFDec bakes an editText's content
- * into the composited frame positioned at the field REGISTRATION — ignoring the field's
- * bounds offset and alignment — so it renders mispositioned/clipped (the nav "Skip Intro"
- * appeared center-truncated; the right-aligned "Best for Business" heading baked off the
- * sprite's right edge). The runtime re-draws every editText at its own bounds (loadVariables
- * value, or the field's static text), so drop the baked copy. DefineText statics (no editText
- * styling, i.e. no `.text`) are positioned correctly by FFDec and left untouched.
+ * Strip baked dynamic-text `<use>`s from sprite frame SVGs. FFDec bakes a loadVariables()
+ * editText's INITIAL content into the composited frame at the field registration (ignoring
+ * the bounds offset), so it renders mispositioned/clipped (e.g. nav "Skip Intro"). The runtime
+ * overlays the live value at the correct position, so drop the baked copy. Only variable-bound
+ * fields are stripped — static editText (incl. masked title strips like the nav section
+ * headings) stay baked, since FFDec composites their masks correctly and the runtime can't
+ * mask-clip a DOM overlay.
  */
 function stripBakedDynamicText(assetDefs) {
   const ids = new Set(
     Object.values(assetDefs)
-      .filter((a) => a?.kind === "text" && a?.text)
+      .filter((a) => a?.kind === "text" && a?.text?.normalizedVariableName)
       .map((a) => a.id),
   );
   const spritesDir = join(publicDir, "sprites");

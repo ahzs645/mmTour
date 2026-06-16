@@ -275,10 +275,13 @@ export class Player {
       if (this.store && !evalCondition(action.functionBranchCondition, this.store)) continue;
       this.runFunctionAction(action);
     }
-    for (const statement of def.body) {
-      if (!this.branchPasses(statement.branchCondition, locals)) continue;
-      this.runBodyStatement(statement, locals);
-    }
+    // Evaluate every body guard against the store as it is on ENTRY, then run the passing
+    // statements. AVM1 checks an `if` once when control reaches it, not per statement — so a
+    // statement that sets a variable named in its own block's guard (e.g.
+    // LoadInitialInteractive's `if(!blnDisableSkip){ blnDisableSkip=1; blnIntroMode=0; … }`)
+    // must not cause the later same-guarded statements to be skipped.
+    const decisions = def.body.map((statement) => this.branchPasses(statement.branchCondition, locals));
+    def.body.forEach((statement, i) => { if (decisions[i]) this.runBodyStatement(statement, locals); });
     this.render();
     return true;
   }
@@ -840,7 +843,14 @@ export class Player {
     const frame = frames[clip.currentFrame];
     if (!frame) return;
 
+    // Track the active SWF clip-mask: a mask at depth D with clipDepth C clips the
+    // instances at depths D+1..C. A loadVariables() field inside a mask is part of a
+    // title-strip the baked frame already composites (revealing one), so overlaying it
+    // here would bypass the mask and stack every title — skip those.
+    let maskClip = 0;
     for (const instance of frame.instances) {
+      if (maskClip && instance.depth > maskClip) maskClip = 0;
+      if (instance.clipDepth) { maskClip = instance.clipDepth; continue; }
       const asset = this.getAsset(instance.characterId);
       if (!asset) continue;
       const matrix = multiplyMatrix(world, instance.matrix);
@@ -849,16 +859,12 @@ export class Player {
         out.push(this.buttonNode(key, order.n++, asset, matrix, instance, path));
         this.collectButtonText(asset, matrix, key, order, out, instance);
       } else if (asset.kind === "text") {
-        // editText baked into a sprite is mispositioned by FFDec (glyphs at the field
-        // registration, ignoring its bounds offset/alignment), so we strip the baked copy
-        // and re-draw it here at the field's own bounds. A variable-bound field waits for
-        // its loadVariables() value; a static field (e.g. the "Best for Business" nav
-        // heading) draws its own text.
         const field = this.resolveTextField(asset.id, asset);
-        const show = field?.normalizedVariableName
-          ? this.textVars.has(field.normalizedVariableName)
-          : Boolean(field?.text && String(field.text).trim());
-        if (show) out.push(this.leafNode(key, order.n++, asset, asset.src ?? "", matrix, instance.opacity, instance));
+        // Only overlay loadVariables()-bound fields we have a value for (they're baked empty),
+        // and only when NOT inside a mask (else the baked frame's masked composite is authoritative).
+        if (maskClip === 0 && field?.normalizedVariableName && this.textVars.has(field.normalizedVariableName)) {
+          out.push(this.leafNode(key, order.n++, asset, asset.src ?? "", matrix, instance.opacity, instance));
+        }
       } else if (asset.kind === "sprite") {
         const child = clip.childClips.get(instance.depth);
         if (child) this.collectButtons(child, matrix, key, order, out);
