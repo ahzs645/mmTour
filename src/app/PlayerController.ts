@@ -154,6 +154,9 @@ export class PlayerController {
       onWaiter: (kind, args) => this.registerWaiter(level, kind, args),
       onLoadVariables: (action) => this.handleLoadVariables(level, action),
       isVoiceDone: () => this.sound.isVoiceDone(),
+      // A movie loaded into a higher level plays from frame 0 (so its load-time gating runs,
+      // e.g. segment4's `if(doAttractLoop) stay blank`); entryFrame is only the standalone preview.
+      startFrame: level > 0 ? 0 : undefined,
     });
     this.levels.set(level, { player, layer, swf });
     // Levels loaded after playback has started must catch up (e.g. the shell's

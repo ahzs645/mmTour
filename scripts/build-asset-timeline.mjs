@@ -1553,16 +1553,25 @@ function findFunctionContexts(source) {
 
 function findBranchContexts(source) {
   const contexts = [];
-  for (const match of source.matchAll(/(?:else\s+if|if)\s*\(([^)]*)\)\s*\{|else\s*\{/g)) {
-    const bodyStart = (match.index ?? 0) + match[0].length - 1;
-    const bodyEnd = findMatchingBrace(source, bodyStart);
-    contexts.push({
-      type: "branch",
-      condition: match[1]?.trim() || "else",
-      start: match.index ?? 0,
-      bodyStart,
-      end: bodyEnd,
-    });
+  const re = /(?:else\s+if|if)\s*\(|else\s*\{/g;
+  let match;
+  while ((match = re.exec(source)) !== null) {
+    let condition;
+    let bodyStart;
+    if (match[0].endsWith("{")) {
+      condition = "else";
+      bodyStart = match.index + match[0].length - 1;
+    } else {
+      // Balance-match the condition's parens so nested calls survive, e.g.
+      // `if(!timeMarkDone(AttractLoopWaitTime))` (the attract-loop hold guard).
+      const parenOpen = match.index + match[0].length - 1;
+      const parenClose = matchParenFrom(source, parenOpen);
+      condition = source.slice(parenOpen + 1, parenClose).trim() || "else";
+      bodyStart = source.indexOf("{", parenClose);
+      if (bodyStart < 0) continue;
+      re.lastIndex = bodyStart;
+    }
+    contexts.push({ type: "branch", condition, start: match.index, bodyStart, end: findMatchingBrace(source, bodyStart) });
   }
   return contexts;
 }
@@ -1855,7 +1864,7 @@ function buttonDynamicTextField(svgPath, isDynamic) {
 function stripBakedDynamicText(assetDefs) {
   const ids = new Set(
     Object.values(assetDefs)
-      .filter((a) => a?.kind === "text" && a?.text?.normalizedVariableName)
+      .filter((a) => a?.kind === "text" && a?.text)
       .map((a) => a.id),
   );
   const spritesDir = join(publicDir, "sprites");

@@ -50,6 +50,9 @@ export type PlayerOptions = {
   onLoadVariables?: (action: ControlAction) => void;
   /** Whether the current voice-over segment has finished (drives VO-gated holds). */
   isVoiceDone?: () => boolean;
+  /** Frame to start at. Overrides `timeline.entryFrame` — a movie LOADED via loadMovieNum
+   *  must start at 0 to run its gating logic; entryFrame is only the standalone preview frame. */
+  startFrame?: number;
 };
 
 const ROOT_ID = -1;
@@ -102,7 +105,7 @@ export class Player {
     this.assets = timeline.assets ?? {};
     this.rootFrames = timeline.frames ?? [];
     this.rootStop = new Set(timeline.control?.stopFrames ?? []);
-    this.startFrame = clamp(timeline.entryFrame ?? 0, 0, Math.max(0, this.rootFrames.length - 1));
+    this.startFrame = clamp(options.startFrame ?? timeline.entryFrame ?? 0, 0, Math.max(0, this.rootFrames.length - 1));
 
     // Root frame scripts: array of {frame, actions[]}. Keep timeline + branch
     // (if/else) actions; function-context actions belong to the function table.
@@ -312,10 +315,17 @@ export class Player {
     return parts.map((p) => this.resolveExpr(p.trim(), locals));
   }
 
+  /** Milliseconds since page start — AVM1 `getTimer()`. Absolute, so it's consistent
+   *  across levels (the nav reads `bkgd.timeTarg` set by `_level0.setTimeMark`). */
+  private getTimer(): number {
+    return performance.now();
+  }
+
   /** Resolve an assignment RHS / argument expression to a value (param refs → locals). */
   private resolveExpr(raw: string, locals?: Locals): VarValue | undefined {
     const e = raw.trim();
     if (e === "") return undefined;
+    if (e === "getTimer()") return this.getTimer();
     if ((e.startsWith('"') && e.endsWith('"')) || (e.startsWith("'") && e.endsWith("'"))) return e.slice(1, -1);
     if (e === "true") return true;
     if (e === "false") return false;
@@ -324,6 +334,20 @@ export class Player {
     // A bare identifier/path is a variable read (e.g. a flag); fall back to the literal.
     if (/^[A-Za-z_$][\w$.]*$/.test(e)) return this.store?.get(e) ?? undefined;
     return e; // array literals etc. — kept as their source text
+  }
+
+  /** Evaluate a branch guard, first resolving the AVM1 `timeMarkDone(inc)` timer
+   *  (true once `inc` ms have elapsed since the last `setTimeMark` set `bkgd.timeTarg`).
+   *  This is what holds the nav attract-loop cascade for AttractLoopWaitTime before it exits. */
+  private evalGuard(condition: string | undefined): boolean {
+    if (!this.store) return !condition;
+    if (!condition) return true;
+    const resolved = condition.replace(/[\w.]*\btimeMarkDone\s*\(([^)]*)\)/g, (_m, arg: string) => {
+      const inc = Number(this.resolveExpr(arg.trim()) ?? 0);
+      const mark = Number(this.store?.get("bkgd.timeTarg") ?? 0);
+      return this.getTimer() > mark + inc ? "1" : "0";
+    });
+    return evalCondition(resolved, this.store);
   }
 
   /** Re-serialise a call's arguments to a literal string for crossing a level boundary. */
@@ -573,25 +597,28 @@ export class Player {
   }
 
   private runScript(clip: ClipInstance, depth: number) {
-    // Inline frame scripts mix unconditional (timeline) actions with the arms of
-    // if/else chains (branch). Evaluate each branch arm: a real condition is tested
-    // on its own (independent `if`s, e.g. the nav's per-section checks), while an
-    // `else` fires only when the branch immediately before it didn't match (e.g. the
-    // intro's `if(OSVersion=="Per") gotoAndPlay(343) else gotoAndPlay(195)`). A
-    // timeline action resets the chain. This is what advances the intro past its
-    // f194 stop into the OS-specific showcase.
-    let prevBranchMatched: boolean | null = null;
-    for (const action of this.actionsFor(clip)) {
-      if (action.executionContext === "branch") {
-        const matched: boolean =
-          action.branchCondition === "else"
-            ? prevBranchMatched !== true
-            : !this.store || evalCondition(action.branchCondition, this.store);
-        prevBranchMatched = matched;
-        if (!matched) continue;
-      } else {
-        prevBranchMatched = null;
+    const actions = this.actionsFor(clip);
+    // Inline frame scripts mix unconditional (timeline) actions with the arms of if/else
+    // chains (branch). Decide each branch arm GROUP-WISE rather than by adjacency: within a
+    // run of consecutive branch actions, an arm with a real condition fires when that
+    // condition holds, and an `else` arm fires only when NO real arm in the group matched.
+    // (Order-independent — the build can emit the `else` arm before its `if`, e.g. segment4's
+    // `if(doAttractLoop==1) doAttractLoop=0; else gotoAndPlay(11)` extracts the goto first.)
+    const fire = actions.map(() => true);
+    for (let i = 0; i < actions.length; ) {
+      if (actions[i].executionContext !== "branch") { i += 1; continue; }
+      let j = i;
+      while (j < actions.length && actions[j].executionContext === "branch") j += 1;
+      const isElse = (a: ControlAction) => !a.branchCondition || a.branchCondition === "else";
+      const anyReal = actions.slice(i, j).some((a) => !isElse(a) && this.evalGuard(a.branchCondition));
+      for (let k = i; k < j; k += 1) {
+        fire[k] = isElse(actions[k]) ? !anyReal : this.evalGuard(actions[k].branchCondition);
       }
+      i = j;
+    }
+    for (let idx = 0; idx < actions.length; idx += 1) {
+      if (!fire[idx]) continue;
+      const action = actions[idx];
       switch (action.command) {
         case "stop":
           clip.playing = false;
@@ -609,7 +636,10 @@ export class Player {
           // finishes, then skip the jump so the intro advances to the next beat.
           // (Larger loops — section/idle loops — fall through and loop normally; the
           // intro→menu hand-off is driven by the data's LoadInitialInteractive call.)
-          if (action.command === "gotoAndPlay" && clip === this.root && target === this.root && frame < clip.currentFrame) {
+          // A timer hold (`if(!timeMarkDone(...))gotoAndPlay(prev)`) is NOT a VO hold —
+          // it's already gated by evalGuard's timer, so don't let the VO release skip it.
+          const isTimerHold = action.branchCondition?.includes("timeMarkDone");
+          if (!isTimerHold && action.command === "gotoAndPlay" && clip === this.root && target === this.root && frame < clip.currentFrame) {
             const delta = clip.currentFrame - frame;
             if (delta <= VO_HOLD_DELTA && this.voWaiting && (this.options.isVoiceDone?.() ?? true)) {
               this.voWaiting = false;
@@ -686,6 +716,12 @@ export class Player {
       if (action.label in labels) return labels[action.label];
     }
     if (typeof action.frame === "number") return action.frame;
+    // Relative self-jump like `gotoAndPlay(_currentframe - 1)` (the attract-loop hold).
+    const rel = action.frameExpression?.match(/^_currentframe\s*([+-])\s*(\d+)$/);
+    if (rel && target) {
+      const delta = Number(rel[2]) * (rel[1] === "-" ? -1 : 1);
+      return clamp(target.currentFrame + delta, 0, Math.max(0, this.frameCountFor(target) - 1));
+    }
     return -1;
   }
 
@@ -843,14 +879,8 @@ export class Player {
     const frame = frames[clip.currentFrame];
     if (!frame) return;
 
-    // Track the active SWF clip-mask: a mask at depth D with clipDepth C clips the
-    // instances at depths D+1..C. A loadVariables() field inside a mask is part of a
-    // title-strip the baked frame already composites (revealing one), so overlaying it
-    // here would bypass the mask and stack every title — skip those.
-    let maskClip = 0;
     for (const instance of frame.instances) {
-      if (maskClip && instance.depth > maskClip) maskClip = 0;
-      if (instance.clipDepth) { maskClip = instance.clipDepth; continue; }
+      if (instance.clipDepth) continue; // a mask shape — not an overlay leaf
       const asset = this.getAsset(instance.characterId);
       if (!asset) continue;
       const matrix = multiplyMatrix(world, instance.matrix);
@@ -859,10 +889,14 @@ export class Player {
         out.push(this.buttonNode(key, order.n++, asset, matrix, instance, path));
         this.collectButtonText(asset, matrix, key, order, out, instance);
       } else if (asset.kind === "text") {
+        // editText is stripped from the baked sprite frame (FFDec bakes it mispositioned),
+        // so re-draw it here at its own bounds: a loadVariables()-bound field once its value
+        // loads, or a static field (e.g. the "Best for Business" nav title) from its own text.
         const field = this.resolveTextField(asset.id, asset);
-        // Only overlay loadVariables()-bound fields we have a value for (they're baked empty),
-        // and only when NOT inside a mask (else the baked frame's masked composite is authoritative).
-        if (maskClip === 0 && field?.normalizedVariableName && this.textVars.has(field.normalizedVariableName)) {
+        const show = field?.normalizedVariableName
+          ? this.textVars.has(field.normalizedVariableName)
+          : Boolean(field?.text && String(field.text).trim());
+        if (show) {
           out.push(this.leafNode(key, order.n++, asset, asset.src ?? "", matrix, instance.opacity, instance));
         }
       } else if (asset.kind === "sprite") {
