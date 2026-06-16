@@ -848,7 +848,8 @@ export class Player {
       }
 
       if (asset.kind === "button") {
-        out.push(this.buttonNode(key, order.n++, asset, matrix, instance, path));
+        // Tree path: no baked frame behind the button, so render its up-state artwork.
+        out.push(this.buttonNode(key, order.n++, asset, matrix, instance, path, true, opacity));
         this.collectButtonText(asset, matrix, key, order, out, instance);
         continue;
       }
@@ -888,7 +889,8 @@ export class Player {
       const matrix = multiplyMatrix(world, instance.matrix);
       const key = `${path}/${instance.depth}`;
       if (asset.kind === "button") {
-        out.push(this.buttonNode(key, order.n++, asset, matrix, instance, path));
+        // Baked path: the button's visual is in the composited frame — just a hit area.
+        out.push(this.buttonNode(key, order.n++, asset, matrix, instance, path, false));
         this.collectButtonText(asset, matrix, key, order, out, instance);
       } else if (asset.kind === "text") {
         // editText is stripped from the baked sprite frame (FFDec bakes it mispositioned),
@@ -934,7 +936,16 @@ export class Player {
     };
   }
 
-  /** A transparent, sized hit area over a button (its visual is in the baked sprite frame). */
+  /**
+   * A sized, interactive button node. In the baked path (collectButtons) the button's
+   * visual is already in the composited sprite frame, so this is just a transparent hit
+   * area (renderArtwork=false). In the tree path (flatten) there is no baked frame behind
+   * it, so it carries its up-state artwork as the visual (renderArtwork=true) — buttons
+   * whose up-state is empty (pure hit areas, e.g. the nav section buttons whose art is a
+   * sibling shape) simply draw nothing, while buttons that ARE their own art (the kiosk
+   * play/exit/sound icons) draw it. The owning clip's playhead still drives any rollover/
+   * press animation via gotoAndPlay, so the artwork follows the live frame transform.
+   */
   private buttonNode(
     key: string,
     order: number,
@@ -942,17 +953,20 @@ export class Player {
     matrix: RenderNode["matrix"],
     instance: TimelineFrame["instances"][number],
     ownerPath: string,
+    renderArtwork: boolean,
+    opacity = 1,
   ): RenderNode {
+    const up = renderArtwork ? asset.states?.up : undefined;
     return {
       key,
       order,
       characterId: asset.id,
       kind: "button",
       name: instance.name,
-      src: "",
-      origin: asset.origin,
+      src: up?.src ?? "",
+      origin: up?.origin ?? asset.origin,
       matrix,
-      opacity: 1,
+      opacity: up?.src ? opacity : 1,
       buttonOwnerPath: ownerPath,
     };
   }

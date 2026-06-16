@@ -212,9 +212,13 @@ export class DomRenderer {
       return text;
     }
     if (node.kind === "button") {
-      // Transparent hit area; the button's artwork is part of the baked sprite frame.
-      const hit = document.createElement("div");
+      // The button is its own hit area; it shows its up-state artwork when one was
+      // provided (tree path) and is otherwise transparent (visual lives in the baked
+      // sprite frame). An <img> with no src renders nothing but still sizes/hits.
+      const hit = document.createElement("img");
       hit.className = "player-hit";
+      hit.decoding = "async";
+      hit.draggable = false;
       return hit;
     }
     const image = document.createElement("img");
@@ -234,7 +238,8 @@ export class DomRenderer {
       return;
     }
     if (rendered.src !== node.src && rendered.media instanceof HTMLImageElement) {
-      rendered.media.src = assetUrl(node.src);
+      if (node.src) rendered.media.src = assetUrl(node.src);
+      else rendered.media.removeAttribute("src"); // transparent hit area (visual is baked)
       rendered.src = node.src;
     }
   }
