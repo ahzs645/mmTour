@@ -87,15 +87,16 @@ export class Player {
     this.rootStop = new Set(timeline.control?.stopFrames ?? []);
     this.startFrame = clamp(timeline.entryFrame ?? 0, 0, Math.max(0, this.rootFrames.length - 1));
 
-    // Root frame scripts: array of {frame, actions[]}; keep timeline-scoped only.
+    // Root frame scripts: array of {frame, actions[]}. Keep timeline + branch
+    // (if/else) actions; function-context actions belong to the function table.
     for (const record of timeline.control?.frameActions ?? []) {
-      const actions = (record.actions ?? []).filter((a) => !a.executionContext || a.executionContext === "timeline");
+      const actions = (record.actions ?? []).filter((a) => !a.executionContext || a.executionContext === "timeline" || a.executionContext === "branch");
       if (actions.length) this.rootActions.set(record.frame, [...(this.rootActions.get(record.frame) ?? []), ...actions]);
     }
     // Per-sprite frame scripts: flat list of {spriteId, frame, actions[]}.
     for (const record of (timeline.control?.spriteActions ?? []) as Array<{ spriteId?: number; frame?: number; actions?: ControlAction[] }>) {
       if (typeof record.spriteId !== "number" || typeof record.frame !== "number") continue;
-      const actions = (record.actions ?? []).filter((a) => !a.executionContext || a.executionContext === "timeline");
+      const actions = (record.actions ?? []).filter((a) => !a.executionContext || a.executionContext === "timeline" || a.executionContext === "branch");
       if (!actions.length) continue;
       const key = `${record.spriteId}:${record.frame}`;
       this.spriteActions.set(key, [...(this.spriteActions.get(key) ?? []), ...actions]);
@@ -413,26 +414,26 @@ export class Player {
     }
   }
 
-  /**
-   * When a frame has several root self-`gotoAndPlay`s, it's a flattened if/else
-   * branch whose condition the decompiler dropped (e.g. the intro's
-   * `if(OSVersion=="Per") gotoAndPlay(343) else gotoAndPlay(195)`). Running them
-   * all corrupts the flow — each intermediate jump runs that frame's side effects —
-   * so keep only the LAST, which is the `else`/Pro path (the tour's default OS).
-   */
-  private dedupeRootGotos(clip: ClipInstance, actions: ControlAction[]): ControlAction[] {
-    if (clip !== this.root) return actions;
-    const isRootGoto = (a: ControlAction) =>
-      (a.command === "gotoAndPlay" || a.command === "gotoAndStop") &&
-      (a.target === undefined || a.target === "self" || a.target === "this" || a.target === "_root" || a.target === "_level0" || a.target === "root");
-    let lastIndex = -1;
-    for (let i = 0; i < actions.length; i++) if (isRootGoto(actions[i])) lastIndex = i;
-    if (lastIndex < 0) return actions;
-    return actions.filter((a, i) => !isRootGoto(a) || i === lastIndex);
-  }
-
   private runScript(clip: ClipInstance, depth: number) {
-    for (const action of this.dedupeRootGotos(clip, this.actionsFor(clip))) {
+    // Inline frame scripts mix unconditional (timeline) actions with the arms of
+    // if/else chains (branch). Evaluate each branch arm: a real condition is tested
+    // on its own (independent `if`s, e.g. the nav's per-section checks), while an
+    // `else` fires only when the branch immediately before it didn't match (e.g. the
+    // intro's `if(OSVersion=="Per") gotoAndPlay(343) else gotoAndPlay(195)`). A
+    // timeline action resets the chain. This is what advances the intro past its
+    // f194 stop into the OS-specific showcase.
+    let prevBranchMatched: boolean | null = null;
+    for (const action of this.actionsFor(clip)) {
+      if (action.executionContext === "branch") {
+        const matched: boolean =
+          action.branchCondition === "else"
+            ? prevBranchMatched !== true
+            : !this.store || evalCondition(action.branchCondition, this.store);
+        prevBranchMatched = matched;
+        if (!matched) continue;
+      } else {
+        prevBranchMatched = null;
+      }
       switch (action.command) {
         case "stop":
           clip.playing = false;

@@ -117,6 +117,8 @@ export type ControlAction = {
   supported?: boolean;
   source?: string;
   functionBranchCondition?: string;
+  /** if/else guard for a "branch"-context inline frame action; "else" pairs with the preceding arm. */
+  branchCondition?: string;
   /** Sound action fields (attachSound/playVO/stopSound). */
   sound?: string;
   soundSrc?: string;
