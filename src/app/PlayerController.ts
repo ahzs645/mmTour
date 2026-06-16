@@ -1,5 +1,5 @@
 import type { AssetTimeline, ControlAction } from "../data/timelineTypes";
-import { loadTimeline } from "../data/TimelineLoader";
+import { assetUrl, loadTimeline } from "../data/TimelineLoader";
 import { DomRenderer } from "../render/DomRenderer";
 import { FontRegistry } from "../render/TextRenderer";
 import { Player } from "../player/Player";
@@ -143,7 +143,8 @@ export class PlayerController {
       onNavigate: (action) => this.handleNavigate(action),
       store: this.store,
       onCallFunction: (target, name) => this.dispatchCall(target, name),
-      onRootHold: level > 0 ? () => this.runInteractiveEntry(level) : undefined,
+      onLoadVariables: (action) => this.handleLoadVariables(level, action),
+      isVoiceDone: () => this.sound.isVoiceDone(),
     });
     this.levels.set(level, { player, layer, swf });
     // Levels loaded after playback has started must catch up (e.g. the shell's
@@ -152,16 +153,9 @@ export class PlayerController {
     this.flushPendingCalls(level);
   }
 
-  /**
-   * Once the host (_level0) has auto-loaded the level its intro lives on, run the
-   * SWF's OWN intro→interactive transition through the engine (the function that
-   * loads a movie into that level). For the XP tour that's `LoadInitialInteractive`:
-   * it swaps the played-out intro for the category menu and calls
-   * `_level6.startNavEntrance`, which is OSVersion-gated so the nav goes to the
-   * Pro vs Personal toolbar from the SWF's own data. Nothing here is scene- or
-   * frame-specific — an unrelated SWF is driven entirely from its own functions.
-   */
-  /** Flush cross-level calls that were waiting on `level` to exist. */
+  /** Flush cross-level calls that were waiting on `level` to exist. The intro's
+   *  `_level0.LoadIntroNav()` / `LoadInitialInteractive()` (now captured by the
+   *  decompiler) drive the nav-on-stage and intro→menu hand-off entirely from data. */
   private flushPendingCalls(level: number) {
     const ready = this.pendingCalls.filter((c) => c.level === level);
     if (!ready.length) return;
@@ -170,17 +164,17 @@ export class PlayerController {
     for (const c of ready) player?.callFunction(c.name);
   }
 
-  /**
-   * Run the host's intro→interactive transition for `level` — but only AFTER that
-   * level has played its forward entrance (its `onRootHold` fired). So the intro
-   * fly-in plays first, then the menu + nav entrance come on, instead of snapping
-   * straight to the settled state.
-   */
-  private runInteractiveEntry(level: number) {
-    const host = this.main;
-    if (!host) return;
-    const entry = host.interactiveEntryFor(level);
-    if (entry) host.callFunction(entry);
+  /** Fetch a `loadVariables` text file (`&key=value&…`) and feed it to the level's text fields. */
+  private async handleLoadVariables(level: number, action: ControlAction) {
+    const file = action.target;
+    if (!file) return;
+    try {
+      const res = await fetch(assetUrl(file));
+      if (!res.ok || this.container.hidden) return;
+      this.levels.get(level)?.player.setTextVars(parseFlashVars(await res.text()));
+    } catch {
+      /* a missing text file just leaves the bound fields blank */
+    }
   }
 
   /** Resolve an absolute `_levelN[.path]` function-call target to that level's Player. */
@@ -221,4 +215,22 @@ export class PlayerController {
     if (!player) return;
     this.options.onFrame?.(player.currentFrame, player.isPlaying, player.currentLabel());
   }
+}
+
+/** Parse a Flash `loadVariables` body (`&key=value&key2=value2…`) into a map. */
+function parseFlashVars(body: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const pair of body.split("&")) {
+    const eq = pair.indexOf("=");
+    if (eq <= 0) continue;
+    const key = pair.slice(0, eq).trim();
+    let value = pair.slice(eq + 1).replace(/\r?\n$/, "");
+    try {
+      value = decodeURIComponent(value.replace(/\+/g, " "));
+    } catch {
+      /* keep the literal value if it isn't percent-encoded */
+    }
+    out[key] = value;
+  }
+  return out;
 }

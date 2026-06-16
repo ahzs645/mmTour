@@ -179,6 +179,10 @@ function discoverAssets(allTags) {
         wordWrap: tag.wordWrap === "true",
         html: tag.html === "true",
         text: normalizeLoadedText(String(tag.initialText ?? "")) || undefined,
+        // Variable binding (e.g. `_root.skipIntro`) so the runtime can fill the
+        // field from loadVariables() — these fields are baked empty in sprites.
+        variableName: tag.variableName || undefined,
+        normalizedVariableName: tag.variableName ? normalizeVariableName(tag.variableName) : undefined,
       });
       defs[id] = {
         id: Number(id),
@@ -1315,12 +1319,14 @@ function summarizeActionScript(source, frameLabels, sourcePath, scope) {
     }, context));
   }
 
-  for (const match of source.matchAll(/(?:_level0|_root)\.([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*;?/g)) {
+  for (const match of source.matchAll(/(_level0|_root)\.([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*;?/g)) {
     const context = actionContextAt(functionContexts, branchContexts, match.index ?? 0);
+    const callTarget = match[1];
+    const functionName = match[2];
     const rootFunctionCall = {
-      target: "_level0",
-      functionName: match[1],
-      arguments: match[2].trim(),
+      target: callTarget,
+      functionName,
+      arguments: match[3].trim(),
     };
     const rootFunctionNavigation = inferRootFunctionNavigation([{
       ...rootFunctionCall,
@@ -1335,6 +1341,7 @@ function summarizeActionScript(source, frameLabels, sourcePath, scope) {
         supported,
         ...(supported ? {} : { reason: `${contextLabel(context)} root function SWF load is extracted for control-flow audit but not invoked by the generated runtime yet.` }),
       }, context));
+      continue;
     }
 
     const rootFunctionSound = inferRootFunctionSound(rootFunctionCall);
@@ -1350,7 +1357,22 @@ function summarizeActionScript(source, frameLabels, sourcePath, scope) {
         supported,
         ...(supported ? {} : { reason: `${contextLabel(context)} root function sound is extracted for control-flow audit but not invoked by the generated runtime yet.` }),
       }, context));
+      continue;
     }
+
+    // A generic cross-level function call (e.g. the intro's `_level0.LoadIntroNav()`
+    // / `_level0.LoadInitialInteractive()`). Emit it as callFunctions so the runtime
+    // dispatches it to the target level's player. Known timeline commands are matched
+    // by their own regexes above, so skip them here.
+    if (functionName.startsWith("gotoAnd")) continue;
+    if (["stop", "play", "loadMovie", "loadMovieNum", "loadVariables", "unloadMovie", "unloadMovieNum",
+         "attachSound", "doRelease", "playVO", "markSndSegment", "stopSound", "setVolume", "getVolume"].includes(functionName)) continue;
+    actions.push(withActionContext({
+      command: "callFunctions",
+      functionCalls: [rootFunctionCall],
+      source: sourcePath,
+      supported: !context || context.type === "branch",
+    }, context));
   }
 
   for (const { call, context } of discoverFunctionCallActions(source, functionContexts, branchContexts)) {

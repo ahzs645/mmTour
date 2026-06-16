@@ -11,7 +11,11 @@ export class SoundController {
   private music: HTMLAudioElement | null = null;
   private musicSrc = "";
   private voice: HTMLAudioElement | null = null;
+  private voiceStartedAt = 0;
+  private voiceDurationMs = 0;
   private muted = false;
+  /** Used when a VO's metadata hasn't loaded yet (or audio is autoplay-blocked). */
+  private static readonly FALLBACK_VO_MS = 5000;
 
   handle(action: ControlAction) {
     if (this.muted) return;
@@ -47,8 +51,26 @@ export class SoundController {
     this.stopVoice();
     const audio = new Audio(assetUrl(src));
     audio.volume = 1;
+    this.voiceStartedAt = performance.now();
+    this.voiceDurationMs = 0;
+    audio.addEventListener("loadedmetadata", () => {
+      if (Number.isFinite(audio.duration)) this.voiceDurationMs = audio.duration * 1000;
+    });
     void audio.play().catch(() => undefined);
     this.voice = audio;
+  }
+
+  /**
+   * Whether the current voice-over segment has finished — the runtime equivalent
+   * of the tour's `sndDonePlaying()` (`getTimer() >= bkgd.vo.targTime`). Driven by
+   * the VO audio's own duration so the intro's VO-gated hold-loops advance in sync
+   * with the narration, even when autoplay is blocked (the metadata still loads).
+   */
+  isVoiceDone(): boolean {
+    if (!this.voice) return true;
+    if (this.voice.ended) return true;
+    const dur = this.voiceDurationMs || SoundController.FALLBACK_VO_MS;
+    return performance.now() - this.voiceStartedAt >= dur;
   }
 
   private stopMusic() {
@@ -60,6 +82,8 @@ export class SoundController {
   private stopVoice() {
     this.voice?.pause();
     this.voice = null;
+    this.voiceStartedAt = 0;
+    this.voiceDurationMs = 0;
   }
 
   /** Pause both channels (global pause) without forgetting the music track. */

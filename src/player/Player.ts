@@ -29,17 +29,17 @@ export type PlayerOptions = {
   store?: VariableStore;
   /** Dispatch a function call whose target is another level (`_levelN[.path].fn`). */
   onCallFunction?: (target: string, name: string, args: string) => void;
-  /**
-   * Fired once when the root finishes its forward entrance and starts holding —
-   * i.e. a timeline `gotoAndPlay` loops the root back to an earlier frame. The
-   * shell uses this to time its intro→interactive hand-off to AFTER the intro
-   * fly-in has played, rather than snapping straight to the settled state.
-   */
-  onRootHold?: () => void;
+  /** Load a `loadVariables` text file (`&key=value&…`) into this level's text vars. */
+  onLoadVariables?: (action: ControlAction) => void;
+  /** Whether the current voice-over segment has finished (drives VO-gated holds). */
+  isVoiceDone?: () => boolean;
 };
 
 const ROOT_ID = -1;
 const MAX_GOTO_DEPTH = 24;
+/** A root `gotoAndPlay(self, current-N)` with N ≤ this is a voice-over hold-loop
+ *  (`if(!sndDonePlaying())…`); a larger backward jump is a section/end loop. */
+const VO_HOLD_DELTA = 3;
 const ZERO_ORIGIN = { x: 0, y: 0, width: 0, height: 0 };
 
 /**
@@ -66,7 +66,11 @@ export class Player {
   private readonly spriteStop = new Map<number, Set<number>>();
   private readonly functions = new Map<string, FunctionDef>();
   private readonly store?: VariableStore;
-  private rootHoldFired = false;
+  /** Text-field variables loaded via loadVariables() (key → value), keyed by the
+   *  field's normalized variableName (e.g. `skipIntro`, `h_Segment4`). */
+  private readonly textVars = new Map<string, string>();
+  /** A playVO fired and the next 1-frame hold-loop should wait for it (sndDonePlaying). */
+  private voWaiting = false;
 
   private root: ClipInstance;
   private clipByPath = new Map<string, ClipInstance>();
@@ -142,7 +146,7 @@ export class Player {
 
   seekRootFrame(frame: number) {
     this.ticker.pause();
-    this.rootHoldFired = false;
+    this.voWaiting = false;
     this.root = this.buildRoot(clamp(frame, 0, this.frameCount - 1));
     this.render();
     this.options.onFrame?.(this.root.currentFrame, false);
@@ -231,21 +235,6 @@ export class Player {
     if (this.store) for (const a of def.assignments) this.store.set(a.target, a.value);
     this.render();
     return true;
-  }
-
-  /**
-   * The function (if any) that performs this SWF's intro→interactive hand-off:
-   * one that loads a movie into `level` (the level currently holding the played-
-   * out intro). Discovered from data, so it isn't tied to a specific function
-   * name or scene.
-   */
-  interactiveEntryFor(level: number): string | undefined {
-    for (const [name, def] of this.functions) {
-      if (def.actions.some((a) => (a.command === "loadMovieNum" || a.command === "loadMovie") && Number(a.level) === level)) {
-        return name;
-      }
-    }
-    return undefined;
   }
 
   private runFunctionAction(action: ControlAction) {
@@ -356,8 +345,26 @@ export class Player {
     }
   }
 
+  /**
+   * When a frame has several root self-`gotoAndPlay`s, it's a flattened if/else
+   * branch whose condition the decompiler dropped (e.g. the intro's
+   * `if(OSVersion=="Per") gotoAndPlay(343) else gotoAndPlay(195)`). Running them
+   * all corrupts the flow — each intermediate jump runs that frame's side effects —
+   * so keep only the LAST, which is the `else`/Pro path (the tour's default OS).
+   */
+  private dedupeRootGotos(clip: ClipInstance, actions: ControlAction[]): ControlAction[] {
+    if (clip !== this.root) return actions;
+    const isRootGoto = (a: ControlAction) =>
+      (a.command === "gotoAndPlay" || a.command === "gotoAndStop") &&
+      (a.target === undefined || a.target === "self" || a.target === "this" || a.target === "_root" || a.target === "_level0" || a.target === "root");
+    let lastIndex = -1;
+    for (let i = 0; i < actions.length; i++) if (isRootGoto(actions[i])) lastIndex = i;
+    if (lastIndex < 0) return actions;
+    return actions.filter((a, i) => !isRootGoto(a) || i === lastIndex);
+  }
+
   private runScript(clip: ClipInstance, depth: number) {
-    for (const action of this.actionsFor(clip)) {
+    for (const action of this.dedupeRootGotos(clip, this.actionsFor(clip))) {
       switch (action.command) {
         case "stop":
           clip.playing = false;
@@ -370,11 +377,17 @@ export class Player {
           const target = this.resolveTarget(clip, action.target);
           const frame = this.resolveFrame(action, target);
           if (!target || frame < 0) break;
-          // The root looping back to an earlier frame = it finished its forward
-          // entrance and is now holding (e.g. the intro fly-in's hold-loop).
-          if (clip === this.root && target === this.root && frame < clip.currentFrame && !this.rootHoldFired) {
-            this.rootHoldFired = true;
-            this.options.onRootHold?.();
+          // A 1-frame root self-loop while a voice-over is playing is a VO hold
+          // (`if(!sndDonePlaying())gotoAndPlay(prev)`): keep looping until the VO
+          // finishes, then skip the jump so the intro advances to the next beat.
+          // (Larger loops — section/idle loops — fall through and loop normally; the
+          // intro→menu hand-off is driven by the data's LoadInitialInteractive call.)
+          if (action.command === "gotoAndPlay" && clip === this.root && target === this.root && frame < clip.currentFrame) {
+            const delta = clip.currentFrame - frame;
+            if (delta <= VO_HOLD_DELTA && this.voWaiting && (this.options.isVoiceDone?.() ?? true)) {
+              this.voWaiting = false;
+              break;
+            }
           }
           target.playing = action.command === "gotoAndPlay";
           if (target !== clip || frame !== clip.currentFrame) this.enterFrame(target, frame, depth + 1);
@@ -383,11 +396,16 @@ export class Player {
         case "attachSound":
         case "playVO":
         case "stopSound":
+          // A new voice-over starts a narrated beat the upcoming hold-loop waits on.
+          if (action.command === "playVO") this.voWaiting = true;
           this.options.onSound?.(action);
           break;
         case "loadMovieNum":
         case "loadMovie":
           this.options.onNavigate?.(action);
+          break;
+        case "loadVariables":
+          this.options.onLoadVariables?.(action);
           break;
         case "callFunctions":
           this.runCallFunctions(action);
@@ -577,7 +595,12 @@ export class Player {
     return asset.src ?? "";
   }
 
-  /** Overlay only the transparent button hit areas living inside a baked sprite. */
+  /**
+   * Overlay interactive/dynamic leaves living inside a baked sprite: transparent
+   * button hit areas, and dynamic text fields bound to a loadVariables() variable
+   * (those are baked EMPTY in the sprite frame, so we draw them on top — e.g. the
+   * nav's "Skip Intro" and "Best for Business" headings).
+   */
   private collectButtons(clip: ClipInstance, world: RenderNode["matrix"], path: string, order: { n: number }, out: RenderNode[]) {
     this.clipByPath.set(path, clip);
     const frames = this.framesFor(clip);
@@ -592,6 +615,12 @@ export class Player {
       const key = `${path}/${instance.depth}`;
       if (asset.kind === "button") {
         out.push(this.buttonNode(key, order.n++, asset, matrix, instance, path));
+      } else if (asset.kind === "text") {
+        const field = this.resolveTextField(asset.id, asset);
+        // Only overlay fields we have a loaded value for (otherwise the baked frame is authoritative).
+        if (field?.normalizedVariableName && this.textVars.has(field.normalizedVariableName)) {
+          out.push(this.leafNode(key, order.n++, asset, asset.src ?? "", matrix, instance.opacity, instance));
+        }
       } else if (asset.kind === "sprite") {
         const child = clip.childClips.get(instance.depth);
         if (child) this.collectButtons(child, matrix, key, order, out);
@@ -673,11 +702,22 @@ export class Player {
     };
   }
 
+  /** Merge loadVariables() text into the player and re-render bound fields. */
+  setTextVars(vars: Record<string, string>) {
+    for (const [key, value] of Object.entries(vars)) this.textVars.set(key, value);
+    this.render();
+  }
+
   private resolveTextField(characterId: number, asset: TimelineAsset) {
     const base = asset.text;
     const dynamic = this.timeline.control?.dynamicTexts?.[String(characterId)];
-    if (base && dynamic) return { ...base, ...dynamic };
-    return base ?? dynamic;
+    const merged = base && dynamic ? { ...base, ...dynamic } : (base ?? dynamic);
+    if (!merged) return merged;
+    // A field bound to a loadVariables() variable shows that value (these fields
+    // are baked empty in their sprite frames).
+    const varName = merged.normalizedVariableName;
+    if (varName && this.textVars.has(varName)) return { ...merged, text: this.textVars.get(varName) };
+    return merged;
   }
 
   // --- ambient sound ----------------------------------------------------
