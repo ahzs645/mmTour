@@ -49,6 +49,14 @@ export type TimelineAsset = {
   states?: Partial<Record<"up" | "over" | "down" | "hit", ButtonState>>;
   /** Styling for a text/edit-text field (font, size, color, box, initial content). */
   text?: DynamicText;
+  /**
+   * Dynamic editText fields embedded in a button's up state, each with the field's
+   * button-record placement matrix (relative to the button registration). FFDec bakes
+   * these at the field registration (ignoring the bounds offset) and leaves the
+   * composited sprite frame's button empty, so the runtime overlays the live
+   * loadVariables() value here using the field's own bounds (e.g. the nav "Skip Intro").
+   */
+  textFields?: { id: number; matrix: Matrix }[];
   origin: Origin;
 };
 

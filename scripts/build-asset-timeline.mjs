@@ -57,6 +57,7 @@ copyIfExists("shapes");
 copyIfExists("sprites");
 copyIfExists("images");
 copyIfExists("texts");
+stripBakedDynamicText(assets);
 copyIfExists("frames");
 copyIfExists("scripts");
 copyIfExists("buttons");
@@ -233,6 +234,17 @@ function discoverAssets(allTags) {
     };
     defs[key].states[state] = stateEntry;
     if (!defs[key].src && state !== "hittest") defs[key].src = stateEntry.src;
+    // A button wrapping a bound editText (e.g. the nav "Skip Intro" button): record
+    // the field's button-record placement so the runtime can overlay the live
+    // loadVariables() value with the field's own bounds. FFDec bakes it at the field
+    // registration (mispositioned) and leaves the composited sprite frame empty.
+    if (state === "up") {
+      const field = buttonDynamicTextField(
+        path,
+        (cid) => defs[String(cid)]?.kind === "text" && Boolean(defs[String(cid)]?.text?.normalizedVariableName),
+      );
+      if (field) defs[key].textFields = [field];
+    }
   }
 
   for (const file of listDir("fonts")) {
@@ -1661,6 +1673,66 @@ function multiplyMatrices(left, right) {
 
 function identityMatrix() {
   return { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 };
+}
+
+/**
+ * Find a button's embedded dynamic editText in its up-state SVG and return its
+ * button-record placement matrix. FFDec nests the field as
+ * `<g transform="<bounds-shift>"><use ffdec:characterId="N" transform="<placement>"/></g>`,
+ * where the outer g is exactly the bounds/origin shift — so the inner `<use>` transform
+ * IS the field's placement relative to the button registration (what the runtime composes
+ * with the button's instance matrix to reproduce the standalone field position).
+ */
+function buttonDynamicTextField(svgPath, isDynamic) {
+  let svg;
+  try {
+    svg = readFileSync(svgPath, "utf8");
+  } catch {
+    return undefined;
+  }
+  for (const tag of svg.match(/<use\b[^>]*>/g) ?? []) {
+    const cid = tag.match(/ffdec:characterId="(\d+)"/);
+    if (!cid || !isDynamic(Number(cid[1]))) continue;
+    const transform = tag.match(/transform="([^"]*)"/)?.[1];
+    return { id: Number(cid[1]), matrix: matrixFromSvgTransform(transform) };
+  }
+  return undefined;
+}
+
+/**
+ * Strip baked dynamic-text `<use>`s from sprite frame SVGs. FFDec bakes an editText's
+ * INITIAL content into the composited frame — and for left-aligned fields it positions
+ * the glyphs at the field registration, not the (negative) bounds offset, so the text
+ * renders mispositioned/clipped (e.g. nav "Skip Intro" appeared center-truncated). The
+ * runtime overlays the live loadVariables() value at the correct position, so drop the
+ * baked copy to avoid a mispositioned double.
+ */
+function stripBakedDynamicText(assetDefs) {
+  const ids = new Set(
+    Object.values(assetDefs)
+      .filter((a) => a?.kind === "text" && a?.text?.normalizedVariableName)
+      .map((a) => a.id),
+  );
+  const spritesDir = join(publicDir, "sprites");
+  if (!ids.size || !existsSync(spritesDir)) return;
+  for (const dir of readdirSync(spritesDir)) {
+    let entries;
+    try {
+      entries = readdirSync(join(spritesDir, dir));
+    } catch {
+      continue;
+    }
+    for (const file of entries) {
+      if (!file.endsWith(".svg")) continue;
+      const path = join(spritesDir, dir, file);
+      const svg = readFileSync(path, "utf8");
+      const stripped = svg.replace(/<use\b[^>]*\/>/g, (m) => {
+        const cid = m.match(/ffdec:characterId="(\d+)"/);
+        return cid && ids.has(Number(cid[1])) ? "" : m;
+      });
+      if (stripped !== svg) writeFileSync(path, stripped);
+    }
+  }
 }
 
 function opacityFromTag(transform) {

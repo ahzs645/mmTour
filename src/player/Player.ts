@@ -645,6 +645,7 @@ export class Player {
 
       if (asset.kind === "button") {
         out.push(this.buttonNode(key, order.n++, asset, matrix, instance, path));
+        this.collectButtonText(asset, matrix, key, order, out, instance);
         continue;
       }
 
@@ -683,6 +684,7 @@ export class Player {
       const key = `${path}/${instance.depth}`;
       if (asset.kind === "button") {
         out.push(this.buttonNode(key, order.n++, asset, matrix, instance, path));
+        this.collectButtonText(asset, matrix, key, order, out, instance);
       } else if (asset.kind === "text") {
         const field = this.resolveTextField(asset.id, asset);
         // Only overlay fields we have a loaded value for (otherwise the baked frame is authoritative).
@@ -743,6 +745,33 @@ export class Player {
       opacity: 1,
       buttonOwnerPath: ownerPath,
     };
+  }
+
+  /**
+   * Overlay a button's embedded dynamic editText (e.g. the nav "Skip Intro" button's
+   * settled state). FFDec bakes such fields at the field registration — mispositioned —
+   * and leaves the composited sprite frame's button empty, so we draw the live
+   * loadVariables() value on top using the field's own bounds. The field's button-record
+   * matrix composed with the button's instance matrix lands at the same spot the
+   * standalone fade-in field used, so "Skip Intro" stays put once it settles.
+   */
+  private collectButtonText(
+    asset: TimelineAsset,
+    buttonMatrix: RenderNode["matrix"],
+    key: string,
+    order: { n: number },
+    out: RenderNode[],
+    instance: TimelineFrame["instances"][number],
+  ) {
+    for (const field of asset.textFields ?? []) {
+      const fieldAsset = this.getAsset(field.id);
+      if (!fieldAsset) continue;
+      const resolved = this.resolveTextField(field.id, fieldAsset);
+      // Only overlay once a loadVariables() value exists (else the baked frame is authoritative).
+      if (!resolved?.normalizedVariableName || !this.textVars.has(resolved.normalizedVariableName)) continue;
+      const matrix = multiplyMatrix(buttonMatrix, field.matrix);
+      out.push(this.leafNode(`${key}/txt:${field.id}`, order.n++, fieldAsset, fieldAsset.src ?? "", matrix, instance.opacity, instance));
+    }
   }
 
   private leafNode(
