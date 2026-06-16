@@ -877,7 +877,32 @@ function discoverFunctionCalls(source) {
   return calls;
 }
 
-function discoverFunctionCallActions(source, functionContexts, branchContexts) {
+/**
+ * `tellTarget("clip") { … }` redirects the calls in its body to run on that nested
+ * clip. Return the body ranges + clip name so calls inside are retargeted (the
+ * runtime resolves the clip by name and runs its sprite-defined function).
+ */
+function findTellTargetContexts(source) {
+  const contexts = [];
+  for (const match of source.matchAll(/tellTarget\s*\(\s*"([^"]+)"\s*\)\s*\{/g)) {
+    const clip = match[1];
+    let depth = 1;
+    let i = (match.index ?? 0) + match[0].length;
+    for (; i < source.length && depth > 0; i++) {
+      if (source[i] === "{") depth++;
+      else if (source[i] === "}") depth--;
+    }
+    contexts.push({ clip, start: match.index ?? 0, end: i });
+  }
+  return contexts;
+}
+
+function tellTargetAt(contexts, index) {
+  for (const c of contexts) if (index >= c.start && index < c.end) return c.clip;
+  return undefined;
+}
+
+function discoverFunctionCallActions(source, functionContexts, branchContexts, tellTargets = []) {
   const calls = [];
   for (const match of source.matchAll(/([A-Za-z0-9_.$]+)\.([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*;?/g)) {
     const target = match[1];
@@ -897,13 +922,17 @@ function discoverFunctionCallActions(source, functionContexts, branchContexts) {
   }
   for (const match of source.matchAll(/(?:^|[;{}\n])\s*([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*;?/g)) {
     const functionName = match[1];
+    // `tellTarget(…)` is a scoping directive, not a real call — skip it.
+    if (functionName === "tellTarget") continue;
     if (["if", "while", "for", "function", "switch", "trace", "stop", "play", "gotoAndPlay", "gotoAndStop", "loadVariables", "loadMovieNum", "getTimer", "int", "typeof", "unloadMovie", "unloadMovieNum"].includes(functionName)) continue;
     const before = source.slice(Math.max(0, (match.index ?? 0) - 12), match.index ?? 0);
     if (/\bfunction\s*$/i.test(before)) continue;
 
+    // Inside a tellTarget("clip") block the call runs on that nested clip; otherwise _root.
+    const clip = tellTargetAt(tellTargets, match.index ?? 0);
     calls.push({
       call: {
-        target: "_root",
+        target: clip ?? "_root",
         functionName,
         arguments: match[2].trim(),
       },
@@ -1220,6 +1249,7 @@ function summarizeActionScript(source, frameLabels, sourcePath, scope) {
   const actions = [];
   const functionContexts = findFunctionContexts(source);
   const branchContexts = findBranchContexts(source);
+  const tellTargets = findTellTargetContexts(source);
 
   for (const match of source.matchAll(/([A-Za-z0-9_.$]+)\.stop\(\);?/g)) {
     const context = actionContextAt(functionContexts, branchContexts, match.index ?? 0);
@@ -1375,7 +1405,7 @@ function summarizeActionScript(source, frameLabels, sourcePath, scope) {
     }, context));
   }
 
-  for (const { call, context } of discoverFunctionCallActions(source, functionContexts, branchContexts)) {
+  for (const { call, context } of discoverFunctionCallActions(source, functionContexts, branchContexts, tellTargets)) {
     const supported = !context || context.type === "branch";
     actions.push(withActionContext({
       command: "callFunctions",

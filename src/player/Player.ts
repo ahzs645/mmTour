@@ -65,6 +65,8 @@ export class Player {
   private readonly spriteActions = new Map<string, ControlAction[]>();
   private readonly spriteStop = new Map<number, Set<number>>();
   private readonly functions = new Map<string, FunctionDef>();
+  /** Sprite-scoped functions (e.g. a button/fade clip's `doFade`), by characterId → name. */
+  private readonly spriteFunctions = new Map<number, Map<string, FunctionDef>>();
   private readonly store?: VariableStore;
   /** Text-field variables loaded via loadVariables() (key → value), keyed by the
    *  field's normalized variableName (e.g. `skipIntro`, `h_Segment4`). */
@@ -213,6 +215,20 @@ export class Player {
         this.functions.set(action.functionName, entry);
       }
     }
+    // Sprite-scoped functions (doFade etc.) from each sprite's tagged actions, so a
+    // `tellTarget("clip"){ doFade() }` can run the clip's own function.
+    const spriteRecords = (this.timeline.control?.spriteActions ?? []) as Array<{ spriteId?: number; actions?: ControlAction[] }>;
+    for (const record of spriteRecords) {
+      if (typeof record.spriteId !== "number") continue;
+      for (const action of record.actions ?? []) {
+        if (!action.functionName) continue;
+        let fns = this.spriteFunctions.get(record.spriteId);
+        if (!fns) this.spriteFunctions.set(record.spriteId, (fns = new Map()));
+        const entry = fns.get(action.functionName) ?? { assignments: [], actions: [] };
+        entry.actions.push(action);
+        fns.set(action.functionName, entry);
+      }
+    }
   }
 
   hasFunction(name: string): boolean {
@@ -267,17 +283,69 @@ export class Player {
     }
   }
 
-  private runCallFunctions(action: ControlAction) {
+  private runCallFunctions(action: ControlAction, clip: ClipInstance = this.root) {
     for (const call of action.functionCalls ?? []) {
       const target = call.target ?? "self";
       if (target === "self" || target === "this" || target === "_root") {
         this.callFunction(call.functionName);
-      } else {
+      } else if (target.startsWith("_level")) {
         // Absolute level targets (`_level6`, `_level0.x`) are routed to the
         // controller, which maps the level back to its Player.
         this.options.onCallFunction?.(target, call.functionName, call.arguments ?? "");
+      } else {
+        // A named nested clip (from `tellTarget("clip")`): resolve it locally and
+        // run the clip's own sprite-scoped function (e.g. doFade → gotoAndPlay).
+        const targetClip = this.resolveTarget(clip, target) ?? this.findClipByName(clip, target);
+        if (targetClip) this.callClipFunction(targetClip, call.functionName);
       }
     }
+  }
+
+  /** Run a sprite-scoped function (e.g. `doFade`) on a specific nested clip. */
+  private callClipFunction(clip: ClipInstance, name: string) {
+    const def = this.spriteFunctions.get(clip.characterId)?.get(name);
+    if (!def) return;
+    for (const action of def.actions) {
+      if (this.store && !evalCondition(action.functionBranchCondition, this.store)) continue;
+      this.runClipAction(clip, action);
+    }
+    this.render();
+  }
+
+  private runClipAction(clip: ClipInstance, action: ControlAction) {
+    switch (action.command) {
+      case "stop":
+        clip.playing = false;
+        break;
+      case "play":
+        clip.playing = true;
+        break;
+      case "gotoAndPlay":
+      case "gotoAndStop": {
+        const target = !action.target || action.target === "self" || action.target === "this" ? clip : (this.resolveTarget(clip, action.target) ?? clip);
+        const frame = this.resolveFrame(action, target);
+        if (frame >= 0) {
+          target.playing = action.command === "gotoAndPlay";
+          this.enterFrame(target, frame, 0);
+        }
+        break;
+      }
+      case "callFunctions":
+        this.runCallFunctions(action, clip);
+        break;
+      default:
+        break;
+    }
+  }
+
+  /** Depth-first search for a clip by instance name (tellTarget resolves a clip path). */
+  private findClipByName(clip: ClipInstance, name: string): ClipInstance | null {
+    for (const child of clip.childClips.values()) {
+      if (child.name === name) return child;
+      const found = this.findClipByName(child, name);
+      if (found) return found;
+    }
+    return null;
   }
 
   // --- tree construction ------------------------------------------------
@@ -408,7 +476,7 @@ export class Player {
           this.options.onLoadVariables?.(action);
           break;
         case "callFunctions":
-          this.runCallFunctions(action);
+          this.runCallFunctions(action, clip);
           break;
         default:
           break;
