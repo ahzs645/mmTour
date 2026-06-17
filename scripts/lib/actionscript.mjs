@@ -17,8 +17,14 @@ export function parseActionScript(source, frameLabels, sourcePath) {
   const clipGoto = source.match(/([A-Za-z0-9_.$]+)\.gotoAnd(Play|Stop)\(([^)]+)\)/);
   const localGoto = source.match(/(?:^|[\s;])gotoAnd(Play|Stop)\(([^)]+)\)/);
   const doRelease = source.match(/(?:_level0\.)?doRelease\("([^"]+\.swf)"\)/);
-  const loadMovie = source.match(/loadMovieNum\("([^"]+\.swf)"/);
+  const loadMovie = source.match(/loadMovieNum\("([^"]+\.swf)"(?:\s*,\s*(\d+))?/);
   const swf = doRelease?.[1] ?? loadMovie?.[1];
+  // The level the SWF loads into: an explicit `loadMovieNum(url, N)` carries N; a bare
+  // `_level0.doRelease(url)` defers to the shell, which drops it into the content level
+  // (`intMovieTargLevel`). Without this, a section button's doRelease defaulted to level 0
+  // at runtime and replaced the shell instead of swapping the content level.
+  const swfLevel = doRelease ? discoverMovieTargetLevel() : (loadMovie?.[2] != null ? Number(loadMovie[2]) : undefined);
+  const swfLevelEntry = swf && swfLevel != null ? { level: swfLevel } : {};
   const exitNavigation = inferExitNavigation(source, frameLabels);
   const functionCalls = discoverFunctionCalls(source);
   // Simple `flag = value;` assignments in the handler (e.g. a section icon's `isActive = 1;`
@@ -54,6 +60,7 @@ export function parseActionScript(source, frameLabels, sourcePath) {
       ...(label ? { label } : { frameExpression: expression }),
       ...(frame >= 0 ? { frame } : {}),
       swf,
+      ...swfLevelEntry,
       ...(functionCalls.length ? { functionCalls } : {}),
       ...extraAssignments,
       source: sourcePath,
@@ -72,6 +79,7 @@ export function parseActionScript(source, frameLabels, sourcePath) {
       ...(label ? { label } : { frameExpression: expression }),
       ...(frame >= 0 ? { frame } : {}),
       swf,
+      ...swfLevelEntry,
       ...(functionCalls.length ? { functionCalls } : {}),
       ...extraAssignments,
       source: sourcePath,
@@ -92,6 +100,7 @@ export function parseActionScript(source, frameLabels, sourcePath) {
       ...(parentLabel ? { label: parentLabel } : { frameExpression }),
       ...(parentMapsToRoot ? { frame } : {}),
       swf,
+      ...swfLevelEntry,
       ...(functionCalls.length ? { functionCalls } : {}),
       ...extraAssignments,
       source: sourcePath,
@@ -103,6 +112,7 @@ export function parseActionScript(source, frameLabels, sourcePath) {
   if (swf) {
     return {
       swf,
+      ...swfLevelEntry,
       source: sourcePath,
       supported: true,
     };

@@ -215,13 +215,15 @@ export class Player {
     if (!action) return;
     const owner = this.clipByPath.get(ownerPath) ?? this.root;
 
-    // Apply the handler's simple LOCAL state assignments first (a section icon's `isActive = 1;`
-    // and `_parent.holdState = 1;`). These drive the select/deselect state the calls below depend
-    // on — e.g. unSelect()'s return animation only fires while the clip's own `isActive` is set.
-    // Cross-level orchestration flags (`_level6.nav.targSection`, `_level0.bkgd.*`) are left to the
-    // build's navigation inference, so skip them here to avoid disturbing the nav hand-off.
+    // Apply the handler's simple state assignments first: clip‑local flags (a section icon's
+    // `isActive = 1;`, `_parent.holdState = 1;`) drive the select/deselect calls below, and the
+    // shared‑global `_level0.bkgd.*` flags drive cross‑movie gating — notably the restart button's
+    // `_level0.bkgd.doAttractLoop = 1`, which keeps the reloaded segment BLANK when returning to the
+    // menu (without it the old segment's content paints over the nav menu). `_level0` is the shared
+    // store, so it reaches the segment's player. Only OTHER levels' player vars (`_level6.nav.*`)
+    // are skipped — those belong to the build's navigation inference, not this dispatch.
     for (const assign of action.assignments ?? []) {
-      if (/^_level\d+\b/i.test(assign.target)) continue;
+      if (/^_level[1-9]\d*\b/i.test(assign.target)) continue;
       const value = this.resolveExpr(assign.rawValue ?? String(assign.value ?? ""));
       if (assign.target && value !== undefined) this.scopeSet(owner, assign.target, value);
     }
