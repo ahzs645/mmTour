@@ -16,13 +16,6 @@ declare global {
   }
 }
 
-type RuffleElement = HTMLElement & {
-  load?: (config: { url: string }) => Promise<void>;
-  ruffle?: () => {
-    load: (config: { url: string } | string) => Promise<void>;
-  };
-};
-
 import type {
   Matrix,
   TimelineAsset,
@@ -96,74 +89,37 @@ import {
   actionLevel,
   frameLabel,
 } from "./app/timelineQueries";
+import {
+  state as appState, playedSpriteSoundKeys, runtimeGlobals, loadedLevelSwfs, hiddenHoverSources,
+  hiddenAwaitingSources, frameSvgCache, assetTimelineCache, loadedFontFaceKeys, externalLevels,
+  pendingExternalLevelCalls, gsapDisplayRenderer, playerController,
+} from "./app/state";
+import type { RuffleElement } from "./app/frameModeTypes";
 
 
 renderModeSelect.selectedIndex = 0;
 renderModeSelect.value = "player";
-
-let activeScene = scenes.find((scene) => scene.swf === "segment4.swf") ?? scenes[0];
-let rufflePlayer: RuffleElement | null = null;
-let timeline: gsap.core.Timeline | null = null;
-let activeAssetTimeline: AssetTimeline | null = null;
-let directSwfRenderer: GsapSwfRenderer | null = null;
-let directSwfScene = "";
-let directSwfLoad: Promise<GsapSwfRenderer | null> | null = null;
-let renderedInstances = new Map<number, RenderedInstance>();
-let activeDebugTab: "stage" | "labels" | "actions" = "stage";
-let highlightedDepth: number | null = null;
-let isGsapPlaying = false;
-let isAwaitingSelection = false;
-let isNestedSectionActive = false;
-let frameSvgRequest = 0;
-let assetTimelineVersion = 0;
-let awaitingLoopTimer = 0;
-let awaitingLoopTick = 0;
-let hoverSpriteTimer = 0;
-let hoverSpriteElement: HTMLDivElement | null = null;
-let buttonStateElement: SVGImageElement | null = null;
-let currentVoiceover: HTMLAudioElement | null = null;
-let currentMusic: HTMLAudioElement | null = null;
-let lastSoundFrameKey = "";
-let lastFrameFunctionCallKey = "";
-const playedSpriteSoundKeys = new Set<string>();
-const runtimeGlobals: Record<string, RuntimeGlobalValue> = {};
-const loadedLevelSwfs: Record<number, string> = { 4: activeScene.swf };
-const hiddenHoverSources: SVGGraphicsElement[] = [];
-const hiddenAwaitingSources: SVGGraphicsElement[] = [];
-let isRunningExtractedAction = false;
-const frameSvgCache = new Map<string, string>();
-const assetTimelineCache = new Map<string, AssetTimeline>();
-const loadedFontFaceKeys = new Set<string>();
-const gsapDisplayRenderer = new GsapDisplayListRenderer(gsapDisplayLayer);
-const playerController = new PlayerController(playerLayer, {
-  onFrame: (frame, playing, label) => {
-    if (renderModeSelect.value !== "player") return;
-    frameScrubber.value = String(frame);
-    playBtn.textContent = playing ? "Pause" : "Play GSAP";
-    status.textContent = `${playing ? "Playing" : "Paused"} decompiled frame ${frame + 1}${label ? ` (${label})` : ""}`;
-  },
-});
 
 function isPlayerMode() {
   return renderModeSelect.value === "player";
 }
 
 function activatePlayerMode() {
-  if (!activeAssetTimeline) return;
-  timeline?.pause();
-  isGsapPlaying = false;
-  directSwfRenderer?.pause();
+  if (!appState.activeAssetTimeline) return;
+  appState.timeline?.pause();
+  appState.isGsapPlaying = false;
+  appState.directSwfRenderer?.pause();
   directSwfLayer.hidden = true;
   // Hide every other render surface; the player owns its own layer.
   frameStageImage.hidden = true;
   frameStageInline.replaceChildren();
   assetStage.querySelectorAll(".asset-instance").forEach((node) => node.remove());
-  renderedInstances.clear();
+  appState.renderedInstances.clear();
   gsapDisplayRenderer.clear();
   gsapDisplayLayer.hidden = true;
   awaitingLoopLayer.replaceChildren();
   emptyMessage.hidden = true;
-  playerController.activate(activeAssetTimeline as unknown as DecompiledTimeline, activeScene.swf);
+  playerController.activate(appState.activeAssetTimeline as unknown as DecompiledTimeline, appState.activeScene.swf);
   frameScrubber.max = String(playerController.frameCount - 1);
   frameScrubber.value = String(playerController.currentFrame);
   // Autoplay like Ruffle: the root holds on its menu stop() while nested clips
@@ -171,22 +127,14 @@ function activatePlayerMode() {
   playerController.play();
   updatePlayButton();
 }
-const externalLevels = new Map<number, {
-  swf: string;
-  frame: number;
-  element: HTMLDivElement;
-  image: HTMLImageElement;
-  timeline?: AssetTimeline;
-}>();
-const pendingExternalLevelCalls = new Map<number, NonNullable<ControlAction["functionCalls"]>>();
 const stageResizeObserver = new ResizeObserver(syncAssetStageScale);
 
 select.innerHTML = scenes.map((scene, index) => `<option value="${index}">${scene.label} - ${scene.swf}</option>`).join("");
-select.value = String(scenes.indexOf(activeScene));
+select.value = String(scenes.indexOf(appState.activeScene));
 
 select.addEventListener("change", () => {
-  activeScene = scenes[Number(select.value)] ?? scenes[0];
-  void loadScene(activeScene);
+  appState.activeScene = scenes[Number(select.value)] ?? scenes[0];
+  void loadScene(appState.activeScene);
 });
 
 restartBtn.addEventListener("click", () => {
@@ -195,10 +143,10 @@ restartBtn.addEventListener("click", () => {
   } else if (isDirectRenderMode()) {
     void restartDirectRenderer();
   } else {
-    goToFrame(activeAssetTimeline?.entryFrame ?? 0, false);
+    goToFrame(appState.activeAssetTimeline?.entryFrame ?? 0, false);
   }
-  void loadRuffle(activeScene).catch((error) => {
-    console.warn(`Ruffle reference failed to reload ${activeScene.swf}`, error);
+  void loadRuffle(appState.activeScene).catch((error) => {
+    console.warn(`Ruffle reference failed to reload ${appState.activeScene.swf}`, error);
   });
 });
 
@@ -214,17 +162,17 @@ playBtn.addEventListener("click", () => {
     return;
   }
 
-  if (!timeline || isAwaitingSelection) return;
-  if (isGsapPlaying) {
-    isGsapPlaying = false;
+  if (!appState.timeline || appState.isAwaitingSelection) return;
+  if (appState.isGsapPlaying) {
+    appState.isGsapPlaying = false;
     updatePlayButton();
-    timeline.pause();
+    appState.timeline.pause();
     return;
   }
 
   const currentFrame = Number(frameScrubber.value);
-  const startFrame = activeAssetTimeline && shouldStopAtFrame(activeAssetTimeline, currentFrame)
-    ? Math.min(currentFrame + 1, activeAssetTimeline.frameCount - 1)
+  const startFrame = appState.activeAssetTimeline && shouldStopAtFrame(appState.activeAssetTimeline, currentFrame)
+    ? Math.min(currentFrame + 1, appState.activeAssetTimeline.frameCount - 1)
     : currentFrame;
   goToFrame(startFrame, true);
 });
@@ -237,21 +185,21 @@ frameScrubber.addEventListener("input", () => {
   }
 
   if (isDirectRenderMode()) {
-    isGsapPlaying = false;
+    appState.isGsapPlaying = false;
     updatePlayButton();
     void renderDirectSwfFrame(Number(frameScrubber.value));
     return;
   }
 
-  if (!activeAssetTimeline || !timeline) return;
-  isGsapPlaying = false;
+  if (!appState.activeAssetTimeline || !appState.timeline) return;
+  appState.isGsapPlaying = false;
   playBtn.textContent = "Play GSAP";
   const frame = Number(frameScrubber.value);
   goToFrame(frame, false);
 });
 
 renderModeSelect.addEventListener("change", () => {
-  if (!activeAssetTimeline) return;
+  if (!appState.activeAssetTimeline) return;
   if (isPlayerMode()) {
     activatePlayerMode();
     return;
@@ -260,24 +208,24 @@ renderModeSelect.addEventListener("change", () => {
     playerController.deactivate();
     externalLevelLayer.hidden = false;
   }
-  renderFrame(activeAssetTimeline, Number(frameScrubber.value));
+  renderFrame(appState.activeAssetTimeline, Number(frameScrubber.value));
 });
 
 document.querySelectorAll<HTMLButtonElement>(".debug-tab").forEach((button) => {
   button.addEventListener("click", () => {
-    activeDebugTab = (button.dataset.debugTab as typeof activeDebugTab | undefined) ?? "stage";
+    appState.activeDebugTab = (button.dataset.debugTab as typeof appState.activeDebugTab | undefined) ?? "stage";
     document.querySelectorAll<HTMLButtonElement>(".debug-tab").forEach((tab) => {
       tab.classList.toggle("is-active", tab === button);
     });
-    if (isDirectRenderMode() && directSwfRenderer) {
-      updateDirectDebugPanel(directSwfRenderer);
+    if (isDirectRenderMode() && appState.directSwfRenderer) {
+      updateDirectDebugPanel(appState.directSwfRenderer);
       return;
     }
     updateDebugPanel();
   });
 });
 
-void loadScene(activeScene);
+void loadScene(appState.activeScene);
 stageResizeObserver.observe(assetWrap);
 
 async function loadScene(scene: TourScene, entryTarget?: SceneEntryTarget, preserveExternalLevels = false) {
@@ -296,24 +244,24 @@ async function navigateToSceneBySwf(swf: string, entryTarget?: SceneEntryTarget)
     return;
   }
 
-  activeScene = targetScene;
+  appState.activeScene = targetScene;
   if (/^segment\d+\.swf$/i.test(targetScene.swf)) loadedLevelSwfs[4] = targetScene.swf;
-  select.value = String(scenes.indexOf(activeScene));
-  await loadScene(activeScene, entryTarget, true);
+  select.value = String(scenes.indexOf(appState.activeScene));
+  await loadScene(appState.activeScene, entryTarget, true);
 }
 
 async function loadRuffle(scene: TourScene) {
   await waitForRuffle();
-  rufflePlayer = window.RufflePlayer!.newest().createPlayer();
-  rufflePlayer.classList.add("ruffle-player");
-  rufflePlayer.setAttribute("width", "640");
-  rufflePlayer.setAttribute("height", "480");
-  ruffleMount.replaceChildren(rufflePlayer);
+  appState.rufflePlayer = window.RufflePlayer!.newest().createPlayer();
+  appState.rufflePlayer.classList.add("ruffle-player");
+  appState.rufflePlayer.setAttribute("width", "640");
+  appState.rufflePlayer.setAttribute("height", "480");
+  ruffleMount.replaceChildren(appState.rufflePlayer);
   const url = `/${scene.swf}`;
-  if (rufflePlayer.ruffle) {
-    await rufflePlayer.ruffle().load({ url });
-  } else if (rufflePlayer.load) {
-    await rufflePlayer.load({ url });
+  if (appState.rufflePlayer.ruffle) {
+    await appState.rufflePlayer.ruffle().load({ url });
+  } else if (appState.rufflePlayer.load) {
+    await appState.rufflePlayer.load({ url });
   } else {
     throw new Error("Ruffle player exposes no load API");
   }
@@ -324,21 +272,21 @@ function isDirectRenderMode() {
 }
 
 function destroyDirectRenderer() {
-  directSwfRenderer?.destroy();
-  directSwfRenderer = null;
-  directSwfScene = "";
-  directSwfLoad = null;
+  appState.directSwfRenderer?.destroy();
+  appState.directSwfRenderer = null;
+  appState.directSwfScene = "";
+  appState.directSwfLoad = null;
 }
 
 async function ensureDirectRenderer(scene: TourScene) {
-  if (directSwfRenderer && directSwfScene === scene.swf) return directSwfRenderer;
-  if (directSwfLoad && directSwfScene === scene.swf) return directSwfLoad;
+  if (appState.directSwfRenderer && appState.directSwfScene === scene.swf) return appState.directSwfRenderer;
+  if (appState.directSwfLoad && appState.directSwfScene === scene.swf) return appState.directSwfLoad;
 
   destroyDirectRenderer();
-  directSwfScene = scene.swf;
+  appState.directSwfScene = scene.swf;
   status.textContent = `Parsing ${scene.swf} directly`;
 
-  directSwfLoad = parseSwfFile(`/${scene.swf}`)
+  appState.directSwfLoad = parseSwfFile(`/${scene.swf}`)
     .then((movie) => {
       directSwfLayer.replaceChildren();
       const renderer = new GsapSwfRenderer(movie, directSwfLayer, {
@@ -362,31 +310,31 @@ async function ensureDirectRenderer(scene: TourScene) {
       };
       renderer.onPlaybackChange = (playing) => {
         if (!isDirectRenderMode()) return;
-        isGsapPlaying = playing;
+        appState.isGsapPlaying = playing;
         status.dataset.mode = playing ? "playing" : "stopped";
         status.textContent = `${playing ? "Playing" : "Ready at"} direct ${scene.swf} frame ${renderer.currentFrame + 1}`;
         updatePlayButton();
       };
-      directSwfRenderer = renderer;
+      appState.directSwfRenderer = renderer;
       return renderer;
     })
     .catch((error) => {
       console.warn(`Direct SWF renderer failed to parse ${scene.swf}`, error);
       status.dataset.mode = "stopped";
       status.textContent = `Direct renderer failed for ${scene.swf}`;
-      directSwfRenderer = null;
+      appState.directSwfRenderer = null;
       return null;
     })
     .finally(() => {
-      directSwfLoad = null;
+      appState.directSwfLoad = null;
     });
 
-  return directSwfLoad;
+  return appState.directSwfLoad;
 }
 
 async function renderDirectSwfFrame(frameIndex: number) {
-  const renderer = await ensureDirectRenderer(activeScene);
-  if (!renderer || !isDirectRenderMode() || directSwfScene !== activeScene.swf) return;
+  const renderer = await ensureDirectRenderer(appState.activeScene);
+  if (!renderer || !isDirectRenderMode() || appState.directSwfScene !== appState.activeScene.swf) return;
 
   frameScrubber.max = String(renderer.totalFrames - 1);
   const frame = Math.max(0, Math.min(renderer.totalFrames - 1, frameIndex));
@@ -395,27 +343,27 @@ async function renderDirectSwfFrame(frameIndex: number) {
 }
 
 async function toggleDirectRendererPlayback() {
-  const renderer = await ensureDirectRenderer(activeScene);
+  const renderer = await ensureDirectRenderer(appState.activeScene);
   if (!renderer || !isDirectRenderMode()) return;
 
   if (renderer.isPlaying) {
     renderer.pause();
-    isGsapPlaying = false;
+    appState.isGsapPlaying = false;
   } else {
     renderer.play();
-    isGsapPlaying = true;
+    appState.isGsapPlaying = true;
   }
   updatePlayButton();
 }
 
 async function restartDirectRenderer() {
-  const renderer = await ensureDirectRenderer(activeScene);
+  const renderer = await ensureDirectRenderer(appState.activeScene);
   if (!renderer || !isDirectRenderMode()) return;
 
   renderer.restart();
   frameScrubber.max = String(renderer.totalFrames - 1);
   frameScrubber.value = "0";
-  isGsapPlaying = false;
+  appState.isGsapPlaying = false;
   updateDirectDebugPanel(renderer, 0);
   updatePlayButton();
 }
@@ -445,17 +393,17 @@ function updateDirectDebugPanel(renderer: GsapSwfRenderer, frameIndex = renderer
     });
 
   debugSummary.textContent = `${entries.length} direct items`;
-  if (activeDebugTab === "stage") {
-    renderStageDebug(activeAssetTimeline, entries);
-  } else if (activeDebugTab === "labels") {
-    if (activeAssetTimeline) {
-      renderLabelDebug(activeAssetTimeline, frameIndex);
+  if (appState.activeDebugTab === "stage") {
+    renderStageDebug(appState.activeAssetTimeline, entries);
+  } else if (appState.activeDebugTab === "labels") {
+    if (appState.activeAssetTimeline) {
+      renderLabelDebug(appState.activeAssetTimeline, frameIndex);
     } else {
       renderDirectMetadataDebug(renderer, "Direct SWF labels are evaluated internally by the renderer.");
     }
   } else {
-    if (activeAssetTimeline) {
-      renderActionDebug(activeAssetTimeline, frameIndex);
+    if (appState.activeAssetTimeline) {
+      renderActionDebug(appState.activeAssetTimeline, frameIndex);
     } else {
       renderDirectMetadataDebug(renderer, "Direct SWF ActionScript is parsed at runtime for timeline control.");
     }
@@ -473,22 +421,22 @@ function renderDirectMetadataDebug(renderer: GsapSwfRenderer, message: string) {
 }
 
 async function loadAssetTimeline(scene: TourScene, entryTarget?: SceneEntryTarget, preserveExternalLevels = false) {
-  timeline?.kill();
-  activeAssetTimeline = null;
+  appState.timeline?.kill();
+  appState.activeAssetTimeline = null;
   playerController.deactivate();
   destroyDirectRenderer();
   stopAwaitingLoop();
   stopCurrentVoiceover();
-  lastSoundFrameKey = "";
-  lastFrameFunctionCallKey = "";
+  appState.lastSoundFrameKey = "";
+  appState.lastFrameFunctionCallKey = "";
   playedSpriteSoundKeys.clear();
-  renderedInstances = new Map();
+  appState.renderedInstances = new Map();
   assetStage.querySelectorAll(".asset-instance").forEach((node) => node.remove());
   gsapDisplayRenderer.clear();
   directSwfLayer.hidden = true;
   directSwfLayer.replaceChildren();
   externalLevelLayer.hidden = false;
-  highlightedDepth = null;
+  appState.highlightedDepth = null;
   frameStageImage.removeAttribute("src");
   frameStageInline.replaceChildren();
   referenceFrameImage.removeAttribute("src");
@@ -511,25 +459,25 @@ async function loadAssetTimeline(scene: TourScene, entryTarget?: SceneEntryTarge
     return;
   }
 
-  activeAssetTimeline = loadedTimeline;
-  await loadExtractedFonts(activeAssetTimeline);
-  if (!activeAssetTimeline.frameSvgs?.length) {
-    activeAssetTimeline.frameSvgs = Array.from(
-      { length: activeAssetTimeline.frameCount },
-      (_, index) => `generated/${activeAssetTimeline!.scene}/frames/${index + 1}.svg`,
+  appState.activeAssetTimeline = loadedTimeline;
+  await loadExtractedFonts(appState.activeAssetTimeline);
+  if (!appState.activeAssetTimeline.frameSvgs?.length) {
+    appState.activeAssetTimeline.frameSvgs = Array.from(
+      { length: appState.activeAssetTimeline.frameCount },
+      (_, index) => `generated/${appState.activeAssetTimeline!.scene}/frames/${index + 1}.svg`,
     );
   }
-  assetTimelineVersion += 1;
+  appState.assetTimelineVersion += 1;
   // The decompiled player is the primary experience; other modes remain for
   // comparison via the dropdown.
   renderModeSelect.value = "player";
-  assetStage.style.background = activeAssetTimeline.backgroundColor ?? "#ffffff";
-  frameScrubber.max = String(activeAssetTimeline.frameCount - 1);
-  const entryFrame = resolveSceneEntryFrame(activeAssetTimeline, entryTarget);
+  assetStage.style.background = appState.activeAssetTimeline.backgroundColor ?? "#ffffff";
+  frameScrubber.max = String(appState.activeAssetTimeline.frameCount - 1);
+  const entryFrame = resolveSceneEntryFrame(appState.activeAssetTimeline, entryTarget);
   emptyMessage.hidden = true;
-  assetName.textContent = `${activeAssetTimeline.frameCount} frames @ ${activeAssetTimeline.fps} fps`;
+  assetName.textContent = `${appState.activeAssetTimeline.frameCount} frames @ ${appState.activeAssetTimeline.fps} fps`;
   // Build the flat GSAP timeline that the legacy comparison modes depend on.
-  buildGsapAssetPlayer(activeAssetTimeline);
+  buildGsapAssetPlayer(appState.activeAssetTimeline);
   frameScrubber.value = String(entryFrame);
   if (isPlayerMode()) {
     activatePlayerMode();
@@ -594,8 +542,8 @@ function buildGsapAssetPlayer(assetTimeline: AssetTimeline) {
   };
 
   setFrame();
-  timeline = gsap.timeline({ repeat: -1, paused: true });
-  timeline.to(state, {
+  appState.timeline = gsap.timeline({ repeat: -1, paused: true });
+  appState.timeline.to(state, {
     frame: assetTimeline.frames.length - 1,
     duration: assetTimeline.duration,
     ease: `steps(${assetTimeline.frames.length - 1})`,
@@ -613,15 +561,15 @@ function renderFrame(assetTimeline: AssetTimeline, index: number) {
   updateStaticReference(assetTimeline, frame.index);
 
   if (mode === "direct") {
-    timeline?.pause();
-    isGsapPlaying = Boolean(directSwfRenderer?.isPlaying);
+    appState.timeline?.pause();
+    appState.isGsapPlaying = Boolean(appState.directSwfRenderer?.isPlaying);
     stopAwaitingLoop();
     clearButtonVisualState();
-    frameSvgRequest += 1;
+    appState.frameSvgRequest += 1;
     frameStageImage.hidden = true;
     frameStageInline.replaceChildren();
     assetStage.querySelectorAll(".asset-instance").forEach((node) => node.remove());
-    renderedInstances.clear();
+    appState.renderedInstances.clear();
     gsapDisplayLayer.hidden = true;
     externalLevelLayer.hidden = true;
     awaitingLoopLayer.replaceChildren();
@@ -630,28 +578,28 @@ function renderFrame(assetTimeline: AssetTimeline, index: number) {
     return;
   }
 
-  directSwfRenderer?.pause();
+  appState.directSwfRenderer?.pause();
   directSwfLayer.hidden = true;
   externalLevelLayer.hidden = false;
 
-  if (!isRunningExtractedAction && isGsapPlaying && shouldStopAtFrame(assetTimeline, frame.index)) {
-    timeline?.pause(frame.index / assetTimeline.fps);
-    isGsapPlaying = false;
+  if (!appState.isRunningExtractedAction && appState.isGsapPlaying && shouldStopAtFrame(assetTimeline, frame.index)) {
+    appState.timeline?.pause(frame.index / assetTimeline.fps);
+    appState.isGsapPlaying = false;
     setFrameStatus(assetTimeline, frame.index, 0);
     return;
   }
 
-  if (!isRunningExtractedAction && isGsapPlaying) {
+  if (!appState.isRunningExtractedAction && appState.isGsapPlaying) {
     const swfLoadActions = rootSwfLoadActionsAtFrame(assetTimeline, frame.index);
     for (const action of swfLoadActions) rememberLoadedLevel(action, assetTimeline, frame.index);
     const swfAction = primaryRootSwfNavigation(swfLoadActions);
     if (swfAction?.swf) {
-      isRunningExtractedAction = true;
+      appState.isRunningExtractedAction = true;
       runtimeGlobals["nav.targSection"] = "";
       queueShellLevelCallsForLoadedScene(assetTimeline, frame.index, swfAction.swf);
       status.textContent = `Loading ${swfAction.swf}`;
       void navigateToSceneBySwf(swfAction.swf).finally(() => {
-        isRunningExtractedAction = false;
+        appState.isRunningExtractedAction = false;
       });
       return;
     }
@@ -660,11 +608,11 @@ function renderFrame(assetTimeline: AssetTimeline, index: number) {
     if (levelGoto) {
       const targetSwf = loadedLevelSwfs[levelGoto.level];
       if (targetSwf) {
-        isRunningExtractedAction = true;
+        appState.isRunningExtractedAction = true;
         runtimeGlobals["nav.targSection"] = "";
         status.textContent = `Loading ${targetSwf}`;
         void navigateToSceneBySwf(targetSwf, levelGoto.action).finally(() => {
-          isRunningExtractedAction = false;
+          appState.isRunningExtractedAction = false;
         });
         return;
       }
@@ -673,9 +621,9 @@ function renderFrame(assetTimeline: AssetTimeline, index: number) {
     const extractedAction = rootTimelineActionAtFrame(assetTimeline, frame.index);
     const targetFrame = extractedAction ? resolveRuntimeFrame(extractedAction, assetTimeline, frame.index) : -1;
     if (extractedAction && targetFrame >= 0 && targetFrame !== frame.index) {
-      isRunningExtractedAction = true;
+      appState.isRunningExtractedAction = true;
       goToFrame(targetFrame, extractedAction.command === "gotoAndPlay");
-      isRunningExtractedAction = false;
+      appState.isRunningExtractedAction = false;
       return;
     }
   }
@@ -684,20 +632,20 @@ function renderFrame(assetTimeline: AssetTimeline, index: number) {
     triggerFrameSounds(assetTimeline, frame.index);
     runFrameFunctionCalls(assetTimeline, frame.index);
     assetStage.querySelectorAll(".asset-instance").forEach((node) => node.remove());
-    renderedInstances.clear();
+    appState.renderedInstances.clear();
     gsapDisplayLayer.hidden = true;
     frameStageImage.hidden = true;
-    void renderInlineFrameSvg(assetTimeline.frameSvgs[frame.index], assetTimelineVersion, frame.index);
+    void renderInlineFrameSvg(assetTimeline.frameSvgs[frame.index], appState.assetTimelineVersion, frame.index);
     updateDebugPanel(assetTimeline, frame.index);
     return;
   }
 
   if (mode === "gsap") {
-    frameSvgRequest += 1;
+    appState.frameSvgRequest += 1;
     frameStageImage.hidden = true;
     frameStageInline.replaceChildren();
     assetStage.querySelectorAll(".asset-instance").forEach((node) => node.remove());
-    renderedInstances.clear();
+    appState.renderedInstances.clear();
     clearButtonVisualState();
     triggerFrameSounds(assetTimeline, frame.index);
     runFrameFunctionCalls(assetTimeline, frame.index);
@@ -732,10 +680,10 @@ function renderFrame(assetTimeline: AssetTimeline, index: number) {
     }
   }
 
-  for (const [depth, rendered] of renderedInstances) {
+  for (const [depth, rendered] of appState.renderedInstances) {
     if (!liveDepths.has(depth)) {
       rendered.element.remove();
-      renderedInstances.delete(depth);
+      appState.renderedInstances.delete(depth);
     }
   }
 
@@ -745,7 +693,7 @@ function renderFrame(assetTimeline: AssetTimeline, index: number) {
 
 async function renderInlineFrameSvg(src: string, version: number, frameIndex: number) {
   const url = `/${src}?v=${version}`;
-  const request = ++frameSvgRequest;
+  const request = ++appState.frameSvgRequest;
   let svg = frameSvgCache.get(url);
 
   if (!svg) {
@@ -756,32 +704,32 @@ async function renderInlineFrameSvg(src: string, version: number, frameIndex: nu
     frameSvgCache.set(url, svg);
   }
 
-  if (request !== frameSvgRequest || renderModeSelect.value !== "frame") return;
+  if (request !== appState.frameSvgRequest || renderModeSelect.value !== "frame") return;
   clearButtonVisualState();
   frameStageInline.innerHTML = svg;
   const element = frameStageInline.querySelector("svg");
   element?.classList.add("inline-frame-svg");
   applyDynamicTextOverrides();
-  if (activeAssetTimeline) applyFrameActionTargetOverlays(activeAssetTimeline, frameIndex);
+  if (appState.activeAssetTimeline) applyFrameActionTargetOverlays(appState.activeAssetTimeline, frameIndex);
   const wiredTargets = wireInlineFrameControls(frameIndex);
-  if (activeAssetTimeline) setFrameStatus(activeAssetTimeline, frameIndex, wiredTargets);
+  if (appState.activeAssetTimeline) setFrameStatus(appState.activeAssetTimeline, frameIndex, wiredTargets);
 }
 
 function goToFrame(index: number, play: boolean) {
-  if (!activeAssetTimeline || !timeline) return false;
+  if (!appState.activeAssetTimeline || !appState.timeline) return false;
 
-  const frame = Math.max(0, Math.min(activeAssetTimeline.frameCount - 1, index));
-  timeline.pause(frame / activeAssetTimeline.fps);
+  const frame = Math.max(0, Math.min(appState.activeAssetTimeline.frameCount - 1, index));
+  appState.timeline.pause(frame / appState.activeAssetTimeline.fps);
   frameScrubber.value = String(frame);
-  renderFrame(activeAssetTimeline, frame);
+  renderFrame(appState.activeAssetTimeline, frame);
 
-  const stoppedByFrameAction = play && shouldStopAtFrame(activeAssetTimeline, frame);
-  isGsapPlaying = play && !stoppedByFrameAction;
+  const stoppedByFrameAction = play && shouldStopAtFrame(appState.activeAssetTimeline, frame);
+  appState.isGsapPlaying = play && !stoppedByFrameAction;
   updatePlayButton();
-  if (isGsapPlaying) timeline.play(frame / activeAssetTimeline.fps);
+  if (appState.isGsapPlaying) appState.timeline.play(frame / appState.activeAssetTimeline.fps);
   if (stoppedByFrameAction) {
-    timeline.pause(frame / activeAssetTimeline.fps);
-    setFrameStatus(activeAssetTimeline, frame, 0);
+    appState.timeline.pause(frame / appState.activeAssetTimeline.fps);
+    setFrameStatus(appState.activeAssetTimeline, frame, 0);
   }
   return stoppedByFrameAction;
 }
@@ -792,7 +740,7 @@ function shouldStopAtFrame(assetTimeline: AssetTimeline, frame: number) {
 }
 
 function applyDynamicTextOverrides() {
-  const dynamicTexts = activeAssetTimeline?.control?.dynamicTexts;
+  const dynamicTexts = appState.activeAssetTimeline?.control?.dynamicTexts;
   if (!dynamicTexts || !Object.keys(dynamicTexts).length) return;
 
   const svg = frameStageInline.querySelector<SVGSVGElement>("svg");
@@ -844,8 +792,8 @@ function applyDynamicTextOverrides() {
 
 function triggerFrameSounds(assetTimeline: AssetTimeline, frameIndex: number) {
   const key = `${assetTimeline.scene}:${frameIndex}`;
-  if (lastSoundFrameKey === key) return;
-  lastSoundFrameKey = key;
+  if (appState.lastSoundFrameKey === key) return;
+  appState.lastSoundFrameKey = key;
 
   const musicAction = frameActionsAt(assetTimeline, frameIndex).find((action) => action.command === "attachSound" && action.soundRole === "music" && action.soundSrc);
   if (musicAction?.soundSrc) {
@@ -878,8 +826,8 @@ function triggerSpriteFrameSounds(assetTimeline: AssetTimeline, spriteId: number
 
 function runFrameFunctionCalls(assetTimeline: AssetTimeline, frameIndex: number) {
   const key = `${assetTimeline.scene}:${frameIndex}`;
-  if (lastFrameFunctionCallKey === key) return;
-  lastFrameFunctionCallKey = key;
+  if (appState.lastFrameFunctionCallKey === key) return;
+  appState.lastFrameFunctionCallKey = key;
 
   for (const action of frameActionsAt(assetTimeline, frameIndex).filter((action) => action.command === "callFunctions" && action.functionCalls?.length)) {
     runFunctionCalls(assetTimeline, action.functionCalls!, frameIndex);
@@ -892,12 +840,12 @@ async function playVoiceover(action: ControlAction) {
 
   const audio = new Audio(`/${action.soundSrc}`);
   audio.preload = "auto";
-  currentVoiceover = audio;
+  appState.currentVoiceover = audio;
   await audio.play();
 }
 
 async function playBackgroundMusic(action: ControlAction) {
-  if (!action.soundSrc || currentMusic?.dataset.sound === action.sound) return;
+  if (!action.soundSrc || appState.currentMusic?.dataset.sound === action.sound) return;
   stopCurrentMusic();
 
   const audio = new Audio(`/${action.soundSrc}`);
@@ -905,26 +853,26 @@ async function playBackgroundMusic(action: ControlAction) {
   audio.loop = true;
   audio.volume = 0.35;
   audio.dataset.sound = action.sound ?? "";
-  currentMusic = audio;
+  appState.currentMusic = audio;
   await audio.play();
 }
 
 function stopCurrentVoiceover() {
-  if (!currentVoiceover) return;
-  currentVoiceover.pause();
-  currentVoiceover.currentTime = 0;
-  currentVoiceover = null;
+  if (!appState.currentVoiceover) return;
+  appState.currentVoiceover.pause();
+  appState.currentVoiceover.currentTime = 0;
+  appState.currentVoiceover = null;
 }
 
 function stopCurrentMusic() {
-  if (!currentMusic) return;
-  currentMusic.pause();
-  currentMusic.currentTime = 0;
-  currentMusic = null;
+  if (!appState.currentMusic) return;
+  appState.currentMusic.pause();
+  appState.currentMusic.currentTime = 0;
+  appState.currentMusic = null;
 }
 
 function wireInlineFrameControls(frameIndex: number) {
-  if (!activeAssetTimeline?.control?.buttonActions) return 0;
+  if (!appState.activeAssetTimeline?.control?.buttonActions) return 0;
 
   let wiredTargets = 0;
   const svg = frameStageInline.querySelector<SVGSVGElement>("svg");
@@ -934,7 +882,7 @@ function wireInlineFrameControls(frameIndex: number) {
   overlayLayer.classList.add("flash-button-overlay-layer");
   svg.append(overlayLayer);
 
-  for (const [characterId, action] of Object.entries(activeAssetTimeline.control.buttonActions)) {
+  for (const [characterId, action] of Object.entries(appState.activeAssetTimeline.control.buttonActions)) {
     const release = action.release;
     if (!release) continue;
 
@@ -948,8 +896,8 @@ function wireInlineFrameControls(frameIndex: number) {
     }
   }
 
-  const overlays = createButtonHitOverlays(svg, overlayLayer, activeAssetTimeline, frameIndex);
-  const timelineOverlays = createTimelineButtonHitOverlays(svg, overlayLayer, activeAssetTimeline, frameIndex);
+  const overlays = createButtonHitOverlays(svg, overlayLayer, appState.activeAssetTimeline, frameIndex);
+  const timelineOverlays = createTimelineButtonHitOverlays(svg, overlayLayer, appState.activeAssetTimeline, frameIndex);
   return Math.max(wiredTargets, overlays + timelineOverlays);
 }
 
@@ -957,15 +905,15 @@ function handleReleaseClick(event: Event, release: ControlAction) {
   event.preventDefault();
   event.stopPropagation();
   if (release.exitNavigation) {
-    if (!activeAssetTimeline) return;
+    if (!appState.activeAssetTimeline) return;
     runtimeGlobals[release.exitNavigation.variable] = release.exitNavigation.value;
     goToFrame(release.exitNavigation.exitFrame, true);
     status.textContent = `Playing ${release.exitNavigation.exitLabel ?? "exit navigation"} toward ${release.exitNavigation.swf}`;
     return;
   }
 
-  if (release.functionCalls?.length && activeAssetTimeline) {
-    const handled = runFunctionCalls(activeAssetTimeline, release.functionCalls, Number(frameScrubber.value));
+  if (release.functionCalls?.length && appState.activeAssetTimeline) {
+    const handled = runFunctionCalls(appState.activeAssetTimeline, release.functionCalls, Number(frameScrubber.value));
     if (handled) {
       status.textContent = `Ran ${release.functionCalls.map((call) => call.functionName).join(", ")}`;
       const hasPrimaryAction = Boolean(
@@ -984,14 +932,14 @@ function handleReleaseClick(event: Event, release: ControlAction) {
     return;
   }
 
-  if (!activeAssetTimeline) return;
+  if (!appState.activeAssetTimeline) return;
   if (release.nestedSection) {
     goToFrame(release.nestedSection.frame, true);
     status.textContent = `Playing nested section at ${release.nestedSection.label}`;
     return;
   }
 
-  const targetFrame = resolveRuntimeFrame(release, activeAssetTimeline, Number(frameScrubber.value));
+  const targetFrame = resolveRuntimeFrame(release, appState.activeAssetTimeline, Number(frameScrubber.value));
   if (targetFrame < 0) {
     status.textContent = `Unsupported action in ${release.source}`;
     return;
@@ -1372,16 +1320,16 @@ function showButtonVisualState(
   image.setAttribute("height", String(stateAsset.origin.height));
   image.setAttribute("transform", matrixToSvg(matrix));
   overlayLayer.prepend(image);
-  buttonStateElement = image;
+  appState.buttonStateElement = image;
 }
 
 function clearButtonVisualState() {
-  buttonStateElement?.remove();
-  buttonStateElement = null;
+  appState.buttonStateElement?.remove();
+  appState.buttonStateElement = null;
 }
 
 function handleButtonHover(characterId: string, eventName: "rollOver" | "rollOut", frameIndex: number) {
-  const assetTimeline = activeAssetTimeline;
+  const assetTimeline = appState.activeAssetTimeline;
   const actionGroup = assetTimeline?.control?.buttonActions?.[characterId];
   const action = actionGroup?.[eventName];
   if (!assetTimeline || !actionGroup || !action) return;
@@ -1430,7 +1378,7 @@ function playHoverSprite(
   image.style.height = `${asset.origin.height}px`;
   element.append(image);
   awaitingLoopLayer.append(element);
-  hoverSpriteElement = element;
+  appState.hoverSpriteElement = element;
 
   let spriteFrame = startFrame;
   const render = () => {
@@ -1453,20 +1401,20 @@ function playHoverSprite(
   };
 
   if (!render()) return;
-  hoverSpriteTimer = window.setInterval(() => {
+  appState.hoverSpriteTimer = window.setInterval(() => {
     if (!render()) stopHoverSprite(false);
   }, 1000 / Math.max(1, assetTimeline.fps));
 }
 
 function stopHoverSprite(removeElement = true) {
-  if (hoverSpriteTimer) {
-    window.clearInterval(hoverSpriteTimer);
-    hoverSpriteTimer = 0;
+  if (appState.hoverSpriteTimer) {
+    window.clearInterval(appState.hoverSpriteTimer);
+    appState.hoverSpriteTimer = 0;
   }
   if (removeElement) {
     restoreStaticHoverSources();
-    hoverSpriteElement?.remove();
-    hoverSpriteElement = null;
+    appState.hoverSpriteElement?.remove();
+    appState.hoverSpriteElement = null;
   }
 }
 
@@ -1506,24 +1454,24 @@ function setFrameStatus(assetTimeline: AssetTimeline, frameIndex: number, wiredT
   const stopped = shouldStopAtFrame(assetTimeline, frameIndex);
   const choiceLoop = isChoiceLoopFrame(assetTimeline, frameIndex);
   const nestedSectionActive = stopped && hasActiveNestedSection(assetTimeline, frameIndex);
-  const interactiveHold = wiredTargets > 0 && !isGsapPlaying && frameIndex !== assetTimeline.entryFrame;
-  isNestedSectionActive = nestedSectionActive;
-  isAwaitingSelection = !nestedSectionActive && (stopped || choiceLoop || interactiveHold) && wiredTargets > 0;
-  status.dataset.mode = isAwaitingSelection ? "waiting" : nestedSectionActive || !stopped ? "playing" : "stopped";
+  const interactiveHold = wiredTargets > 0 && !appState.isGsapPlaying && frameIndex !== assetTimeline.entryFrame;
+  appState.isNestedSectionActive = nestedSectionActive;
+  appState.isAwaitingSelection = !nestedSectionActive && (stopped || choiceLoop || interactiveHold) && wiredTargets > 0;
+  status.dataset.mode = appState.isAwaitingSelection ? "waiting" : nestedSectionActive || !stopped ? "playing" : "stopped";
 
   if (nestedSectionActive) {
     status.textContent = `Playing nested section at ${label}`;
     startAwaitingLoop(assetTimeline, frameIndex, true);
-  } else if (isAwaitingSelection && choiceLoop && !stopped) {
+  } else if (appState.isAwaitingSelection && choiceLoop && !stopped) {
     status.textContent = `Awaiting user selection loop at ${label}`;
     stopAwaitingLoop();
-  } else if (isAwaitingSelection) {
+  } else if (appState.isAwaitingSelection) {
     status.textContent = `Awaiting user selection at ${label}`;
     startAwaitingLoop(assetTimeline, frameIndex);
   } else if (stopped) {
     status.textContent = `Stopped at ${label}`;
     stopAwaitingLoop();
-  } else if (isGsapPlaying) {
+  } else if (appState.isGsapPlaying) {
     status.textContent = `Playing ${assetTimeline.scene}`;
     stopAwaitingLoop();
   } else {
@@ -1543,12 +1491,12 @@ function updatePlayButton() {
 
   if (isDirectRenderMode()) {
     playBtn.disabled = false;
-    playBtn.textContent = isGsapPlaying ? "Pause Direct" : "Play Direct";
+    playBtn.textContent = appState.isGsapPlaying ? "Pause Direct" : "Play Direct";
     return;
   }
 
-  playBtn.disabled = isAwaitingSelection || isNestedSectionActive;
-  playBtn.textContent = isNestedSectionActive ? "Section Playing" : isAwaitingSelection ? "Awaiting Choice" : isGsapPlaying ? "Pause GSAP" : "Play GSAP";
+  playBtn.disabled = appState.isAwaitingSelection || appState.isNestedSectionActive;
+  playBtn.textContent = appState.isNestedSectionActive ? "Section Playing" : appState.isAwaitingSelection ? "Awaiting Choice" : appState.isGsapPlaying ? "Pause GSAP" : "Play GSAP";
 }
 
 function updateStaticReference(assetTimeline: AssetTimeline, frameIndex: number) {
@@ -1560,7 +1508,7 @@ function updateStaticReference(assetTimeline: AssetTimeline, frameIndex: number)
 }
 
 function updateDebugPanel(
-  assetTimeline = activeAssetTimeline,
+  assetTimeline = appState.activeAssetTimeline,
   frameIndex = Number(frameScrubber.value),
   gsapEntries?: GsapDisplayDebugEntry[],
 ) {
@@ -1574,9 +1522,9 @@ function updateDebugPanel(
   const entries = gsapEntries ?? debugEntriesForFrame(assetTimeline, frameIndex);
   debugSummary.textContent = `${entries.length} items`;
 
-  if (activeDebugTab === "labels") {
+  if (appState.activeDebugTab === "labels") {
     renderLabelDebug(assetTimeline, frameIndex);
-  } else if (activeDebugTab === "actions") {
+  } else if (appState.activeDebugTab === "actions") {
     renderActionDebug(assetTimeline, frameIndex);
   } else {
     renderStageDebug(assetTimeline, entries);
@@ -1624,7 +1572,7 @@ function renderStageDebug(assetTimeline: AssetTimeline | null, entries: GsapDisp
     const button = document.createElement("button");
     button.className = "debug-item";
     button.type = "button";
-    button.classList.toggle("is-highlighted", highlightedDepth === entry.depth);
+    button.classList.toggle("is-highlighted", appState.highlightedDepth === entry.depth);
     button.classList.toggle("is-mask", entry.isMask);
     button.classList.toggle("is-clipped", entry.clippedBy !== undefined);
     button.innerHTML = `
@@ -1641,7 +1589,7 @@ function renderStageDebug(assetTimeline: AssetTimeline | null, entries: GsapDisp
       <span class="debug-opacity">${Math.round(entry.opacity * 100)}%</span>
     `;
     button.addEventListener("click", () => {
-      highlightedDepth = highlightedDepth === entry.depth ? null : entry.depth;
+      appState.highlightedDepth = appState.highlightedDepth === entry.depth ? null : entry.depth;
       applyDepthHighlight();
       renderStageDebug(assetTimeline, entries);
     });
@@ -1723,8 +1671,8 @@ function emptyDebugMessage(message: string) {
 
 function applyDepthHighlight() {
   assetStage.querySelectorAll(".depth-highlight").forEach((node) => node.classList.remove("depth-highlight"));
-  if (highlightedDepth === null) return;
-  assetStage.querySelectorAll<HTMLElement>(`[data-depth="${highlightedDepth}"]`).forEach((node) => {
+  if (appState.highlightedDepth === null) return;
+  assetStage.querySelectorAll<HTMLElement>(`[data-depth="${appState.highlightedDepth}"]`).forEach((node) => {
     node.classList.add("depth-highlight");
   });
 }
@@ -1752,8 +1700,8 @@ function startAwaitingLoop(assetTimeline: AssetTimeline, frameIndex: number, sec
     return;
   }
 
-  if (awaitingLoopTimer) window.clearInterval(awaitingLoopTimer);
-  awaitingLoopTick = 0;
+  if (appState.awaitingLoopTimer) window.clearInterval(appState.awaitingLoopTimer);
+  appState.awaitingLoopTick = 0;
   playedSpriteSoundKeys.clear();
   restoreStaticAwaitingSources();
   awaitingLoopLayer.replaceChildren();
@@ -1810,11 +1758,11 @@ function startAwaitingLoop(assetTimeline: AssetTimeline, frameIndex: number, sec
         ? Math.min(frameOffset + 1, item.asset.frames.length - 1)
         : (frameOffset + 1) % item.asset.frames.length;
     }
-    awaitingLoopTick += 1;
+    appState.awaitingLoopTick += 1;
   };
 
   renderLoopFrame();
-  awaitingLoopTimer = window.setInterval(renderLoopFrame, 1000 / Math.max(1, assetTimeline.fps));
+  appState.awaitingLoopTimer = window.setInterval(renderLoopFrame, 1000 / Math.max(1, assetTimeline.fps));
 }
 
 function runNestedSectionAction(assetTimeline: AssetTimeline, rootFrameIndex: number, spriteId: number, spriteFrame: number) {
@@ -1842,8 +1790,8 @@ function runNestedSectionAction(assetTimeline: AssetTimeline, rootFrameIndex: nu
 
   if (actions.some((action) => action.command === "stop")) {
     pauseAwaitingLoop();
-    isNestedSectionActive = false;
-    isAwaitingSelection = true;
+    appState.isNestedSectionActive = false;
+    appState.isAwaitingSelection = true;
     const label = assetTimeline.frames[rootFrameIndex]?.label || `frame ${rootFrameIndex + 1}`;
     status.dataset.mode = "waiting";
     status.textContent = `Awaiting user selection at ${label}`;
@@ -2030,9 +1978,9 @@ function expandedFrameTargetActionsAt(assetTimeline: AssetTimeline, frameIndex: 
 }
 
 function pauseAwaitingLoop() {
-  if (awaitingLoopTimer) {
-    window.clearInterval(awaitingLoopTimer);
-    awaitingLoopTimer = 0;
+  if (appState.awaitingLoopTimer) {
+    window.clearInterval(appState.awaitingLoopTimer);
+    appState.awaitingLoopTimer = 0;
   }
 }
 
@@ -2170,7 +2118,7 @@ function syncAssetStageScale() {
 }
 
 function ensureRenderedInstance(depth: number, characterId: number, asset: TimelineAsset, frameIndex: number) {
-  const existing = renderedInstances.get(depth);
+  const existing = appState.renderedInstances.get(depth);
   if (existing?.characterId === characterId) return existing;
 
   existing?.element.remove();
@@ -2191,7 +2139,7 @@ function ensureRenderedInstance(depth: number, characterId: number, asset: Timel
   assetStage.append(element);
 
   const rendered = { characterId, element, content };
-  renderedInstances.set(depth, rendered);
+  appState.renderedInstances.set(depth, rendered);
   return rendered;
 }
 

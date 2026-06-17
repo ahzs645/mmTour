@@ -201,3 +201,10 @@ export type RenderedInstance = {
   element: HTMLDivElement;
   content: HTMLElement;
 };
+
+export type RuffleElement = HTMLElement & {
+  load?: (config: { url: string }) => Promise<void>;
+  ruffle?: () => {
+    load: (config: { url: string } | string) => Promise<void>;
+  };
+};
