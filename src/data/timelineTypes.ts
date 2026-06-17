@@ -131,6 +131,10 @@ export type ControlAction = {
   label?: string;
   swf?: string;
   level?: number;
+  /** Every movie a button handler loads, in source order, when it loads more than one — e.g. a
+   *  "restart the whole tour" button that loads segment1 into the content level AND an MS-logo
+   *  overlay into a higher level. Single-load handlers omit this and use `swf`/`level` above. */
+  loads?: { swf: string; level?: number }[];
   /** Force a fresh (re)load of the target level even if that SWF is already loaded — a nav
    *  section click mirrors the SWF's `doRelease` (unload + load), so re-clicking replays it. */
   reload?: boolean;

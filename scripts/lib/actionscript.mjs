@@ -16,15 +16,19 @@ export function parseActionScript(source, frameLabels, sourcePath) {
   const rootGoto = source.match(/_root\.gotoAnd(Play|Stop)\(([^)]+)\)/);
   const clipGoto = source.match(/([A-Za-z0-9_.$]+)\.gotoAnd(Play|Stop)\(([^)]+)\)/);
   const localGoto = source.match(/(?:^|[\s;])gotoAnd(Play|Stop)\(([^)]+)\)/);
-  const doRelease = source.match(/(?:_level0\.)?doRelease\("([^"]+\.swf)"\)/);
-  const loadMovie = source.match(/loadMovieNum\("([^"]+\.swf)"(?:\s*,\s*(\d+))?/);
-  const swf = doRelease?.[1] ?? loadMovie?.[1];
-  // The level the SWF loads into: an explicit `loadMovieNum(url, N)` carries N; a bare
-  // `_level0.doRelease(url)` defers to the shell, which drops it into the content level
-  // (`intMovieTargLevel`). Without this, a section button's doRelease defaulted to level 0
-  // at runtime and replaced the shell instead of swapping the content level.
-  const swfLevel = doRelease ? discoverMovieTargetLevel() : (loadMovie?.[2] != null ? Number(loadMovie[2]) : undefined);
+  // Every movie this handler loads, in source order. An explicit `loadMovieNum(url, N)` carries N;
+  // a bare `_level0.doRelease(url)` defers to the shell, which drops it into the content level
+  // (`intMovieTargLevel`). Without the level, a section button's doRelease defaulted to level 0 at
+  // runtime and replaced the shell instead of swapping the content level. A handler may load more
+  // than one movie (e.g. a "restart the whole tour" button: segment1 into the content level AND an
+  // MS-logo overlay into a higher level), so capture them all — not just the first.
+  const loads = collectMovieLoads(source);
+  const swf = loads[0]?.swf;
+  const swfLevel = loads[0]?.level;
   const swfLevelEntry = swf && swfLevel != null ? { level: swfLevel } : {};
+  // Only carry the array when there's a second load to honor; the single-load common case is fully
+  // described by swf/level above (and the runtime falls back to those when `loads` is absent).
+  const multiLoad = loads.length > 1 ? { loads } : {};
   const exitNavigation = inferExitNavigation(source, frameLabels);
   const functionCalls = discoverFunctionCalls(source);
   // Simple `flag = value;` assignments in the handler (e.g. a section icon's `isActive = 1;`
@@ -61,6 +65,7 @@ export function parseActionScript(source, frameLabels, sourcePath) {
       ...(frame >= 0 ? { frame } : {}),
       swf,
       ...swfLevelEntry,
+      ...multiLoad,
       ...(functionCalls.length ? { functionCalls } : {}),
       ...extraAssignments,
       source: sourcePath,
@@ -80,6 +85,7 @@ export function parseActionScript(source, frameLabels, sourcePath) {
       ...(frame >= 0 ? { frame } : {}),
       swf,
       ...swfLevelEntry,
+      ...multiLoad,
       ...(functionCalls.length ? { functionCalls } : {}),
       ...extraAssignments,
       source: sourcePath,
@@ -101,6 +107,7 @@ export function parseActionScript(source, frameLabels, sourcePath) {
       ...(parentMapsToRoot ? { frame } : {}),
       swf,
       ...swfLevelEntry,
+      ...multiLoad,
       ...(functionCalls.length ? { functionCalls } : {}),
       ...extraAssignments,
       source: sourcePath,
@@ -113,6 +120,7 @@ export function parseActionScript(source, frameLabels, sourcePath) {
     return {
       swf,
       ...swfLevelEntry,
+      ...multiLoad,
       source: sourcePath,
       supported: true,
     };
@@ -482,6 +490,19 @@ export function inferExitNavigation(source, frameLabels) {
     exitFrame,
     level: discoverMovieTargetLevel(),
   };
+}
+
+/** Every movie a handler loads, in source order: `loadMovieNum(url, N)` → level N;
+ *  a bare `_level0.doRelease(url)` → the shell's content level (`discoverMovieTargetLevel()`). */
+function collectMovieLoads(source) {
+  const loads = [];
+  const re = /(?:_level0\.)?doRelease\("([^"]+\.swf)"\)|loadMovieNum\("([^"]+\.swf)"(?:\s*,\s*(\d+))?/g;
+  let m;
+  while ((m = re.exec(source))) {
+    if (m[1]) loads.push({ swf: m[1], level: discoverMovieTargetLevel() });
+    else if (m[2]) loads.push(m[3] != null ? { swf: m[2], level: Number(m[3]) } : { swf: m[2] });
+  }
+  return loads;
 }
 
 export function discoverMovieTargetLevel() {

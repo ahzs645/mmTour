@@ -251,9 +251,15 @@ export class Player {
     if (action.command === "loadMovieNum" || action.command === "loadMovie") this.options.onNavigate?.(action);
     // A nav section button is an exit-navigation: it plays the nav's exit animation (the gotoAndPlay
     // below) AND loads the chosen segment into the content level. The SWF load is otherwise lost
-    // because the command is gotoAndPlay (the exit), not loadMovie — so dispatch it explicitly.
-    if (action.swf && action.command !== "loadMovieNum" && action.command !== "loadMovie") {
-      this.options.onNavigate?.({ command: "loadMovie", swf: action.swf, level: action.level, reload: true });
+    // because the command is gotoAndPlay (the exit), not loadMovie — so dispatch it explicitly. A
+    // handler may request more than one load (e.g. a "restart the whole tour" button: segment1 into
+    // the content level + an MS-logo overlay into a higher level), so honor every load, not just the
+    // first. `action.loads` carries them when present; otherwise fall back to the single swf/level.
+    if (action.command !== "loadMovieNum" && action.command !== "loadMovie") {
+      const loads = action.loads?.length ? action.loads : action.swf ? [{ swf: action.swf, level: action.level }] : [];
+      for (const load of loads) {
+        this.options.onNavigate?.({ command: "loadMovie", swf: load.swf, level: load.level, reload: true });
+      }
     }
     if (action.command === "gotoAndPlay" || action.command === "gotoAndStop") {
       const target = this.resolveTarget(owner, action.target);
