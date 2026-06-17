@@ -307,12 +307,20 @@ export class Player {
       if (this.store && !evalCondition(action.functionBranchCondition, this.store)) continue;
       this.runFunctionAction(action);
     }
-    // Evaluate every body guard against the store as it is on ENTRY, then run the passing
-    // statements. AVM1 checks an `if` once when control reaches it, not per statement — so a
-    // statement that sets a variable named in its own block's guard (e.g.
-    // LoadInitialInteractive's `if(!blnDisableSkip){ blnDisableSkip=1; blnIntroMode=0; … }`)
-    // must not cause the later same-guarded statements to be skipped.
-    const decisions = def.body.map((statement) => this.branchPasses(statement.branchCondition, locals));
+    // Decide every body guard against the store as it is on ENTRY — AVM1 checks an `if` once
+    // when control reaches it, so a CONDITIONAL mutation inside a block (LoadInitialInteractive's
+    // `if(!blnDisableSkip){ blnDisableSkip=1; … }`, whose nested arms all re-include the
+    // `!blnDisableSkip` guard) must not retro-skip its own block. The one exception is an
+    // UNCONDITIONAL simple-name assign earlier in the body, which a later `if` legitimately reads
+    // (setSelect's `scene = currScene; if(scene=="BestForBusiness"){ yellowPro… }`) — overlay those
+    // onto the guard locals so the highlight arm fires.
+    const guardLocals: Locals = { ...locals };
+    for (const statement of def.body) {
+      if (!statement.branchCondition && statement.kind === "assign" && /^[A-Za-z_$][\w$]*$/.test(statement.target)) {
+        guardLocals[statement.target] = this.resolveExpr(statement.rawValue, guardLocals);
+      }
+    }
+    const decisions = def.body.map((statement) => this.branchPasses(statement.branchCondition, guardLocals));
     def.body.forEach((statement, i) => { if (decisions[i]) this.runBodyStatement(statement, locals); });
     this.render();
     return true;
@@ -678,15 +686,15 @@ export class Player {
           const target = this.resolveTarget(clip, action.target);
           const frame = this.resolveFrame(action, target);
           if (!target || frame < 0) break;
-          // A 1-frame root self-loop while a voice-over is playing is a VO hold
-          // (`if(!sndDonePlaying())gotoAndPlay(prev)`): keep looping until the VO
-          // finishes, then skip the jump so the intro advances to the next beat.
-          // (Larger loops — section/idle loops — fall through and loop normally; the
-          // intro→menu hand-off is driven by the data's LoadInitialInteractive call.)
-          // A timer hold (`if(!timeMarkDone(...))gotoAndPlay(prev)`) is NOT a VO hold —
-          // it's already gated by evalGuard's timer, so don't let the VO release skip it.
-          const isTimerHold = action.branchCondition?.includes("timeMarkDone");
-          if (!isTimerHold && action.command === "gotoAndPlay" && clip === this.root && target === this.root && frame < clip.currentFrame) {
+          // A 1-frame root self-loop GATED BY sndDonePlaying is a VO hold
+          // (`if(!sndDonePlaying())gotoAndPlay(prev)`): keep looping until the VO finishes,
+          // then skip the jump so the intro advances to the next beat. An UNCONDITIONAL
+          // `gotoAndPlay(_currentframe-1)` is a structural hold (the nav's toolbar/loading
+          // wait that polls nav.setSelect) and a `timeMarkDone` loop is a timer hold — neither
+          // is a VO hold, so the VO release must NOT skip them (else the nav skips its toolbar
+          // state and the section highlight/restart button never appear).
+          const isVoHold = action.branchCondition?.includes("sndDonePlaying");
+          if (isVoHold && action.command === "gotoAndPlay" && clip === this.root && target === this.root && frame < clip.currentFrame) {
             const delta = clip.currentFrame - frame;
             if (delta <= VO_HOLD_DELTA && this.voWaiting && (this.options.isVoiceDone?.() ?? true)) {
               this.voWaiting = false;
