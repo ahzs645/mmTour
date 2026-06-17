@@ -262,7 +262,14 @@ export class DomRenderer {
 
   private styleText(element: HTMLElement, node: RenderNode) {
     const text = node.text;
-    if (!text) return;
+    if (!text) {
+      // A static DefineText field carries no style metadata (it is dumped as plain text and
+      // filled by loadPlainText). A SWF text field never word-wraps unless wordWrap is set, so
+      // force a single line — otherwise this 0-width, absolutely-positioned box wraps at every
+      // space (e.g. segment5's "Files and Folders" section title breaking to three lines).
+      element.style.whiteSpace = "pre";
+      return;
+    }
     const family = this.options.resolveFontFamily?.(text.fontId);
     element.style.position = "absolute";
     element.style.left = `${text.x ?? node.origin.x}px`;

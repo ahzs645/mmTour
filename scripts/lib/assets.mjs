@@ -4,7 +4,7 @@ import { ctx } from "./extractContext.mjs";
 import { findSpriteDir, listDir, listPublicDir, walkFiles } from "./fileUtils.mjs";
 import { colorFromTag } from "./geom.mjs";
 import { buttonDynamicTextField, dataUri, inlineSvgAsset, reflowSvgTextGroup, registrationShift, svgTextReplacement } from "./svgText.mjs";
-import { compactObject, comparableText, htmlTextAlign, normalizeLoadedText, normalizeVariableName, number, textAlignFromTag } from "./util.mjs";
+import { asArray, compactObject, comparableText, htmlTextAlign, normalizeLoadedText, normalizeVariableName, number, textAlignFromTag } from "./util.mjs";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
@@ -43,11 +43,44 @@ export function discoverAssets(allTags) {
 
     if (tag.type.startsWith("DefineText") && tag.characterID) {
       const id = String(tag.characterID);
+      // A static DefineText is glyphs drawn in an embedded font at a fixed colour/size — not
+      // the browser default. Capture the first text record's font/height/colour and the text
+      // bounds so the runtime renders it faithfully (e.g. segment5's white 18px section titles)
+      // instead of the app's default sans-serif. The string itself is the FFDec-exported .txt.
+      const bounds = tag.textBounds;
+      const matrix = tag.textMatrix;
+      const styled = asArray(tag.textRecords?.item).find((r) => r && (r.styleFlagsHasFont === "true" || r.fontId));
+      let content = "";
+      try {
+        content = readFileSync(join(ctx.extractedDir, "texts", `${id}.txt`), "utf8").trim();
+      } catch { /* no exported text — fall back to a plain field */ }
+      const width = bounds ? (number(bounds.Xmax, 0) - number(bounds.Xmin, 0)) / 20 : 0;
+      const height = bounds ? (number(bounds.Ymax, 0) - number(bounds.Ymin, 0)) / 20 : 0;
+      // Static glyphs sit at textBounds (relative to the character origin), shifted by the
+      // text matrix. The placement matrix positions the character origin, so this x/y reproduces
+      // the SWF glyph layout (e.g. segment5's section title is centered in its bar, not flush left).
+      const x = bounds ? number(bounds.Xmin, 0) / 20 + (matrix ? number(matrix.translateX, 0) / 20 : 0) : 0;
+      const y = bounds ? number(bounds.Ymin, 0) / 20 + (matrix ? number(matrix.translateY, 0) / 20 : 0) : 0;
+      const style = styled && content
+        ? compactObject({
+            fontId: number(styled.fontId, 0) || undefined,
+            fontHeight: number(styled.textHeight, 0) / 20 || undefined,
+            color: colorFromTag(styled.textColor),
+            x,
+            y,
+            width: width || undefined,
+            height: height || undefined,
+            wordWrap: false,
+            multiline: false,
+            text: normalizeLoadedText(content) || undefined,
+          })
+        : undefined;
       defs[id] = {
         id: Number(id),
         kind: "text",
         src: `generated/${ctx.scene}/texts/${id}.txt`,
-        origin: { x: 0, y: 0, width: 0, height: 0 },
+        origin: { x: style ? x : 0, y: style ? y : 0, width: width || 0, height: height || 0 },
+        ...(style ? { text: style } : {}),
       };
     }
 
@@ -284,6 +317,34 @@ function stripBakedDynamicText(assetDefs) {
       });
       if (stripped !== svg) writeFileSync(path, stripped);
     }
+  }
+}
+
+export /**
+ * Strip a button's embedded editText `<use>` from its UP-state SVG. A button that wraps a
+ * bound editText (segment5's Replay icon, the nav "Skip Intro") bakes the field's glyphs into
+ * the up-state art — FFDec clips them to the narrow field box (so "Skip Intro" renders as
+ * "Skip I"). The runtime draws the live field value on top (collectButtonText), so drop the
+ * baked glyphs here, leaving just the button's icon. Mirrors stripBakedDynamicText for sprites.
+ */
+function stripButtonStateText(assetDefs) {
+  for (const asset of Object.values(assetDefs)) {
+    if (asset?.kind !== "button" || !asset.textFields?.length) continue;
+    const upSrc = asset.states?.up?.src;
+    if (!upSrc) continue;
+    const path = join(ctx.root, "public", upSrc);
+    let svg;
+    try {
+      svg = readFileSync(path, "utf8");
+    } catch {
+      continue;
+    }
+    const fieldIds = new Set(asset.textFields.map((field) => field.id));
+    const stripped = svg.replace(/<use\b[^>]*\/>/g, (m) => {
+      const cid = m.match(/ffdec:characterId="(\d+)"/);
+      return cid && fieldIds.has(Number(cid[1])) ? "" : m;
+    });
+    if (stripped !== svg) writeFileSync(path, stripped);
   }
 }
 

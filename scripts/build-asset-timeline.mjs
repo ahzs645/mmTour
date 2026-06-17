@@ -25,7 +25,7 @@ import {
 } from "./lib/geom.mjs";
 import { ctx } from "./lib/extractContext.mjs";
 import { discoverDefinedFunctions } from "./lib/actionscript.mjs";
-import { discoverAssets, normalizeFrameSvgs, replaceStaticVariableText, stripBakedDynamicText } from "./lib/assets.mjs";
+import { discoverAssets, normalizeFrameSvgs, replaceStaticVariableText, stripBakedDynamicText, stripButtonStateText } from "./lib/assets.mjs";
 import { discoverButtonEvents, discoverControlFlow, discoverFrameActions, discoverNestedSectionTargets, discoverSpriteActions, discoverSpriteLocalDefaults, discoverSpriteStopFrames } from "./lib/controlFlow.mjs";
 import { copyIfExists, listDir, preserveGeneratedReports, restoreGeneratedReports } from "./lib/fileUtils.mjs";
 import { discoverGlobalDefaults, loadSceneVariables } from "./lib/sceneVars.mjs";
@@ -94,6 +94,7 @@ stripBakedDynamicText(ctx.assets);
 copyIfExists("frames");
 copyIfExists("scripts");
 copyIfExists("buttons");
+stripButtonStateText(ctx.assets);
 copyIfExists("fonts");
 copyIfExists("sounds");
 normalizeFrameSvgs(ctx.frames, ctx.assets);

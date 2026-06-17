@@ -215,9 +215,26 @@ export class Player {
     if (!action) return;
     const owner = this.clipByPath.get(ownerPath) ?? this.root;
 
-    // A button release that calls functions (e.g. Skip Intro → `_level0.LoadInitialInteractive()`)
-    // runs through the same dispatcher as frame scripts (cross-level calls, clip commands, waiters).
-    if (action.functionCalls?.length) this.runCallFunctions(action, owner);
+    // A section button's on(release) is extracted as BOTH a top-level timeline command
+    // (`gotoAndPlay <label>`) AND the SAME call inside functionCalls (`_parent.gotoAndPlay(<label>)`).
+    // Running both double-navigates: the functionCall enters the destination frame (its `stop()`
+    // fires → playing=false), then the command re-enters the SAME frame — but `enterFrame`
+    // early-returns on re-entry, so the freshly-set `playing=true` is never cleared by the
+    // destination's `stop()`, and the clip advances one frame past the chosen section. Drop the
+    // redundant local-timeline nav call so the navigation runs exactly once (via the command path,
+    // which runs the destination's frame scripts). Cross-level / named-clip calls are never dropped.
+    const isLocalTarget = (t?: string) =>
+      !t || t === "self" || t === "this" || t === "_root" || t === "_level0" || t === "_parent";
+    const duplicatesCommand = (call: NonNullable<ControlAction["functionCalls"]>[number]) => {
+      if (call.functionName !== action.command || !isLocalTarget(call.target)) return false;
+      const arg = (call.arguments ?? "").trim().replace(/^["']|["']$/g, "");
+      if (action.label && arg === action.label) return true;
+      const n = Number(arg);
+      return typeof action.frame === "number" && Number.isFinite(n) && (n - 1 === action.frame || n === action.frame);
+    };
+    const isGoto = action.command === "gotoAndPlay" || action.command === "gotoAndStop";
+    const calls = isGoto ? (action.functionCalls ?? []).filter((c) => !duplicatesCommand(c)) : action.functionCalls;
+    if (calls?.length) this.runCallFunctions({ ...action, functionCalls: calls }, owner);
     if (action.command === "loadMovieNum" || action.command === "loadMovie") this.options.onNavigate?.(action);
     // A nav section button is an exit-navigation: it plays the nav's exit animation (the gotoAndPlay
     // below) AND loads the chosen segment into the content level. The SWF load is otherwise lost
@@ -731,17 +748,26 @@ export class Player {
           const target = this.resolveTarget(clip, action.target);
           const frame = this.resolveFrame(action, target);
           if (!target || frame < 0) break;
-          // A 1-frame root self-loop GATED BY sndDonePlaying is a VO hold
+          // A 1-frame self-loop GATED BY sndDonePlaying is a VO hold
           // (`if(!sndDonePlaying())gotoAndPlay(prev)`): keep looping until the VO finishes,
-          // then skip the jump so the intro advances to the next beat. An UNCONDITIONAL
+          // then skip the jump so playback advances to the next narrated beat. This drives BOTH
+          // the intro/root narration AND a section's demo content clip (e.g. segment5's
+          // mc_StartMenu plays a beat, holds for its VO, then continues) — so the loop is
+          // released for any clip looping on itself, not just the root. An UNCONDITIONAL
           // `gotoAndPlay(_currentframe-1)` is a structural hold (the nav's toolbar/loading
           // wait that polls nav.setSelect) and a `timeMarkDone` loop is a timer hold — neither
           // is a VO hold, so the VO release must NOT skip them (else the nav skips its toolbar
           // state and the section highlight/restart button never appear).
           const isVoHold = action.branchCondition?.includes("sndDonePlaying");
-          if (isVoHold && action.command === "gotoAndPlay" && clip === this.root && target === this.root && frame < clip.currentFrame) {
+          if (isVoHold && action.command === "gotoAndPlay" && target === clip && frame < clip.currentFrame) {
             const delta = clip.currentFrame - frame;
-            if (delta <= VO_HOLD_DELTA && this.voWaiting && (this.options.isVoiceDone?.() ?? true)) {
+            const voiceDone = this.options.isVoiceDone?.() ?? true;
+            // Root keeps its proven intro pacing: release only once the beat's VO is started
+            // and finished. A nested content demo (mc_StartMenu…) has SEVERAL holds per VO
+            // segment, so a later hold sees no pending VO (voWaiting already consumed) — there
+            // `sndDonePlaying()` is true, so it must advance rather than loop forever.
+            const release = (this.voWaiting && voiceDone) || (clip !== this.root && !this.voWaiting);
+            if (delta <= VO_HOLD_DELTA && release) {
               this.voWaiting = false;
               break;
             }
@@ -952,7 +978,10 @@ export class Player {
       }
 
       if (asset.kind === "button") {
-        // Tree path: no baked frame behind the button, so render its up-state artwork.
+        // Tree path: no baked frame behind the button, so render its up-state artwork (its
+        // icon). The build strips any embedded editText glyphs from that art (FFDec bakes
+        // them clipped/mispositioned), so the live field value is drawn by collectButtonText
+        // on top — giving the icon AND the correct label (e.g. segment5's Replay button).
         out.push(buttonNode(key, order.n++, asset, matrix, instance, path, true, opacity));
         this.collectButtonText(asset, matrix, key, order, out, instance);
         continue;

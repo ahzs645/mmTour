@@ -72,10 +72,13 @@ export function buttonNode(
   renderArtwork: boolean,
   opacity = 1,
 ): RenderNode {
-  // Buttons whose text is drawn by collectButtonText (editText overlay) must NOT also
-  // render their up-state artwork — FFDec bakes that text mispositioned, so it would
-  // double the label (e.g. the nav "Skip Intro"). The overlay is the authoritative text.
-  const up = renderArtwork && !asset.textFields?.length ? asset.states?.up : undefined;
+  // Tree path (renderArtwork=true): render the button's up-state artwork — its icon. The build
+  // strips any embedded editText glyphs from that SVG (FFDec bakes them clipped/mispositioned),
+  // so a button that wraps a bound field (segment5's Replay icon, the nav "Skip Intro") draws
+  // just its icon here, and the caller overlays the live field value via collectButtonText —
+  // giving icon + correct label with no doubling. (Baked path passes renderArtwork=false: the
+  // visual is already in the composited sprite frame, with the same text overlay on top.)
+  const up = renderArtwork ? asset.states?.up : undefined;
   return {
     key,
     order,
