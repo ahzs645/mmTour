@@ -1,3 +1,5 @@
+import type { VarValue } from "./VariableStore";
+
 /**
  * A node in the live display tree: one placed MovieClip (or the root). Holds its
  * own playhead and its persistent child clips (keyed by depth, so a child keeps
@@ -16,6 +18,9 @@ export class ClipInstance {
   enteredFrame = -1;
   /** depth -> child clip (sprite instances only). */
   readonly childClips = new Map<number, ClipInstance>();
+  /** Per-clip timeline variables (AVM1 unqualified vars like `btnDown`/`labelHidden` are local
+   *  to the clip they're written on; dotted/global paths stay in the shared VariableStore). */
+  readonly locals: Record<string, VarValue | undefined> = {};
 
   constructor(characterId: number, name: string, parent: ClipInstance | null) {
     this.characterId = characterId;

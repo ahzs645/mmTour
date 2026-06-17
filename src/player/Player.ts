@@ -248,18 +248,24 @@ export class Player {
         this.functions.set(action.functionName, entry);
       }
     }
-    // Sprite-scoped functions whose body is inner gotos (a control's over()/out() label reveal:
-    // `if(!musicOn) gotoAndPlay(28); else gotoAndPlay(5)`). The body statements carry their if/else
-    // guard, so each goto becomes a branch-gated action and callClipFunction picks the live arm.
+    // Sprite-scoped functions whose body is inner self-gotos + assigns (a control's over()/out()
+    // label reveal `if(!musicOn)gotoAndPlay(28);else gotoAndPlay(5)`, or a toolbar button's
+    // hideMe `if(btnDown){labelHidden=1;gotoAndPlay(36)}`). Each body statement carries its if/else
+    // guard, so it becomes a branch-gated action; callClipFunction runs it against the clip's scope.
     for (const def of Object.values(control?.definedFunctions ?? {}) as DefinedFunction[]) {
       if (def.scope !== "sprite" || typeof def.spriteId !== "number" || !def.functionName) continue;
-      const gotos = (def.body ?? []).filter((s): s is Extract<BodyStatement, { kind: "call" }> =>
-        s.kind === "call" && Boolean(s.functionName?.startsWith("gotoAnd")) && (!s.target || s.target === "self" || s.target === "this"));
-      if (!gotos.length) continue;
+      const usable = (def.body ?? []).filter((s) =>
+        (s.kind === "call" && Boolean(s.functionName?.startsWith("gotoAnd")) && (!s.target || s.target === "self" || s.target === "this"))
+        || (s.kind === "assign" && this.isLocalVar(s.target)));
+      if (!usable.length) continue;
       let fns = this.spriteFunctions.get(def.spriteId);
       if (!fns) this.spriteFunctions.set(def.spriteId, (fns = new Map()));
       const entry = fns.get(def.functionName) ?? newDef();
-      for (const s of gotos) {
+      for (const s of usable) {
+        if (s.kind === "assign") {
+          entry.actions.push({ command: "setVariable", target: s.target, value: s.value, rawValue: s.rawValue, functionBranchCondition: s.branchCondition });
+          continue;
+        }
         const arg = (s.arguments ?? "").trim();
         const num = Number(arg);
         entry.actions.push({
@@ -373,10 +379,42 @@ export class Player {
     return e; // array literals etc. — kept as their source text
   }
 
+  /** An AVM1 unqualified variable (`btnDown`, `labelHidden`, `scene`) is local to the clip its
+   *  script runs on; a dotted/object path (`bkgd.X`, `nav.X`) or a `_root`/`_levelN`/`_global`
+   *  reference is a shared global in the VariableStore. */
+  private isLocalVar(name: string): boolean {
+    const n = name.trim();
+    return /^[A-Za-z_$][\w$]*$/.test(n) && !/^(true|false|null|undefined|this|_root|_global|_parent|_level\d+)$/.test(n);
+  }
+
+  /** Read a variable in a clip's scope: a clip-local timeline var first, else the shared store. */
+  private scopeGet(clip: ClipInstance, name: string): VarValue | undefined {
+    if (this.isLocalVar(name) && name in clip.locals) return clip.locals[name];
+    return this.store?.get(name);
+  }
+
+  /** Write a variable in a clip's scope. A local var is kept on the clip (so each toolbar button
+   *  has its own `btnDown`/`labelHidden`) AND mirrored to the store for any non-scoped reader. */
+  private scopeSet(clip: ClipInstance, name: string, value: VarValue): void {
+    if (this.isLocalVar(name)) clip.locals[name] = value;
+    this.store?.set(name, value);
+  }
+
+  /** A store-shaped view that resolves clip-local vars first — pass to evalCondition for a clip. */
+  private scopeFor(clip: ClipInstance): VariableStore {
+    return {
+      get: (name: string) => this.scopeGet(clip, name),
+      set: (name: string, value: VarValue) => this.scopeSet(clip, name, value),
+      has: (name: string) => (this.isLocalVar(name) && name in clip.locals) || (this.store?.has(name) ?? false),
+    } as unknown as VariableStore;
+  }
+
   /** Evaluate a branch guard, first resolving the AVM1 `timeMarkDone(inc)` timer
    *  (true once `inc` ms have elapsed since the last `setTimeMark` set `bkgd.timeTarg`).
-   *  This is what holds the nav attract-loop cascade for AttractLoopWaitTime before it exits. */
-  private evalGuard(condition: string | undefined): boolean {
+   *  This is what holds the nav attract-loop cascade for AttractLoopWaitTime before it exits.
+   *  Pass the clip whose script is running so guards on its local vars (e.g. a toolbar button's
+   *  `btnDown`) resolve against that clip. */
+  private evalGuard(condition: string | undefined, clip?: ClipInstance): boolean {
     if (!this.store) return !condition;
     if (!condition) return true;
     const resolved = condition.replace(/[\w.]*\btimeMarkDone\s*\(([^)]*)\)/g, (_m, arg: string) => {
@@ -384,7 +422,7 @@ export class Player {
       const mark = Number(this.store?.get("bkgd.timeTarg") ?? 0);
       return this.getTimer() > mark + inc ? "1" : "0";
     });
-    return evalCondition(resolved, this.store);
+    return evalCondition(resolved, clip ? this.scopeFor(clip) : this.store);
   }
 
   /** Re-serialise a call's arguments to a literal string for crossing a level boundary. */
@@ -531,8 +569,11 @@ export class Player {
   private callClipFunction(clip: ClipInstance, name: string) {
     const def = this.spriteFunctions.get(clip.characterId)?.get(name);
     if (!def) return;
+    // Guards resolve against the CLIP's scope — a toolbar button's hideMe/showMe gate on its own
+    // local `btnDown`/`labelHidden`, so hovering one button only hides the others' labels.
+    const scope = this.scopeFor(clip);
     for (const action of def.actions) {
-      if (this.store && !evalCondition(action.functionBranchCondition, this.store)) continue;
+      if (this.store && !evalCondition(action.functionBranchCondition, scope)) continue;
       this.runClipAction(clip, action);
     }
     this.render();
@@ -559,6 +600,12 @@ export class Player {
       case "callFunctions":
         this.runCallFunctions(action, clip);
         break;
+      case "setVariable": {
+        // A clip-function assignment (hideMe's `labelHidden = 1`) — into the clip's scope.
+        const value = this.resolveExpr(action.rawValue ?? String(action.value ?? ""));
+        if (action.target && value !== undefined) this.scopeSet(clip, action.target, value);
+        break;
+      }
       default:
         break;
     }
@@ -658,9 +705,9 @@ export class Player {
       let j = i;
       while (j < actions.length && actions[j].executionContext === "branch") j += 1;
       const isElse = (a: ControlAction) => !a.branchCondition || a.branchCondition === "else";
-      const anyReal = actions.slice(i, j).some((a) => !isElse(a) && this.evalGuard(a.branchCondition));
+      const anyReal = actions.slice(i, j).some((a) => !isElse(a) && this.evalGuard(a.branchCondition, clip));
       for (let k = i; k < j; k += 1) {
-        fire[k] = isElse(actions[k]) ? !anyReal : this.evalGuard(actions[k].branchCondition);
+        fire[k] = isElse(actions[k]) ? !anyReal : this.evalGuard(actions[k].branchCondition, clip);
       }
       i = j;
     }
@@ -728,10 +775,11 @@ export class Player {
           this.runCallFunctions(action, clip);
           break;
         case "setVariable": {
-          // A frame-script `target = value` assignment into the shared store — the
-          // orchestration polls these flags (e.g. `nav.bln_CoreNavLoaded = 1`).
+          // A frame-script `target = value` assignment — into the clip's scope so a bare
+          // timeline var (a toolbar button's `btnDown`/`labelHidden`) stays local to it, while
+          // a dotted flag (`nav.bln_CoreNavLoaded = 1`) the orchestration polls goes to the store.
           const value = this.resolveExpr(action.rawValue ?? String(action.value ?? ""));
-          if (this.store && action.target && value !== undefined) this.store.set(action.target, value);
+          if (this.store && action.target && value !== undefined) this.scopeSet(clip, action.target, value);
           break;
         }
         default:

@@ -1274,7 +1274,10 @@ function discoverSpriteActions(frameLabels) {
       const spriteId = Number(match?.[1] ?? 0);
       const frame = Number(match?.[2] ?? 1) - 1;
       const sourcePath = `scripts/${normalized.split("/scripts/").pop()}`;
-      const actions = summarizeActionScript(readFileSync(file, "utf8"), frameLabels, sourcePath, "sprite");
+      const body = readFileSync(file, "utf8");
+      // Include the script's bare `target = value` assignments too — a toolbar *Pro sprite sets its
+      // own `btnDown`/`labelHidden` here, which hideMe/showMe (and the label hide on hover) gate on.
+      const actions = [...summarizeActionScript(body, frameLabels, sourcePath, "sprite"), ...frameVariableActions(body, sourcePath)];
       return {
         spriteId,
         frame,
