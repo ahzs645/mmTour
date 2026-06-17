@@ -8,6 +8,8 @@ import type {
   TimelineFrame,
 } from "../data/timelineTypes";
 import type { DomRenderer } from "../render/DomRenderer";
+import { isLocalVar, localizeCondition, splitTopLevelArgs } from "./avm1";
+import { buttonNode, findChildByName, isClipAsset, spriteNode, visualSrc } from "./renderNodes";
 import { ClipInstance } from "./ClipInstance";
 import { evalCondition } from "./conditions";
 import { IDENTITY, multiplyMatrix } from "./matrix";
@@ -272,7 +274,7 @@ export class Player {
       if (def.scope !== "sprite" || typeof def.spriteId !== "number" || !def.functionName) continue;
       const usable = (def.body ?? []).filter((s) =>
         (s.kind === "call" && Boolean(s.functionName?.startsWith("gotoAnd")) && (!s.target || s.target === "self" || s.target === "this"))
-        || (s.kind === "assign" && this.isLocalVar(s.target)));
+        || (s.kind === "assign" && isLocalVar(s.target)));
       if (!usable.length) continue;
       let fns = this.spriteFunctions.get(def.spriteId);
       if (!fns) this.spriteFunctions.set(def.spriteId, (fns = new Map()));
@@ -359,19 +361,7 @@ export class Player {
 
   /** Split a raw arg string on top-level commas and resolve each to a value. */
   private parseArgs(argsRaw: string | undefined, locals?: Locals): (VarValue | undefined)[] {
-    if (!argsRaw?.trim()) return [];
-    const parts: string[] = [];
-    let depth = 0, quote = "", start = 0;
-    for (let i = 0; i < argsRaw.length; i++) {
-      const c = argsRaw[i];
-      if (quote) { if (c === quote && argsRaw[i - 1] !== "\\") quote = ""; continue; }
-      if (c === '"' || c === "'") quote = c;
-      else if (c === "(" || c === "[") depth++;
-      else if (c === ")" || c === "]") depth--;
-      else if (c === "," && depth === 0) { parts.push(argsRaw.slice(start, i)); start = i + 1; }
-    }
-    parts.push(argsRaw.slice(start));
-    return parts.map((p) => this.resolveExpr(p.trim(), locals));
+    return splitTopLevelArgs(argsRaw).map((p) => this.resolveExpr(p.trim(), locals));
   }
 
   /** Milliseconds since page start — AVM1 `getTimer()`. Absolute, so it's consistent
@@ -396,24 +386,16 @@ export class Player {
     return e; // array literals etc. — kept as their source text
   }
 
-  /** An AVM1 unqualified variable (`btnDown`, `labelHidden`, `scene`) is local to the clip its
-   *  script runs on; a dotted/object path (`bkgd.X`, `nav.X`) or a `_root`/`_levelN`/`_global`
-   *  reference is a shared global in the VariableStore. */
-  private isLocalVar(name: string): boolean {
-    const n = name.trim();
-    return /^[A-Za-z_$][\w$]*$/.test(n) && !/^(true|false|null|undefined|this|_root|_global|_parent|_level\d+)$/.test(n);
-  }
-
   /** Read a variable in a clip's scope: a clip-local timeline var first, else the shared store. */
   private scopeGet(clip: ClipInstance, name: string): VarValue | undefined {
-    if (this.isLocalVar(name) && name in clip.locals) return clip.locals[name];
+    if (isLocalVar(name) && name in clip.locals) return clip.locals[name];
     return this.store?.get(name);
   }
 
   /** Write a variable in a clip's scope. A local var is kept on the clip (so each toolbar button
    *  has its own `btnDown`/`labelHidden`) AND mirrored to the store for any non-scoped reader. */
   private scopeSet(clip: ClipInstance, name: string, value: VarValue): void {
-    if (this.isLocalVar(name)) clip.locals[name] = value;
+    if (isLocalVar(name)) clip.locals[name] = value;
     this.store?.set(name, value);
   }
 
@@ -422,7 +404,7 @@ export class Player {
     return {
       get: (name: string) => this.scopeGet(clip, name),
       set: (name: string, value: VarValue) => this.scopeSet(clip, name, value),
-      has: (name: string) => (this.isLocalVar(name) && name in clip.locals) || (this.store?.has(name) ?? false),
+      has: (name: string) => (isLocalVar(name) && name in clip.locals) || (this.store?.has(name) ?? false),
     } as unknown as VariableStore;
   }
 
@@ -452,18 +434,7 @@ export class Player {
   /** Evaluate a body statement's if/else guard, substituting local parameters. */
   private branchPasses(condition: string | undefined, locals: Locals): boolean {
     if (!condition || !this.store) return condition ? false : true;
-    return evalCondition(this.localizeCondition(condition, locals), this.store);
-  }
-
-  /** Substitute bound parameter names in a condition with their literal values. */
-  private localizeCondition(condition: string, locals: Locals): string {
-    let out = condition;
-    for (const [name, value] of Object.entries(locals)) {
-      if (value === undefined) continue;
-      const literal = typeof value === "string" ? JSON.stringify(value) : String(value);
-      out = out.replace(new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"), literal);
-    }
-    return out;
+    return evalCondition(localizeCondition(condition, locals), this.store);
   }
 
   private runBodyStatement(statement: BodyStatement, locals: Locals) {
@@ -699,7 +670,7 @@ export class Player {
     const live = new Set<number>();
     for (const instance of instances) {
       const asset = this.getAsset(instance.characterId);
-      if (!asset || !this.isClipAsset(asset)) continue;
+      if (!asset || !isClipAsset(asset)) continue;
       live.add(instance.depth);
       const existing = clip.childClips.get(instance.depth);
       if (!existing || existing.characterId !== instance.characterId) {
@@ -836,17 +807,11 @@ export class Player {
     const rest = parts[0]?.startsWith("_") ? parts.slice(1) : parts;
     for (const name of rest) {
       if (!node) return null;
-      node = this.findChildByName(node, name);
+      node = findChildByName(node, name);
     }
     return node;
   }
 
-  private findChildByName(clip: ClipInstance, name: string): ClipInstance | null {
-    for (const child of clip.childClips.values()) {
-      if (child.name === name) return child;
-    }
-    return null;
-  }
 
   private resolveFrame(action: ControlAction, target: ClipInstance | null): number {
     if (action.label) {
@@ -895,9 +860,6 @@ export class Player {
     return this.spriteActions.get(`${clip.characterId}:${clip.currentFrame}`) ?? [];
   }
 
-  private isClipAsset(asset: TimelineAsset): boolean {
-    return asset.kind === "sprite" && Boolean(asset.timeline?.length || asset.frames?.length);
-  }
 
   /** Resolve a placed character; buttons are stored under a `button:<id>` key. */
   private getAsset(characterId: number): TimelineAsset | undefined {
@@ -949,7 +911,7 @@ export class Player {
 
       // A mask: capture its shape, then clip the instances below it (up to clipDepth).
       if (instance.clipDepth) {
-        const src = this.visualSrc(asset, child);
+        const src = visualSrc(asset, child);
         if (src) {
           maskStack.push({
             key: `${key}#mask`,
@@ -964,7 +926,7 @@ export class Player {
       // Inside an active mask → collect the instance as a masked item, not a normal node.
       const activeMask = maskStack[maskStack.length - 1];
       if (activeMask && instance.depth <= activeMask.clipDepth) {
-        const src = this.visualSrc(asset, child);
+        const src = visualSrc(asset, child);
         if (src) activeMask.group.items.push({ characterId: asset.id, src, origin: asset.origin, matrix, opacity });
         continue;
       }
@@ -975,7 +937,7 @@ export class Player {
       // interactive and its frame scripts still run (logic lives in the tree).
       if (asset.kind === "sprite" && asset.frames?.length && !asset.overflowsBounds) {
         const frameIndex = child ? clamp(child.currentFrame, 0, asset.frames.length - 1) : 0;
-        out.push(this.spriteNode(key, order.n++, asset, asset.frames[frameIndex], matrix, opacity, instance, child?.currentFrame));
+        out.push(spriteNode(key, order.n++, asset, asset.frames[frameIndex], matrix, opacity, instance, child?.currentFrame));
         if (child && asset.timeline?.length) this.collectButtons(child, matrix, key, order, out);
         continue;
       }
@@ -991,7 +953,7 @@ export class Player {
 
       if (asset.kind === "button") {
         // Tree path: no baked frame behind the button, so render its up-state artwork.
-        out.push(this.buttonNode(key, order.n++, asset, matrix, instance, path, true, opacity));
+        out.push(buttonNode(key, order.n++, asset, matrix, instance, path, true, opacity));
         this.collectButtonText(asset, matrix, key, order, out, instance);
         continue;
       }
@@ -1001,15 +963,6 @@ export class Player {
     flushMasks(Number.POSITIVE_INFINITY);
   }
 
-  /** The artwork URL an instance would render (for use as a mask shape or masked item). */
-  private visualSrc(asset: TimelineAsset, child: ClipInstance | undefined): string {
-    if (asset.kind === "sprite" && asset.frames?.length) {
-      const frameIndex = child ? clamp(child.currentFrame, 0, asset.frames.length - 1) : 0;
-      return asset.frames[frameIndex] ?? "";
-    }
-    if (asset.kind === "button") return asset.states?.up?.src ?? asset.src ?? "";
-    return asset.src ?? "";
-  }
 
   /**
    * Overlay interactive/dynamic leaves living inside a baked sprite: transparent
@@ -1032,7 +985,7 @@ export class Player {
       const key = `${path}/${instance.depth}`;
       if (asset.kind === "button") {
         // Baked path: the button's visual is in the composited frame — just a hit area.
-        out.push(this.buttonNode(key, order.n++, asset, matrix, instance, path, false));
+        out.push(buttonNode(key, order.n++, asset, matrix, instance, path, false));
         this.collectButtonText(asset, matrix, key, order, out, instance);
       } else if (asset.kind === "text") {
         // editText is stripped from the baked sprite frame (FFDec bakes it mispositioned),
@@ -1052,69 +1005,7 @@ export class Player {
     }
   }
 
-  private spriteNode(
-    key: string,
-    order: number,
-    asset: TimelineAsset,
-    src: string,
-    matrix: RenderNode["matrix"],
-    opacity: number,
-    instance: TimelineFrame["instances"][number],
-    spriteFrame?: number,
-  ): RenderNode {
-    return {
-      key,
-      order,
-      characterId: asset.id,
-      kind: asset.kind,
-      name: instance.name,
-      src,
-      origin: asset.origin,
-      matrix,
-      opacity,
-      colorTransform: instance.colorTransform,
-      clipDepth: instance.clipDepth,
-      spriteFrame,
-    };
-  }
 
-  /**
-   * A sized, interactive button node. In the baked path (collectButtons) the button's
-   * visual is already in the composited sprite frame, so this is just a transparent hit
-   * area (renderArtwork=false). In the tree path (flatten) there is no baked frame behind
-   * it, so it carries its up-state artwork as the visual (renderArtwork=true) — buttons
-   * whose up-state is empty (pure hit areas, e.g. the nav section buttons whose art is a
-   * sibling shape) simply draw nothing, while buttons that ARE their own art (the kiosk
-   * play/exit/sound icons) draw it. The owning clip's playhead still drives any rollover/
-   * press animation via gotoAndPlay, so the artwork follows the live frame transform.
-   */
-  private buttonNode(
-    key: string,
-    order: number,
-    asset: TimelineAsset,
-    matrix: RenderNode["matrix"],
-    instance: TimelineFrame["instances"][number],
-    ownerPath: string,
-    renderArtwork: boolean,
-    opacity = 1,
-  ): RenderNode {
-    // Buttons whose text is drawn by collectButtonText (editText overlay) must NOT also
-    // render their up-state artwork — FFDec bakes that text mispositioned, so it would
-    // double the label (e.g. the nav "Skip Intro"). The overlay is the authoritative text.
-    const up = renderArtwork && !asset.textFields?.length ? asset.states?.up : undefined;
-    return {
-      key,
-      order,
-      characterId: asset.id,
-      kind: "button",
-      name: instance.name,
-      src: up?.src ?? "",
-      origin: up?.origin ?? asset.origin,
-      matrix,
-      opacity: up?.src ? opacity : 1,
-      buttonOwnerPath: ownerPath,
-    };
-  }
 
   /**
    * Overlay a button's embedded dynamic editText (e.g. the nav "Skip Intro" button's
