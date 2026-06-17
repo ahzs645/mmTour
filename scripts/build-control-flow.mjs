@@ -82,13 +82,10 @@ for (const target of targets) {
 }
 
 function resolveSwfPath(target) {
-  const direct = resolve(root, target);
-  if (existsSync(direct)) return direct;
-
-  const publicPath = resolve(root, "public", basename(target));
-  if (existsSync(publicPath)) return publicPath;
-
-  return direct;
+  // Accept a path, "segment4.swf", or a bare "segment4" — same as build-asset-timeline.
+  const file = /\.swf$/i.test(target) ? basename(target) : `${basename(target)}.swf`;
+  const candidates = [resolve(root, target), resolve(root, "public", file)];
+  return candidates.find((path) => existsSync(path)) ?? candidates[candidates.length - 1];
 }
 
 function annotateGeneratedActionSupport(control, timeline, report) {

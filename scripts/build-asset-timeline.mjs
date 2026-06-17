@@ -32,7 +32,8 @@ import { discoverGlobalDefaults, loadSceneVariables } from "./lib/sceneVars.mjs"
 import { discoverRootSoundLibrary, discoverSoundLibrary } from "./lib/sound.mjs";
 
 ctx.root = resolve(new URL("..", import.meta.url).pathname);
-ctx.scene = process.argv[2] ?? "segment4";
+// Accept "segment4", "segment4.swf", or a path (e.g. "public/segment4.swf") — same as build-control-flow.
+ctx.scene = basename(process.argv[2] ?? "segment4", ".swf");
 ctx.extractedDir = join(ctx.root, "extracted", ctx.scene);
 ctx.xmlPath = join(ctx.extractedDir, `${ctx.scene}.xml`);
 ctx.publicDir = join(ctx.root, "public/generated", ctx.scene);
