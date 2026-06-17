@@ -21,10 +21,11 @@ import {
 } from "./avm1Values";
 import { ensureSvgContentGroup, extractSvgOffset, getDescendantSvgTargets, getElementOffset, makeIdsUnique } from "./svgDom";
 import { avm1Equals, readConstantPool, readFunctionDefinition, readPushValues } from "./avm1Bytecode";
-import { getAvm1Member, isAvm1Object, setAvm1Member } from "./avm1Objects";
+import { getSpritePlaybackTick, getSpritePlaybackTickFromOverride, spriteForcesTimelineChildren, spriteUsesRatioFrameSync } from "./spritePlayback";
+import { getAvm1Member, isAvm1Object, setAvm1Member, assignAvm1Global } from "./avm1Objects";
 import { createImageElement, createShapeElement, ensureFontFace } from "./elementFactory";
 import { cloneMovieTimelineState, createInitialMovieTimelineState } from "./movieState";
-import { applyColorTransform, getOwnedSvgTargets, getViewportTransform } from "./svgTransforms";
+import { applyColorTransform, getOwnedSvgTargets, getViewportTransform, applyClipping, applyPlacementTransform } from "./svgTransforms";
 
 
 
@@ -153,7 +154,7 @@ export class GsapSwfRenderer {
       el.style.zIndex = String(depth);
 
       // Transform - placement matrix adjusted into each element's viewport space
-      this.applyPlacementTransform(el, entry.matrix);
+      applyPlacementTransform(el, entry.matrix);
 
       // Color transform
       applyColorTransform(entry, depth);
@@ -169,68 +170,11 @@ export class GsapSwfRenderer {
       el.style.display = '';
       el.style.visibility = '';
 
-      this.applyClipping(entry, depth, clipRange?.maskEntry ?? null);
+      applyClipping(entry, depth, clipRange?.maskEntry ?? null);
     }
   }
 
-  private applyClipping(entry: DisplayEntry, depth: number, maskEntry: DisplayEntry | null) {
-    const targetSvgs = getOwnedSvgTargets(entry.element);
-    if (!targetSvgs.length) return;
 
-    const maskTarget = maskEntry?.element
-      ? getOwnedSvgTargets(maskEntry.element)[0] ?? getDescendantSvgTargets(maskEntry.element)[0]
-      : undefined;
-
-    targetSvgs.forEach(({ svg: targetSvg, group: targetGroup }, index) => {
-      const clipId = `swf-clip-${depth}-${index}`;
-
-      if (!maskTarget) {
-        targetGroup.removeAttribute('clip-path');
-        targetSvg.querySelector(`#${clipId}`)?.remove();
-        return;
-      }
-
-      let defs = targetSvg.querySelector('defs');
-      if (!defs) {
-        defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-        targetSvg.insertBefore(defs, targetSvg.firstChild);
-      }
-
-      let clipPathEl = targetSvg.querySelector(`#${clipId}`) as SVGClipPathElement | null;
-      if (!clipPathEl) {
-        clipPathEl = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath');
-        clipPathEl.setAttribute('id', clipId);
-        clipPathEl.setAttribute('clipPathUnits', 'userSpaceOnUse');
-        defs.appendChild(clipPathEl);
-      }
-
-      clipPathEl.innerHTML = '';
-
-      const targetCtm = targetGroup.getScreenCTM();
-      const maskCtm = maskTarget.group.getScreenCTM();
-      if (!targetCtm || !maskCtm) return;
-
-      const rel = targetCtm.inverse().multiply(maskCtm);
-      const transformedMaskGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-      transformedMaskGroup.setAttribute(
-        'transform',
-        `matrix(${rel.a}, ${rel.b}, ${rel.c}, ${rel.d}, ${rel.e}, ${rel.f})`
-      );
-
-      const maskClone = maskTarget.group.cloneNode(true) as SVGGElement;
-      maskClone.removeAttribute('transform');
-      transformedMaskGroup.appendChild(maskClone);
-
-      clipPathEl.appendChild(transformedMaskGroup);
-      targetGroup.setAttribute('clip-path', `url(#${clipId})`);
-    });
-  }
-
-  private applyPlacementTransform(element: HTMLElement, matrix: SwfMatrix) {
-    const viewportMatrix = getViewportTransform(element, matrix);
-    element.style.transformOrigin = '0 0';
-    element.style.transform = `matrix(${viewportMatrix.a}, ${viewportMatrix.b}, ${viewportMatrix.c}, ${viewportMatrix.d}, ${viewportMatrix.tx}, ${viewportMatrix.ty})`;
-  }
 
 
 
@@ -517,8 +461,8 @@ export class GsapSwfRenderer {
     const effectivePlayback = entry.spritePlayback
       ?? this.getRatioFrameSyncPlayback(char, currentTick, currentRawFrame, entry.ratio);
     const spriteTick = effectivePlayback
-      ? this.getSpritePlaybackTickFromOverride(currentTick, effectivePlayback)
-      : this.getSpritePlaybackTick(currentRawFrame, entry.placedAtFrame, entry.ratio);
+      ? getSpritePlaybackTickFromOverride(currentTick, effectivePlayback)
+      : getSpritePlaybackTick(currentRawFrame, entry.placedAtFrame, entry.ratio);
     const rawState = effectivePlayback
       ? this.getSpriteTimelineState(char, spriteTick, effectivePlayback.startFrame, effectivePlayback.isPlaying)
       : this.getSpriteTimelineState(char, spriteTick);
@@ -613,7 +557,7 @@ export class GsapSwfRenderer {
     }
     displayList.clear();
 
-    const forceTimelineChildren = this.spriteForcesTimelineChildren(char);
+    const forceTimelineChildren = spriteForcesTimelineChildren(char);
     const lastFrame = Math.max(0, Math.min(rawFrame, Math.max(char.frames.length - 1, 0)));
 
     for (let frameIndex = 0; frameIndex <= lastFrame; frameIndex++) {
@@ -692,21 +636,7 @@ export class GsapSwfRenderer {
     }
   }
 
-  private getSpritePlaybackTick(
-    currentRawFrame: number,
-    placedAtFrame: number,
-    ratio?: number,
-  ): number {
-    const startFrame = ratio !== undefined ? Math.floor(ratio) : placedAtFrame;
-    return Math.max(0, currentRawFrame - startFrame);
-  }
 
-  private getSpritePlaybackTickFromOverride(
-    currentTick: number,
-    playback: SpritePlaybackState,
-  ): number {
-    return Math.max(0, currentTick - playback.startedAtTick);
-  }
 
   private getRatioFrameSyncPlayback(
     char: SwfSpriteChar,
@@ -714,7 +644,7 @@ export class GsapSwfRenderer {
     currentRawFrame: number,
     ratio?: number,
   ): SpritePlaybackState | undefined {
-    if (ratio === undefined || !this.spriteUsesRatioFrameSync(char)) {
+    if (ratio === undefined || !spriteUsesRatioFrameSync(char)) {
       return undefined;
     }
 
@@ -1163,33 +1093,6 @@ export class GsapSwfRenderer {
     return undefined;
   }
 
-  private assignAvm1Global(globals: Map<string, Avm1Value>, path: string, value: Avm1Primitive) {
-    const segments = path.split('.').filter(Boolean);
-    if (segments.length === 0) return;
-
-    if (segments.length === 1) {
-      globals.set(segments[0], value);
-      return;
-    }
-
-    const [rootName, ...memberPath] = segments;
-    let target = globals.get(rootName);
-    if (!isAvm1Object(target)) {
-      target = {};
-      globals.set(rootName, target);
-    }
-
-    let objectTarget = target as Avm1Object;
-    for (const segment of memberPath.slice(0, -1)) {
-      const next = objectTarget[segment];
-      if (!isAvm1Object(next)) {
-        objectTarget[segment] = {};
-      }
-      objectTarget = objectTarget[segment] as Avm1Object;
-    }
-
-    objectTarget[memberPath[memberPath.length - 1]] = value;
-  }
 
 
   private resolveLabelFrame(char: { frames: SwfFrame[]; id?: number }, label: string): number | null {
@@ -1221,13 +1124,7 @@ export class GsapSwfRenderer {
 
 
 
-  private spriteForcesTimelineChildren(char: SwfSpriteChar): boolean {
-    return [124, 131, 137, 144, 153, 159].includes(char.id);
-  }
 
-  private spriteUsesRatioFrameSync(char: SwfSpriteChar): boolean {
-    return [104, 105, 106, 110, 115].includes(char.id);
-  }
 
   private spriteNeedsTimeline(char: SwfSpriteChar, visiting = new Set<number>()): boolean {
     const cached = this.spriteTimelineRequirementCache.get(char.id);
@@ -1364,7 +1261,7 @@ export class GsapSwfRenderer {
     const baseState = cloneMovieTimelineState(this.getMovieTimelineState(tick));
 
     for (const assignment of options.globals ?? []) {
-      this.assignAvm1Global(baseState.globals, assignment.path, assignment.value);
+      assignAvm1Global(baseState.globals, assignment.path, assignment.value);
     }
 
     if (options.functionName) {

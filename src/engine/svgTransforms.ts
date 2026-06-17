@@ -75,3 +75,62 @@ export function getOwnedSvgTargets(element: HTMLElement): Array<{ svg: SVGSVGEle
     return svg.closest('[data-char-id]') === element;
   });
 }
+
+export function applyClipping(entry: DisplayEntry, depth: number, maskEntry: DisplayEntry | null) {
+  const targetSvgs = getOwnedSvgTargets(entry.element);
+  if (!targetSvgs.length) return;
+
+  const maskTarget = maskEntry?.element
+    ? getOwnedSvgTargets(maskEntry.element)[0] ?? getDescendantSvgTargets(maskEntry.element)[0]
+    : undefined;
+
+  targetSvgs.forEach(({ svg: targetSvg, group: targetGroup }, index) => {
+    const clipId = `swf-clip-${depth}-${index}`;
+
+    if (!maskTarget) {
+      targetGroup.removeAttribute('clip-path');
+      targetSvg.querySelector(`#${clipId}`)?.remove();
+      return;
+    }
+
+    let defs = targetSvg.querySelector('defs');
+    if (!defs) {
+      defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+      targetSvg.insertBefore(defs, targetSvg.firstChild);
+    }
+
+    let clipPathEl = targetSvg.querySelector(`#${clipId}`) as SVGClipPathElement | null;
+    if (!clipPathEl) {
+      clipPathEl = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath');
+      clipPathEl.setAttribute('id', clipId);
+      clipPathEl.setAttribute('clipPathUnits', 'userSpaceOnUse');
+      defs.appendChild(clipPathEl);
+    }
+
+    clipPathEl.innerHTML = '';
+
+    const targetCtm = targetGroup.getScreenCTM();
+    const maskCtm = maskTarget.group.getScreenCTM();
+    if (!targetCtm || !maskCtm) return;
+
+    const rel = targetCtm.inverse().multiply(maskCtm);
+    const transformedMaskGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    transformedMaskGroup.setAttribute(
+      'transform',
+      `matrix(${rel.a}, ${rel.b}, ${rel.c}, ${rel.d}, ${rel.e}, ${rel.f})`
+    );
+
+    const maskClone = maskTarget.group.cloneNode(true) as SVGGElement;
+    maskClone.removeAttribute('transform');
+    transformedMaskGroup.appendChild(maskClone);
+
+    clipPathEl.appendChild(transformedMaskGroup);
+    targetGroup.setAttribute('clip-path', `url(#${clipId})`);
+  });
+}
+
+export function applyPlacementTransform(element: HTMLElement, matrix: SwfMatrix) {
+  const viewportMatrix = getViewportTransform(element, matrix);
+  element.style.transformOrigin = '0 0';
+  element.style.transform = `matrix(${viewportMatrix.a}, ${viewportMatrix.b}, ${viewportMatrix.c}, ${viewportMatrix.d}, ${viewportMatrix.tx}, ${viewportMatrix.ty})`;
+}
