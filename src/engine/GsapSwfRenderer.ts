@@ -21,9 +21,12 @@ import {
 } from "./avm1Values";
 import { ensureSvgContentGroup, extractSvgOffset, getDescendantSvgTargets, getElementOffset, makeIdsUnique } from "./svgDom";
 import { avm1Equals, readConstantPool, readFunctionDefinition, readPushValues } from "./avm1Bytecode";
+import { getAvm1Member, isAvm1Object, setAvm1Member } from "./avm1Objects";
+import { createImageElement, createShapeElement, ensureFontFace } from "./elementFactory";
+import { cloneMovieTimelineState, createInitialMovieTimelineState } from "./movieState";
+import { applyColorTransform, getOwnedSvgTargets, getViewportTransform } from "./svgTransforms";
 
 
-const loadedFontFaces = new Map<string, Promise<void>>();
 
 export class GsapSwfRenderer {
   private movie: SwfMovie;
@@ -153,7 +156,7 @@ export class GsapSwfRenderer {
       this.applyPlacementTransform(el, entry.matrix);
 
       // Color transform
-      this.applyColorTransform(entry, depth);
+      applyColorTransform(entry, depth);
 
       // Keep mask elements in the DOM tree so SVG CTM math stays available.
       if (entry.clipDepth) {
@@ -171,11 +174,11 @@ export class GsapSwfRenderer {
   }
 
   private applyClipping(entry: DisplayEntry, depth: number, maskEntry: DisplayEntry | null) {
-    const targetSvgs = this.getOwnedSvgTargets(entry.element);
+    const targetSvgs = getOwnedSvgTargets(entry.element);
     if (!targetSvgs.length) return;
 
     const maskTarget = maskEntry?.element
-      ? this.getOwnedSvgTargets(maskEntry.element)[0] ?? getDescendantSvgTargets(maskEntry.element)[0]
+      ? getOwnedSvgTargets(maskEntry.element)[0] ?? getDescendantSvgTargets(maskEntry.element)[0]
       : undefined;
 
     targetSvgs.forEach(({ svg: targetSvg, group: targetGroup }, index) => {
@@ -224,84 +227,15 @@ export class GsapSwfRenderer {
   }
 
   private applyPlacementTransform(element: HTMLElement, matrix: SwfMatrix) {
-    const viewportMatrix = this.getViewportTransform(element, matrix);
+    const viewportMatrix = getViewportTransform(element, matrix);
     element.style.transformOrigin = '0 0';
     element.style.transform = `matrix(${viewportMatrix.a}, ${viewportMatrix.b}, ${viewportMatrix.c}, ${viewportMatrix.d}, ${viewportMatrix.tx}, ${viewportMatrix.ty})`;
   }
 
-  private getViewportTransform(element: HTMLElement, matrix: SwfMatrix): SwfMatrix {
-    const offset = getElementOffset(element);
-    return {
-      a: matrix.a,
-      b: matrix.b,
-      c: matrix.c,
-      d: matrix.d,
-      tx: matrix.tx - (matrix.a * offset.x + matrix.c * offset.y),
-      ty: matrix.ty - (matrix.b * offset.x + matrix.d * offset.y),
-    };
-  }
 
 
-  private applyColorTransform(entry: DisplayEntry, depth: number) {
-    const ct = entry.colorTransform;
-    const svgTargets = getDescendantSvgTargets(entry.element);
-
-    if (!ct) {
-      entry.element.style.opacity = '1';
-      svgTargets.forEach(({ svg, group }, index) => {
-        group.removeAttribute('filter');
-        svg.querySelector(`#swf-color-${depth}-${index}`)?.remove();
-      });
-      return;
-    }
-
-    const rm = ct.rm ?? 1;
-    const gm = ct.gm ?? 1;
-    const bm = ct.bm ?? 1;
-    const am = ct.am ?? 1;
-    const ra = (ct.ra ?? 0) / 255;
-    const ga = (ct.ga ?? 0) / 255;
-    const ba = (ct.ba ?? 0) / 255;
-    const aa = (ct.aa ?? 0) / 255;
-    const needsFilter = rm !== 1 || gm !== 1 || bm !== 1 || am !== 1 || ra !== 0 || ga !== 0 || ba !== 0 || aa !== 0;
-
-    if (!svgTargets.length || !needsFilter) {
-      entry.element.style.opacity = String(Math.max(0, Math.min(1, am)));
-      svgTargets.forEach(({ svg, group }, index) => {
-        group.removeAttribute('filter');
-        svg.querySelector(`#swf-color-${depth}-${index}`)?.remove();
-      });
-      return;
-    }
-
-    entry.element.style.opacity = '1';
-
-    svgTargets.forEach(({ svg, group }, index) => {
-      let defs = svg.querySelector('defs');
-      if (!defs) {
-        defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-        svg.insertBefore(defs, svg.firstChild);
-      }
-
-      const filterId = `swf-color-${depth}-${index}`;
-      let filterEl = svg.querySelector(`#${filterId}`) as SVGFilterElement | null;
-      if (!filterEl) {
-        filterEl = document.createElementNS('http://www.w3.org/2000/svg', 'filter');
-        filterEl.setAttribute('id', filterId);
-        defs.appendChild(filterEl);
-      }
-
-      filterEl.innerHTML = `<feColorMatrix type="matrix" values="${rm} 0 0 0 ${ra} 0 ${gm} 0 0 ${ga} 0 0 ${bm} 0 ${ba} 0 0 0 ${am} ${aa}"/>`;
-      group.setAttribute('filter', `url(#${filterId})`);
-    });
-  }
 
 
-  private getOwnedSvgTargets(element: HTMLElement): Array<{ svg: SVGSVGElement; group: SVGGElement }> {
-    return getDescendantSvgTargets(element).filter(({ svg }) => {
-      return svg.closest('[data-char-id]') === element;
-    });
-  }
 
   private buildMovieDisplayList(
     rawFrame: number,
@@ -417,87 +351,13 @@ export class GsapSwfRenderer {
     return displayList;
   }
 
-  private createInitialMovieTimelineState(): MovieTimelineState {
-    const root: Avm1Object = {};
-    const background: Avm1Object = {
-      AttractLoopWaitTime: 2000,
-      kioskModeWaitTime: 2000,
-      kioskModeWaitLong: 5000,
-      doKioskMode: true,
-      currScene: '',
-      VOvol: 100,
-      vo: {},
-    };
-    const nav: Avm1Object = {
-      targSection: '',
-    };
-    const level4: Avm1Object = {};
 
-    root.bkgd = background;
-    root.nav = nav;
-
-    const globals = new Map<string, Avm1Value>([
-      ['_level0', root],
-      ['_root', root],
-      ['this', root],
-      ['bkgd', background],
-      ['nav', nav],
-      ['_level4', level4],
-    ]);
-
-    return {
-      currentFrame: 0,
-      isPlaying: true,
-      globals,
-      playbackOverridesByName: new Map<string, SpritePlaybackState>(),
-      timeMarkTick: null,
-    };
-  }
-
-  private cloneMovieTimelineState(state: MovieTimelineState): MovieTimelineState {
-    const globals = new Map<string, Avm1Value>();
-    const clonedObjects = new Map<Avm1Object, Avm1Object>();
-
-    const cloneValue = (value: Avm1Value): Avm1Value => {
-      if (!value || typeof value !== 'object') {
-        return value;
-      }
-
-      if (isDisplayTarget(value) || isAvm1Function(value)) {
-        return value;
-      }
-
-      const objectValue = value as Avm1Object;
-      if (clonedObjects.has(objectValue)) {
-        return clonedObjects.get(objectValue)!;
-      }
-
-      const clone: Avm1Object = {};
-      clonedObjects.set(objectValue, clone);
-      for (const [key, member] of Object.entries(objectValue)) {
-        clone[key] = cloneValue(member);
-      }
-      return clone;
-    };
-
-    for (const [key, value] of state.globals) {
-      globals.set(key, cloneValue(value));
-    }
-
-    return {
-      currentFrame: state.currentFrame,
-      isPlaying: state.isPlaying,
-      globals,
-      playbackOverridesByName: new Map(state.playbackOverridesByName),
-      timeMarkTick: state.timeMarkTick,
-    };
-  }
 
   private getMovieTimelineState(elapsedTicks: number): MovieTimelineState {
     const safeTick = Math.max(0, Math.floor(elapsedTicks));
 
     if (this.movieTimelineStateCache.length === 0) {
-      const initialState = this.createInitialMovieTimelineState();
+      const initialState = createInitialMovieTimelineState();
       this.landOnMovieFrame(initialState, 0);
       this.movieTimelineStateCache.push(initialState);
     }
@@ -505,7 +365,7 @@ export class GsapSwfRenderer {
     while (this.movieTimelineStateCache.length <= safeTick) {
       const tick = this.movieTimelineStateCache.length;
       const previous = this.movieTimelineStateCache[tick - 1];
-      const next = this.cloneMovieTimelineState(previous);
+      const next = cloneMovieTimelineState(previous);
 
       if (tick > 0 && next.isPlaying) {
         next.currentFrame = clampFrame(next.currentFrame + 1, this.movie.frameCount);
@@ -526,7 +386,7 @@ export class GsapSwfRenderer {
         state.currentFrame,
         state.isPlaying ? 1 : 0,
         state.timeMarkTick ?? -1,
-        toAvm1String(this.getAvm1Member(state.globals.get('nav'), 'targSection')),
+        toAvm1String(getAvm1Member(state.globals.get('nav'), 'targSection')),
       ].join(':');
       if (seen.has(marker)) {
         break;
@@ -556,9 +416,9 @@ export class GsapSwfRenderer {
 
     switch (char.type) {
       case 'shape':
-        return this.createShapeElement(char, depth);
+        return createShapeElement(char, depth);
       case 'image':
-        return this.createImageElement(char, depth);
+        return createImageElement(char, depth);
       case 'text':
         return this.createTextElement(char, depth);
       case 'sprite':
@@ -568,75 +428,8 @@ export class GsapSwfRenderer {
     }
   }
 
-  private createShapeElement(char: SwfShapeChar, depth: number): HTMLElement {
-    const wrapper = document.createElement('div');
-    wrapper.className = 'swf-shape';
-    wrapper.dataset.charId = String(char.id);
-    wrapper.dataset.depth = String(depth);
-    wrapper.style.cssText = 'position:absolute;left:0;top:0;transform-origin:0 0;pointer-events:none;';
 
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(char.svgPaths, 'image/svg+xml');
-    const svg = doc.documentElement as unknown as SVGSVGElement;
-    ensureSvgContentGroup(svg);
-    makeIdsUnique(svg, `swf-shape-${char.id}-depth-${depth}`);
-    const offset = extractSvgOffset(svg, {
-      x: -char.bounds.xMin,
-      y: -char.bounds.yMin,
-    });
-    wrapper.dataset.offsetX = String(offset.x);
-    wrapper.dataset.offsetY = String(offset.y);
-    wrapper.style.transformOrigin = `${offset.x}px ${offset.y}px`;
-    svg.style.overflow = 'visible';
-    svg.style.position = 'absolute';
-    svg.style.left = '0';
-    svg.style.top = '0';
-    wrapper.appendChild(svg);
 
-    return wrapper;
-  }
-
-  private createImageElement(char: SwfImageChar, _depth?: number): HTMLElement {
-    void _depth;
-    const wrapper = document.createElement('div');
-    wrapper.className = 'swf-image';
-    wrapper.dataset.charId = String(char.id);
-    wrapper.style.cssText = 'position:absolute;left:0;top:0;transform-origin:0 0;pointer-events:none;';
-
-    const img = document.createElement('img');
-    img.src = char.dataUrl;
-    img.width = char.width;
-    img.height = char.height;
-    img.draggable = false;
-    img.onerror = () => { wrapper.style.display = 'none'; };
-
-    wrapper.appendChild(img);
-    return wrapper;
-  }
-
-  private ensureFontFace(font: SwfFontChar) {
-    if (!font.assetUrl || !font.cssFamily || typeof FontFace === 'undefined') {
-      return;
-    }
-
-    const cacheKey = `${font.cssFamily}::${font.assetUrl}`;
-    if (loadedFontFaces.has(cacheKey)) {
-      return;
-    }
-
-    const fontFace = new FontFace(font.cssFamily, `url("${font.assetUrl}")`, {
-      style: font.isItalic ? 'italic' : 'normal',
-      weight: font.isBold ? '700' : '400',
-    });
-
-    loadedFontFaces.set(cacheKey, fontFace.load()
-      .then((loadedFace) => {
-        document.fonts.add(loadedFace);
-      })
-      .catch(() => {
-        loadedFontFaces.delete(cacheKey);
-      }));
-  }
 
   private createTextElement(char: SwfTextChar, _depth?: number): HTMLElement {
     void _depth;
@@ -655,7 +448,7 @@ export class GsapSwfRenderer {
     const fontWeight = font?.type === 'font' && font.isBold ? 'bold' : 'normal';
     const fontStyle = font?.type === 'font' && font.isItalic ? 'italic' : 'normal';
     if (font?.type === 'font') {
-      this.ensureFontFace(font);
+      ensureFontFace(font);
     }
     const boundsWidth = char.bounds.xMax - char.bounds.xMin;
     const boundsHeight = char.bounds.yMax - char.bounds.yMin;
@@ -1122,7 +915,7 @@ export class GsapSwfRenderer {
         case 0x4E: {
           const memberName = toAvm1String(stack.pop());
           const object = stack.pop();
-          stack.push(this.getAvm1Member(object, memberName));
+          stack.push(getAvm1Member(object, memberName));
           break;
         }
 
@@ -1130,7 +923,7 @@ export class GsapSwfRenderer {
           const value = stack.pop();
           const memberName = toAvm1String(stack.pop());
           const object = stack.pop();
-          this.setAvm1Member(object, memberName, value);
+          setAvm1Member(object, memberName, value);
           break;
         }
 
@@ -1203,29 +996,7 @@ export class GsapSwfRenderer {
 
 
 
-  private getAvm1Member(target: Avm1Value, memberName: string): Avm1Value {
-    if (!target || typeof target !== 'object' || isAvm1Function(target)) {
-      return undefined;
-    }
 
-    if (isDisplayTarget(target)) {
-      return undefined;
-    }
-
-    return (target as Avm1Object)[memberName];
-  }
-
-  private setAvm1Member(target: Avm1Value, memberName: string, value: Avm1Value) {
-    if (!target || typeof target !== 'object' || isAvm1Function(target)) {
-      return;
-    }
-
-    if (isDisplayTarget(target)) {
-      return;
-    }
-
-    (target as Avm1Object)[memberName] = value;
-  }
 
 
 
@@ -1242,7 +1013,7 @@ export class GsapSwfRenderer {
       globals?: Map<string, Avm1Value>;
     },
   ): Avm1Value {
-    if (this.isAvm1Object(object)) {
+    if (isAvm1Object(object)) {
       return this.callAvm1ObjectMethod(object, methodName, args, options);
     }
 
@@ -1403,7 +1174,7 @@ export class GsapSwfRenderer {
 
     const [rootName, ...memberPath] = segments;
     let target = globals.get(rootName);
-    if (!this.isAvm1Object(target)) {
+    if (!isAvm1Object(target)) {
       target = {};
       globals.set(rootName, target);
     }
@@ -1411,7 +1182,7 @@ export class GsapSwfRenderer {
     let objectTarget = target as Avm1Object;
     for (const segment of memberPath.slice(0, -1)) {
       const next = objectTarget[segment];
-      if (!this.isAvm1Object(next)) {
+      if (!isAvm1Object(next)) {
         objectTarget[segment] = {};
       }
       objectTarget = objectTarget[segment] as Avm1Object;
@@ -1448,9 +1219,6 @@ export class GsapSwfRenderer {
 
 
 
-  private isAvm1Object(value: Avm1Value): value is Avm1Object {
-    return Boolean(value && typeof value === 'object' && !isDisplayTarget(value) && !isAvm1Function(value));
-  }
 
 
   private spriteForcesTimelineChildren(char: SwfSpriteChar): boolean {
@@ -1593,7 +1361,7 @@ export class GsapSwfRenderer {
     functionName?: string;
   }) {
     const tick = Math.max(0, Math.floor(options.tick ?? 0));
-    const baseState = this.cloneMovieTimelineState(this.getMovieTimelineState(tick));
+    const baseState = cloneMovieTimelineState(this.getMovieTimelineState(tick));
 
     for (const assignment of options.globals ?? []) {
       this.assignAvm1Global(baseState.globals, assignment.path, assignment.value);
