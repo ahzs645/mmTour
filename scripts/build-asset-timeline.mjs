@@ -1118,12 +1118,18 @@ function inferExitNavigation(source, frameLabels) {
   const target = chooseExitNavigationTarget(sectionTargets[section] ?? [], frameLabels);
   if (!target?.swf) return null;
 
-  const exitLabel = frameLabels["navAnim_Pro_Exit"] !== undefined
-    && target.frame > frameLabels["navAnim_Pro_Exit"]
+  // exitAnim() branches on the (runtime) OSVersion: Pro → navAnim_Pro_Exit, Per → navAnim_Personal_Exit.
+  // The old `target.frame > navAnim_Pro_Exit` heuristic misclassified BestForBusiness (its doRelease
+  // sits at f323, inside the Pro cascade but BEFORE the Pro-exit label) as Personal, sending the Pro
+  // toolbar down the Per path (4 buttons, no silver). Pick by the tour's OSVersion default instead.
+  const osVersion = globalDefaults["bkgd.OSVersion"];
+  const exitLabel = osVersion === "Per" && frameLabels["navAnim_Personal_Exit"] !== undefined
+    ? "navAnim_Personal_Exit"
+    : frameLabels["navAnim_Pro_Exit"] !== undefined
       ? "navAnim_Pro_Exit"
       : frameLabels["navAnim_Personal_Exit"] !== undefined
-      ? "navAnim_Personal_Exit"
-      : undefined;
+        ? "navAnim_Personal_Exit"
+        : undefined;
   const exitFrame = exitLabel ? frameLabels[exitLabel] : inferExitFrameFromExitAnim();
   if (!Number.isFinite(exitFrame) || exitFrame < 0) return null;
 
