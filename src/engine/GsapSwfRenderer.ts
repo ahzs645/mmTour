@@ -11,61 +11,11 @@ import type {
   SwfMovie, SwfFrame,
   SwfMatrix, SwfColorTransform, SwfShapeChar, SwfTextChar, SwfImageChar, SwfSpriteChar, SwfFontChar,
 } from './SwfParser';
+import type {
+  DisplayEntry, GsapSwfRendererOptions, SpritePlaybackState, TimelineState,
+  DisplayBinding, Avm1Object, MovieTimelineState, Avm1FunctionDef, Avm1Primitive, Avm1Value,
+} from "./GsapSwfRenderer.types";
 
-interface DisplayEntry {
-  depth: number;
-  characterId: number;
-  element: HTMLElement;
-  matrix: SwfMatrix;
-  colorTransform?: SwfColorTransform;
-  clipDepth?: number;
-  ratio?: number;
-  placedAtFrame: number;
-  instanceName?: string;
-  spritePlayback?: SpritePlaybackState;
-}
-
-interface GsapSwfRendererOptions {
-  hiddenCharacterIds?: number[];
-}
-
-interface SpritePlaybackState {
-  startFrame: number;
-  startedAtTick: number;
-  isPlaying: boolean;
-}
-
-interface TimelineState {
-  currentFrame: number;
-  isPlaying: boolean;
-}
-
-interface DisplayBinding {
-  depth: number;
-  characterId: number;
-  instanceName?: string;
-  ratio?: number;
-}
-
-interface Avm1Object {
-  [key: string]: Avm1Value;
-}
-
-interface MovieTimelineState extends TimelineState {
-  globals: Map<string, Avm1Value>;
-  playbackOverridesByName: Map<string, SpritePlaybackState>;
-  timeMarkTick: number | null;
-}
-
-interface Avm1FunctionDef {
-  name: string;
-  params: string[];
-  body: Uint8Array;
-  constantPool: string[];
-}
-
-type Avm1Primitive = string | number | boolean | null;
-type Avm1Value = Avm1Primitive | DisplayEntry | DisplayBinding | Avm1Object | Avm1FunctionDef | undefined;
 
 const loadedFontFaces = new Map<string, Promise<void>>();
 

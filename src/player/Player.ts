@@ -8,6 +8,7 @@ import type {
   TimelineFrame,
 } from "../data/timelineTypes";
 import type { DomRenderer } from "../render/DomRenderer";
+import { isLocalVar, localizeCondition, splitTopLevelArgs } from "./avm1";
 import { ClipInstance } from "./ClipInstance";
 import { evalCondition } from "./conditions";
 import { IDENTITY, multiplyMatrix } from "./matrix";
@@ -272,7 +273,7 @@ export class Player {
       if (def.scope !== "sprite" || typeof def.spriteId !== "number" || !def.functionName) continue;
       const usable = (def.body ?? []).filter((s) =>
         (s.kind === "call" && Boolean(s.functionName?.startsWith("gotoAnd")) && (!s.target || s.target === "self" || s.target === "this"))
-        || (s.kind === "assign" && this.isLocalVar(s.target)));
+        || (s.kind === "assign" && isLocalVar(s.target)));
       if (!usable.length) continue;
       let fns = this.spriteFunctions.get(def.spriteId);
       if (!fns) this.spriteFunctions.set(def.spriteId, (fns = new Map()));
@@ -359,19 +360,7 @@ export class Player {
 
   /** Split a raw arg string on top-level commas and resolve each to a value. */
   private parseArgs(argsRaw: string | undefined, locals?: Locals): (VarValue | undefined)[] {
-    if (!argsRaw?.trim()) return [];
-    const parts: string[] = [];
-    let depth = 0, quote = "", start = 0;
-    for (let i = 0; i < argsRaw.length; i++) {
-      const c = argsRaw[i];
-      if (quote) { if (c === quote && argsRaw[i - 1] !== "\\") quote = ""; continue; }
-      if (c === '"' || c === "'") quote = c;
-      else if (c === "(" || c === "[") depth++;
-      else if (c === ")" || c === "]") depth--;
-      else if (c === "," && depth === 0) { parts.push(argsRaw.slice(start, i)); start = i + 1; }
-    }
-    parts.push(argsRaw.slice(start));
-    return parts.map((p) => this.resolveExpr(p.trim(), locals));
+    return splitTopLevelArgs(argsRaw).map((p) => this.resolveExpr(p.trim(), locals));
   }
 
   /** Milliseconds since page start — AVM1 `getTimer()`. Absolute, so it's consistent
@@ -396,24 +385,16 @@ export class Player {
     return e; // array literals etc. — kept as their source text
   }
 
-  /** An AVM1 unqualified variable (`btnDown`, `labelHidden`, `scene`) is local to the clip its
-   *  script runs on; a dotted/object path (`bkgd.X`, `nav.X`) or a `_root`/`_levelN`/`_global`
-   *  reference is a shared global in the VariableStore. */
-  private isLocalVar(name: string): boolean {
-    const n = name.trim();
-    return /^[A-Za-z_$][\w$]*$/.test(n) && !/^(true|false|null|undefined|this|_root|_global|_parent|_level\d+)$/.test(n);
-  }
-
   /** Read a variable in a clip's scope: a clip-local timeline var first, else the shared store. */
   private scopeGet(clip: ClipInstance, name: string): VarValue | undefined {
-    if (this.isLocalVar(name) && name in clip.locals) return clip.locals[name];
+    if (isLocalVar(name) && name in clip.locals) return clip.locals[name];
     return this.store?.get(name);
   }
 
   /** Write a variable in a clip's scope. A local var is kept on the clip (so each toolbar button
    *  has its own `btnDown`/`labelHidden`) AND mirrored to the store for any non-scoped reader. */
   private scopeSet(clip: ClipInstance, name: string, value: VarValue): void {
-    if (this.isLocalVar(name)) clip.locals[name] = value;
+    if (isLocalVar(name)) clip.locals[name] = value;
     this.store?.set(name, value);
   }
 
@@ -422,7 +403,7 @@ export class Player {
     return {
       get: (name: string) => this.scopeGet(clip, name),
       set: (name: string, value: VarValue) => this.scopeSet(clip, name, value),
-      has: (name: string) => (this.isLocalVar(name) && name in clip.locals) || (this.store?.has(name) ?? false),
+      has: (name: string) => (isLocalVar(name) && name in clip.locals) || (this.store?.has(name) ?? false),
     } as unknown as VariableStore;
   }
 
@@ -452,18 +433,7 @@ export class Player {
   /** Evaluate a body statement's if/else guard, substituting local parameters. */
   private branchPasses(condition: string | undefined, locals: Locals): boolean {
     if (!condition || !this.store) return condition ? false : true;
-    return evalCondition(this.localizeCondition(condition, locals), this.store);
-  }
-
-  /** Substitute bound parameter names in a condition with their literal values. */
-  private localizeCondition(condition: string, locals: Locals): string {
-    let out = condition;
-    for (const [name, value] of Object.entries(locals)) {
-      if (value === undefined) continue;
-      const literal = typeof value === "string" ? JSON.stringify(value) : String(value);
-      out = out.replace(new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"), literal);
-    }
-    return out;
+    return evalCondition(localizeCondition(condition, locals), this.store);
   }
 
   private runBodyStatement(statement: BodyStatement, locals: Locals) {
