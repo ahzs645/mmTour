@@ -699,7 +699,9 @@ function discoverDefinedFunctions() {
       const calls = discoverFunctionBodyCalls(body);
       // Branch-aware body: ordered assignments + method-calls, each with the if/else
       // guard it runs under (so e.g. showSceneMenu only fires the active section's button).
-      const statements = parseStatements(body);
+      // For sprite functions keep self-gotos too — a control's over()/out() reveal is just
+      // `if(!musicOn)gotoAndPlay(28);else gotoAndPlay(5)`, and the runtime needs the branch.
+      const statements = parseStatements(body, Boolean(sprite));
       functions.push(compactObject({
         functionName: match[1],
         parameters: match[2].split(",").map((param) => param.trim()).filter(Boolean),
@@ -1707,7 +1709,7 @@ function findStatementEnd(source, i) {
  * `evalCondition`-ready guard. Statement kinds: `assign` (target/rawValue) and
  * `call` (target/functionName/arguments). Nested function defs are skipped.
  */
-function parseStatements(src) {
+function parseStatements(src, keepSelfTimeline = false) {
   const out = [];
   parseBlock(src, []);
   return out;
@@ -1770,8 +1772,10 @@ function parseStatements(src) {
       const target = dot > 0 ? path.slice(0, dot) : undefined;
       const functionName = dot > 0 ? path.slice(dot + 1) : path;
       if (functionName === "trace" || functionName === "var") return;
-      // Self timeline commands (gotoAndPlay(60), stop()) are handled by frameActions.
-      if (!target && SELF_TIMELINE_COMMANDS.has(functionName)) return;
+      // Self timeline commands (gotoAndPlay(60), stop()) are handled by frameActions for frame
+      // scripts; for a sprite FUNCTION body (over()/out() label reveal) they ARE the behaviour,
+      // so keep them (with their branchCondition) when keepSelfTimeline is set.
+      if (!target && SELF_TIMELINE_COMMANDS.has(functionName) && !keepSelfTimeline) return;
       out.push(compactObject({ kind: "call", target, functionName, arguments: call[2].trim() || undefined, branchCondition }));
       return;
     }

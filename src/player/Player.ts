@@ -248,22 +248,25 @@ export class Player {
         this.functions.set(action.functionName, entry);
       }
     }
-    // Sprite-scoped functions whose body is just inner gotos (a control's over()/out() label
-    // reveal: `if(!musicOn) gotoAndPlay(28); else gotoAndPlay(5)`). The build flattens the branch,
-    // so run the calls in order (the matching arm's goto lands last and wins).
+    // Sprite-scoped functions whose body is inner gotos (a control's over()/out() label reveal:
+    // `if(!musicOn) gotoAndPlay(28); else gotoAndPlay(5)`). The body statements carry their if/else
+    // guard, so each goto becomes a branch-gated action and callClipFunction picks the live arm.
     for (const def of Object.values(control?.definedFunctions ?? {}) as DefinedFunction[]) {
-      if (def.scope !== "sprite" || typeof def.spriteId !== "number" || !def.functionName || !def.calls?.length) continue;
+      if (def.scope !== "sprite" || typeof def.spriteId !== "number" || !def.functionName) continue;
+      const gotos = (def.body ?? []).filter((s): s is Extract<BodyStatement, { kind: "call" }> =>
+        s.kind === "call" && Boolean(s.functionName?.startsWith("gotoAnd")) && (!s.target || s.target === "self" || s.target === "this"));
+      if (!gotos.length) continue;
       let fns = this.spriteFunctions.get(def.spriteId);
       if (!fns) this.spriteFunctions.set(def.spriteId, (fns = new Map()));
       const entry = fns.get(def.functionName) ?? newDef();
-      for (const call of def.calls) {
-        if (!call.functionName?.startsWith("gotoAnd") || (call.target && call.target !== "self" && call.target !== "this")) continue;
-        const arg = (call.arguments ?? "").trim();
+      for (const s of gotos) {
+        const arg = (s.arguments ?? "").trim();
         const num = Number(arg);
         entry.actions.push({
-          command: call.functionName as ControlAction["command"],
+          command: s.functionName as ControlAction["command"],
           target: "self",
           ...(Number.isFinite(num) && arg !== "" ? { frame: num - 1 } : { label: arg.replace(/^["']|["']$/g, "") }),
+          ...(s.branchCondition ? { functionBranchCondition: s.branchCondition } : {}),
         });
       }
       fns.set(def.functionName, entry);
