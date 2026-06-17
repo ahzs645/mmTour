@@ -23,20 +23,21 @@ import {
   identityMatrix, matrixFromTag, matrixFromSvgTransform, multiplyMatrices,
   opacityFromTag, colorTransformFromTag, colorFromTag,
 } from "./lib/geom.mjs";
+import { ctx } from "./lib/extractContext.mjs";
 
-const root = resolve(new URL("..", import.meta.url).pathname);
-const scene = process.argv[2] ?? "segment4";
-const extractedDir = join(root, "extracted", scene);
-const xmlPath = join(extractedDir, `${scene}.xml`);
-const publicDir = join(root, "public/generated", scene);
-const secondaryDir = join(publicDir, "secondary");
-const parserReportPath = join(publicDir, "swf-parser-report.json");
+ctx.root = resolve(new URL("..", import.meta.url).pathname);
+ctx.scene = process.argv[2] ?? "segment4";
+ctx.extractedDir = join(ctx.root, "extracted", ctx.scene);
+ctx.xmlPath = join(ctx.extractedDir, `${ctx.scene}.xml`);
+ctx.publicDir = join(ctx.root, "public/generated", ctx.scene);
+ctx.secondaryDir = join(ctx.publicDir, "secondary");
+ctx.parserReportPath = join(ctx.publicDir, "swf-parser-report.json");
 
-if (!existsSync(xmlPath)) {
-  throw new Error(`Missing FFDec XML at ${xmlPath}. Run: node scripts/export-ffdec.mjs ${scene}.swf`);
+if (!existsSync(ctx.xmlPath)) {
+  throw new Error(`Missing FFDec XML at ${ctx.xmlPath}. Run: node scripts/export-ffdec.mjs ${ctx.scene}.swf`);
 }
 
-const parser = new XMLParser({
+ctx.parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "",
   isArray: (name) => name === "item",
@@ -44,101 +45,101 @@ const parser = new XMLParser({
 
 /** Timeline commands on `self` — handled by the frameActions path, not the function body. */
 
-const swf = parser.parse(readFileSync(xmlPath, "utf8")).swf;
-const tags = asArray(swf.tags?.item);
-const width = rectSize(swf.displayRect?.Xmax, swf.displayRect?.Xmin);
-const height = rectSize(swf.displayRect?.Ymax, swf.displayRect?.Ymin);
-const fps = Number.parseFloat(swf.frameRate) || 15;
-const backgroundColor = colorFromTag(tags.find((tag) => tag.type === "SetBackgroundColorTag")?.backgroundColor);
-const loadedVariables = loadSceneVariables(scene);
-const soundLibrary = discoverSoundLibrary();
-const rootSoundLibrary = discoverRootSoundLibrary();
-const globalDefaults = discoverGlobalDefaults();
+ctx.swf = ctx.parser.parse(readFileSync(ctx.xmlPath, "utf8")).swf;
+ctx.tags = asArray(ctx.swf.tags?.item);
+ctx.width = rectSize(ctx.swf.displayRect?.Xmax, ctx.swf.displayRect?.Xmin);
+ctx.height = rectSize(ctx.swf.displayRect?.Ymax, ctx.swf.displayRect?.Ymin);
+ctx.fps = Number.parseFloat(ctx.swf.frameRate) || 15;
+const backgroundColor = colorFromTag(ctx.tags.find((tag) => tag.type === "SetBackgroundColorTag")?.backgroundColor);
+ctx.loadedVariables = loadSceneVariables(ctx.scene);
+ctx.soundLibrary = discoverSoundLibrary();
+ctx.rootSoundLibrary = discoverRootSoundLibrary();
+ctx.globalDefaults = discoverGlobalDefaults();
 
-const assets = discoverAssets(tags);
-const frames = buildFrames(tags);
-attachSpriteTimelines(assets, tags);
-markOverflowingSprites(assets);
-const labels = Object.fromEntries(frames.filter((frame) => frame.label).map((frame) => [frame.label, frame.index]));
-const entryFrame = discoverEntryFrame(labels);
-const spriteStopFrames = discoverSpriteStopFrames();
-const spriteLocalDefaults = discoverSpriteLocalDefaults();
-const buttonEvents = discoverButtonEvents(labels);
+ctx.assets = discoverAssets(ctx.tags);
+ctx.frames = buildFrames(ctx.tags);
+attachSpriteTimelines(ctx.assets, ctx.tags);
+markOverflowingSprites(ctx.assets);
+ctx.labels = Object.fromEntries(ctx.frames.filter((frame) => frame.label).map((frame) => [frame.label, frame.index]));
+const entryFrame = discoverEntryFrame(ctx.labels);
+ctx.spriteStopFrames = discoverSpriteStopFrames();
+ctx.spriteLocalDefaults = discoverSpriteLocalDefaults();
+const buttonEvents = discoverButtonEvents(ctx.labels);
 const groupedButtonEvents = groupButtonEvents(buttonEvents);
-const rawFrameActions = discoverFrameActions(labels);
-const rawSpriteActions = discoverSpriteActions(labels);
+const rawFrameActions = discoverFrameActions(ctx.labels);
+const rawSpriteActions = discoverSpriteActions(ctx.labels);
 const callableFunctionNames = discoverCallableFunctionNames(groupedButtonEvents, rawFrameActions, rawSpriteActions);
 const frameActions = markCallableFunctionActionsSupported(rawFrameActions, callableFunctionNames);
 const spriteActions = markCallableFunctionActionsSupported(rawSpriteActions, callableFunctionNames);
 const definedFunctions = discoverDefinedFunctions();
 const nestedSectionTargets = discoverNestedSectionTargets(groupedButtonEvents);
-const control = discoverControlFlow(tags, labels, groupedButtonEvents);
+const control = discoverControlFlow(ctx.tags, ctx.labels, groupedButtonEvents);
 
 const generatedBackup = preserveGeneratedReports();
-rmSync(publicDir, { recursive: true, force: true });
-mkdirSync(publicDir, { recursive: true });
+rmSync(ctx.publicDir, { recursive: true, force: true });
+mkdirSync(ctx.publicDir, { recursive: true });
 restoreGeneratedReports(generatedBackup);
 copyIfExists("shapes");
 copyIfExists("sprites");
 copyIfExists("images");
 copyIfExists("texts");
-stripBakedDynamicText(assets);
+stripBakedDynamicText(ctx.assets);
 copyIfExists("frames");
 copyIfExists("scripts");
 copyIfExists("buttons");
 copyIfExists("fonts");
 copyIfExists("sounds");
-normalizeFrameSvgs(frames, assets);
-replaceStaticVariableText(tags);
+normalizeFrameSvgs(ctx.frames, ctx.assets);
+replaceStaticVariableText(ctx.tags);
 
 const frameSvgs = listDir("frames")
   .filter((file) => file.endsWith(".svg"))
   .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10))
-  .map((file) => `generated/${scene}/frames/${file}`);
+  .map((file) => `generated/${ctx.scene}/frames/${file}`);
 
 const output = {
-  scene,
-  source: `${scene}.swf`,
+  scene: ctx.scene,
+  source: `${ctx.scene}.swf`,
   generatedFrom: "FFDec XML + exported SWF assets",
-  dimensions: { width, height },
+  dimensions: { width: ctx.width, height: ctx.height },
   backgroundColor,
-  fps,
-  frameCount: frames.length,
-  duration: frames.length / fps,
-  labels,
+  fps: ctx.fps,
+  frameCount: ctx.frames.length,
+  duration: ctx.frames.length / ctx.fps,
+  labels: ctx.labels,
   entryFrame,
   control,
   frameSvgs,
-  assets,
-  frames,
+  assets: ctx.assets,
+  frames: ctx.frames,
 };
 
-writeFileSync(join(publicDir, "timeline.json"), `${JSON.stringify(output)}\n`);
+writeFileSync(join(ctx.publicDir, "timeline.json"), `${JSON.stringify(output)}\n`);
 
 const controlFlow = {
-  scene,
-  source: `${scene}.swf`,
+  scene: ctx.scene,
+  source: `${ctx.scene}.swf`,
   generatedFrom: "FFDec XML DoAction tags + exported ActionScript",
-  frameRate: fps,
-  frameCount: frames.length,
+  frameRate: ctx.fps,
+  frameCount: ctx.frames.length,
   entryFrame,
-  labels,
+  labels: ctx.labels,
   stopFrames: control.stopFrames,
   frameActions,
   spriteActions,
   definedFunctions,
-  spriteStopFrames,
-  spriteLocalDefaults,
-  soundLibrary,
-  globalDefaults,
+  spriteStopFrames: ctx.spriteStopFrames,
+  spriteLocalDefaults: ctx.spriteLocalDefaults,
+  soundLibrary: ctx.soundLibrary,
+  globalDefaults: ctx.globalDefaults,
   nestedSectionTargets,
   dynamicTexts: control.dynamicTexts,
   buttonActions: control.buttonActions,
   buttons: buttonEvents,
 };
 
-writeFileSync(join(publicDir, "control-flow.json"), `${JSON.stringify(controlFlow, null, 2)}\n`);
-console.log(`Wrote ${join(publicDir, "timeline.json")} and control-flow.json with ${Object.keys(assets).length} assets and ${frames.length} frames.`);
+writeFileSync(join(ctx.publicDir, "control-flow.json"), `${JSON.stringify(controlFlow, null, 2)}\n`);
+console.log(`Wrote ${join(ctx.publicDir, "timeline.json")} and control-flow.json with ${Object.keys(ctx.assets).length} assets and ${ctx.frames.length} frames.`);
 
 function discoverAssets(allTags) {
   const defs = {};
@@ -148,12 +149,12 @@ function discoverAssets(allTags) {
 
     if (tag.type.startsWith("DefineShape") && tag.shapeId) {
       const id = String(tag.shapeId);
-      const src = `generated/${scene}/shapes/${id}.svg`;
+      const src = `generated/${ctx.scene}/shapes/${id}.svg`;
       defs[id] = {
         id: Number(id),
         kind: "shape",
         src,
-        origin: svgOrigin(join(extractedDir, "shapes", `${id}.svg`)),
+        origin: svgOrigin(join(ctx.extractedDir, "shapes", `${id}.svg`)),
       };
     }
 
@@ -161,14 +162,14 @@ function discoverAssets(allTags) {
       const id = String(tag.spriteId);
       const dirName = findSpriteDir(id);
       if (dirName) {
-        const files = readdirSync(join(extractedDir, "sprites", dirName))
+        const files = readdirSync(join(ctx.extractedDir, "sprites", dirName))
           .filter((file) => file.endsWith(".svg"))
           .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
         defs[id] = {
           id: Number(id),
           kind: "sprite",
-          frames: files.map((file) => `generated/${scene}/sprites/${dirName}/${file}`),
-          origin: svgOrigin(join(extractedDir, "sprites", dirName, files[0])),
+          frames: files.map((file) => `generated/${ctx.scene}/sprites/${dirName}/${file}`),
+          origin: svgOrigin(join(ctx.extractedDir, "sprites", dirName, files[0])),
         };
       }
     }
@@ -178,7 +179,7 @@ function discoverAssets(allTags) {
       defs[id] = {
         id: Number(id),
         kind: "text",
-        src: `generated/${scene}/texts/${id}.txt`,
+        src: `generated/${ctx.scene}/texts/${id}.txt`,
         origin: { x: 0, y: 0, width: 0, height: 0 },
       };
     }
@@ -213,7 +214,7 @@ function discoverAssets(allTags) {
       defs[id] = {
         id: Number(id),
         kind: "text",
-        src: `generated/${scene}/texts/${id}.txt`,
+        src: `generated/${ctx.scene}/texts/${id}.txt`,
         origin: { x: style.x ?? 0, y: style.y ?? 0, width: width, height: height },
         text: style,
       };
@@ -225,7 +226,7 @@ function discoverAssets(allTags) {
     defs[id] ??= {
       id: Number(id),
       kind: "text",
-      src: `generated/${scene}/texts/${file}`,
+      src: `generated/${ctx.scene}/texts/${file}`,
       origin: { x: 0, y: 0, width: 0, height: 0 },
     };
   }
@@ -235,12 +236,12 @@ function discoverAssets(allTags) {
     defs[id] ??= {
       id: Number(id),
       kind: "image",
-      src: `generated/${scene}/images/${file}`,
+      src: `generated/${ctx.scene}/images/${file}`,
       origin: { x: 0, y: 0, width: 0, height: 0 },
     };
   }
 
-  const buttonsDir = join(extractedDir, "buttons");
+  const buttonsDir = join(ctx.extractedDir, "buttons");
   for (const path of existsSync(buttonsDir) ? walkFiles(buttonsDir) : []) {
     if (!path.endsWith(".svg")) continue;
     const relative = path.slice(buttonsDir.length + 1).replaceAll("\\", "/");
@@ -248,7 +249,7 @@ function discoverAssets(allTags) {
     const state = basename(path, ".svg").replace(/^\d+_/, "");
     const key = `button:${id}`;
     const stateEntry = {
-      src: `generated/${scene}/buttons/${relative}`,
+      src: `generated/${ctx.scene}/buttons/${relative}`,
       origin: svgOrigin(path),
     };
     defs[key] ??= {
@@ -277,7 +278,7 @@ function discoverAssets(allTags) {
     defs[`font:${id}`] = {
       id: Number(id),
       kind: "font",
-      src: `generated/${scene}/fonts/${file}`,
+      src: `generated/${ctx.scene}/fonts/${file}`,
       origin: { x: 0, y: 0, width: 0, height: 0 },
     };
   }
@@ -287,7 +288,7 @@ function discoverAssets(allTags) {
     defs[`sound:${id}`] = {
       id: Number(id),
       kind: "sound",
-      src: `generated/${scene}/sounds/${file}`,
+      src: `generated/${ctx.scene}/sounds/${file}`,
       origin: { x: 0, y: 0, width: 0, height: 0 },
     };
   }
@@ -303,7 +304,7 @@ function discoverSoundLibrary() {
     if (!name || name === "-1") continue;
     sounds[name] = {
       name,
-      src: `generated/${scene}/sounds/${file}`,
+      src: `generated/${ctx.scene}/sounds/${file}`,
     };
   }
   return sounds;
@@ -311,7 +312,7 @@ function discoverSoundLibrary() {
 
 function discoverRootSoundLibrary() {
   const sounds = {};
-  const rootSoundsDir = join(root, "extracted", "A-tour", "sounds");
+  const rootSoundsDir = join(ctx.root, "extracted", "A-tour", "sounds");
   if (!existsSync(rootSoundsDir)) return sounds;
 
   for (const filePath of walkFiles(rootSoundsDir)) {
@@ -344,14 +345,14 @@ function discoverControlFlow(allTags, frameLabels, groupedEvents) {
   }
 
   return {
-    stopFrames: [...new Set(stopFrames)].filter((index) => index >= 0 && index < frames.length).sort((a, b) => a - b),
-    spriteStopFrames,
-    spriteLocalDefaults,
+    stopFrames: [...new Set(stopFrames)].filter((index) => index >= 0 && index < ctx.frames.length).sort((a, b) => a - b),
+    spriteStopFrames: ctx.spriteStopFrames,
+    spriteLocalDefaults: ctx.spriteLocalDefaults,
     frameActions,
     spriteActions,
     definedFunctions,
-    soundLibrary,
-    globalDefaults,
+    soundLibrary: ctx.soundLibrary,
+    globalDefaults: ctx.globalDefaults,
     nestedSectionTargets,
     dynamicTexts: discoverDynamicTexts(allTags),
     buttonActions: Object.fromEntries(
@@ -412,7 +413,7 @@ function discoverControlFlow(allTags, frameLabels, groupedEvents) {
 }
 
 function discoverGlobalDefaults() {
-  const sourcePath = join(root, "extracted", "A-tour", "scripts", "frame_1", "DoAction.as");
+  const sourcePath = join(ctx.root, "extracted", "A-tour", "scripts", "frame_1", "DoAction.as");
   if (!existsSync(sourcePath)) return {};
 
   const source = readFileSync(sourcePath, "utf8");
@@ -425,7 +426,7 @@ function discoverGlobalDefaults() {
 
 function discoverNestedSectionTargets(groupedEvents) {
   const targets = {};
-  const normalizedLabels = new Map(Object.entries(labels).map(([label, frame]) => [normalizeName(label), { label, frame }]));
+  const normalizedLabels = new Map(Object.entries(ctx.labels).map(([label, frame]) => [normalizeName(label), { label, frame }]));
 
   for (const event of Object.values(groupedEvents)) {
     const release = event.release;
@@ -455,7 +456,7 @@ function discoverDynamicTexts(allTags) {
     if (!tag?.characterID || !tag.variableName) continue;
 
     const variableName = normalizeVariableName(tag.variableName);
-    const loadedText = loadedVariables[variableName];
+    const loadedText = ctx.loadedVariables[variableName];
     if (!loadedText) continue;
 
     const initialText = normalizeLoadedText(String(tag.initialText ?? ""));
@@ -489,7 +490,7 @@ function discoverDynamicTexts(allTags) {
 }
 
 function discoverDefinedFunctions() {
-  const scriptsDir = join(extractedDir, "scripts");
+  const scriptsDir = join(ctx.extractedDir, "scripts");
   if (!existsSync(scriptsDir)) return [];
 
   const functions = [];
@@ -532,12 +533,12 @@ function discoverDefinedFunctions() {
 
 function discoverButtonOwnerSprites(characterId) {
   const marker = `ffdec:characterId="${characterId}"`;
-  return Object.values(assets)
+  return Object.values(ctx.assets)
     .filter((asset) => asset.kind === "sprite" && asset.frames?.length)
     .filter((asset) =>
       asset.frames.some((src) => {
-        const relative = src.split(`generated/${scene}/`).pop();
-        return relative ? readFileSync(join(extractedDir, relative), "utf8").includes(marker) : false;
+        const relative = src.split(`generated/${ctx.scene}/`).pop();
+        return relative ? readFileSync(join(ctx.extractedDir, relative), "utf8").includes(marker) : false;
       }),
     )
     .map((asset) => asset.id)
@@ -545,7 +546,7 @@ function discoverButtonOwnerSprites(characterId) {
 }
 
 function discoverButtonEvents(frameLabels) {
-  const scriptsDir = join(extractedDir, "scripts");
+  const scriptsDir = join(ctx.extractedDir, "scripts");
   if (!existsSync(scriptsDir)) return [];
 
   const events = [];
@@ -738,7 +739,7 @@ function inferRootFunctionSound(rootCall) {
   for (const match of body.matchAll(/(?:else\s+)?if\s*\(\s*whichSection\s*==\s*"([^"]+)"\s*\)\s*\{([\s\S]*?)\n\s*\}/g)) {
     if (match[1] !== section) continue;
     const sound = match[2].match(/attachSound\("([^"]+)"\)/)?.[1];
-    const resolvedSound = resolveSound(rootSoundLibrary, sound);
+    const resolvedSound = resolveSound(ctx.rootSoundLibrary, sound);
     const soundSrc = resolvedSound?.src;
     return sound && soundSrc ? {
       sound,
@@ -754,7 +755,7 @@ function inferRootFunctionSound(rootCall) {
 }
 
 function rootFunctionBody(functionName) {
-  const sourcePath = join(root, "extracted", "A-tour", "scripts", "frame_1", "DoAction.as");
+  const sourcePath = join(ctx.root, "extracted", "A-tour", "scripts", "frame_1", "DoAction.as");
   if (!existsSync(sourcePath)) return "";
 
   const source = readFileSync(sourcePath, "utf8");
@@ -769,12 +770,12 @@ function rootFunctionBody(functionName) {
 function evaluateGeneratedCondition(condition) {
   const normalized = condition.replaceAll("_level0.", "").trim();
   const equality = normalized.match(/^(.+?)\s*==\s*("[^"]*"|'[^']*'|-?\d+(?:\.\d+)?|true|false)$/);
-  if (equality) return globalDefaults[normalizeGeneratedGlobalName(equality[1])] === parseActionScriptLiteral(equality[2]);
+  if (equality) return ctx.globalDefaults[normalizeGeneratedGlobalName(equality[1])] === parseActionScriptLiteral(equality[2]);
 
   const inequality = normalized.match(/^(.+?)\s*!=\s*("[^"]*"|'[^']*'|-?\d+(?:\.\d+)?|true|false)$/);
-  if (inequality) return globalDefaults[normalizeGeneratedGlobalName(inequality[1])] !== parseActionScriptLiteral(inequality[2]);
+  if (inequality) return ctx.globalDefaults[normalizeGeneratedGlobalName(inequality[1])] !== parseActionScriptLiteral(inequality[2]);
 
-  const value = globalDefaults[normalizeGeneratedGlobalName(normalized)];
+  const value = ctx.globalDefaults[normalizeGeneratedGlobalName(normalized)];
   return Boolean(value);
 }
 
@@ -792,7 +793,7 @@ function inferExitNavigation(source, frameLabels) {
   // The old `target.frame > navAnim_Pro_Exit` heuristic misclassified BestForBusiness (its doRelease
   // sits at f323, inside the Pro cascade but BEFORE the Pro-exit label) as Personal, sending the Pro
   // toolbar down the Per path (4 buttons, no silver). Pick by the tour's OSVersion default instead.
-  const osVersion = globalDefaults["bkgd.OSVersion"];
+  const osVersion = ctx.globalDefaults["bkgd.OSVersion"];
   const exitLabel = osVersion === "Per" && frameLabels["navAnim_Personal_Exit"] !== undefined
     ? "navAnim_Personal_Exit"
     : frameLabels["navAnim_Pro_Exit"] !== undefined
@@ -819,7 +820,7 @@ function inferExitNavigation(source, frameLabels) {
 var movieTargetLevelCache; // var: hoisted so the top-level button-event pass (line ~45) can call this before this line
 function discoverMovieTargetLevel() {
   if (movieTargetLevelCache !== undefined) return movieTargetLevelCache;
-  const scriptsDir = join(extractedDir, "scripts");
+  const scriptsDir = join(ctx.extractedDir, "scripts");
   movieTargetLevelCache = 0;
   if (existsSync(scriptsDir)) {
     for (const file of walkFiles(scriptsDir).filter((path) => path.endsWith(".as"))) {
@@ -831,7 +832,7 @@ function discoverMovieTargetLevel() {
 }
 
 function discoverTargetSectionNavigation() {
-  const scriptsDir = join(extractedDir, "scripts");
+  const scriptsDir = join(ctx.extractedDir, "scripts");
   if (!existsSync(scriptsDir)) return {};
 
   const targets = {};
@@ -851,7 +852,7 @@ function discoverTargetSectionNavigation() {
 }
 
 function inferExitFrameFromExitAnim() {
-  const scriptsDir = join(extractedDir, "scripts");
+  const scriptsDir = join(ctx.extractedDir, "scripts");
   if (!existsSync(scriptsDir)) return -1;
 
   for (const file of walkFiles(scriptsDir).filter((path) => /\/frame_\d+\/DoAction\.as$/.test(path.replaceAll("\\", "/")))) {
@@ -865,7 +866,7 @@ function inferExitFrameFromExitAnim() {
 }
 
 function discoverFrameActions(frameLabels) {
-  const scriptsDir = join(extractedDir, "scripts");
+  const scriptsDir = join(ctx.extractedDir, "scripts");
   if (!existsSync(scriptsDir)) return [];
 
   return walkFiles(scriptsDir)
@@ -891,7 +892,7 @@ function discoverFrameActions(frameLabels) {
 }
 
 function discoverSpriteActions(frameLabels) {
-  const scriptsDir = join(extractedDir, "scripts");
+  const scriptsDir = join(ctx.extractedDir, "scripts");
   if (!existsSync(scriptsDir)) return [];
 
   return walkFiles(scriptsDir)
@@ -930,7 +931,7 @@ function annotateNestedTargetPlacements(actions, spriteId, frame) {
 
   const usesByKey = new Map();
   for (let candidateFrame = frame; candidateFrame >= 0; candidateFrame -= 1) {
-    const svgPath = join(extractedDir, "sprites", `DefineSprite_${spriteId}`, `${candidateFrame + 1}.svg`);
+    const svgPath = join(ctx.extractedDir, "sprites", `DefineSprite_${spriteId}`, `${candidateFrame + 1}.svg`);
     if (!existsSync(svgPath)) continue;
     for (const [key, placement] of collectNamedUses(svgPath)) {
       if (!usesByKey.has(key)) usesByKey.set(key, placement);
@@ -1140,7 +1141,7 @@ function summarizeActionScript(source, frameLabels, sourcePath, scope) {
 
   for (const match of source.matchAll(/(?:_parent\.|_parent\._parent\.|_level0\.)?playVO\("([^"]+)"(?:\s*,\s*([^,)]+))?(?:\s*,\s*"([^"]+)")?/g)) {
     const context = actionContextAt(functionContexts, branchContexts, match.index ?? 0);
-    const resolvedSound = resolveSound(soundLibrary, match[1]);
+    const resolvedSound = resolveSound(ctx.soundLibrary, match[1]);
     actions.push(withActionContext({
       command: "playVO",
       sound: match[1],
@@ -1166,7 +1167,7 @@ function summarizeActionScript(source, frameLabels, sourcePath, scope) {
 
   for (const match of source.matchAll(/\.attachSound\("([^"]+)"\)/g)) {
     const context = actionContextAt(functionContexts, branchContexts, match.index ?? 0);
-    const resolvedSound = resolveSound(soundLibrary, match[1]);
+    const resolvedSound = resolveSound(ctx.soundLibrary, match[1]);
     actions.push(withActionContext({
       command: "attachSound",
       sound: match[1],
@@ -1183,7 +1184,7 @@ function summarizeActionScript(source, frameLabels, sourcePath, scope) {
 }
 
 function discoverSpriteStopFrames() {
-  const scriptsDir = join(extractedDir, "scripts");
+  const scriptsDir = join(ctx.extractedDir, "scripts");
   if (!existsSync(scriptsDir)) return {};
 
   const stops = {};
@@ -1205,7 +1206,7 @@ function discoverSpriteStopFrames() {
 }
 
 function discoverSpriteLocalDefaults() {
-  const scriptsDir = join(extractedDir, "scripts");
+  const scriptsDir = join(ctx.extractedDir, "scripts");
   if (!existsSync(scriptsDir)) return {};
 
   const defaults = {};
@@ -1257,7 +1258,7 @@ function stripBakedDynamicText(assetDefs) {
       .filter((a) => a?.kind === "text" && a?.text)
       .map((a) => a.id),
   );
-  const spritesDir = join(publicDir, "sprites");
+  const spritesDir = join(ctx.publicDir, "sprites");
   if (!ids.size || !existsSync(spritesDir)) return;
   for (const dir of readdirSync(spritesDir)) {
     let entries;
@@ -1299,7 +1300,7 @@ function loadSceneVariables(sceneName) {
 }
 
 function findSceneVariablesPath(sceneName) {
-  const publicRoot = join(root, "public");
+  const publicRoot = join(ctx.root, "public");
   const exact = join(publicRoot, `${sceneName}.txt`);
   if (existsSync(exact)) return exact;
 
@@ -1311,15 +1312,15 @@ function findSceneVariablesPath(sceneName) {
 }
 
 function resolveVariableSource(fileName) {
-  const publicRoot = join(root, "public");
+  const publicRoot = join(ctx.root, "public");
   const lowerName = String(fileName).toLowerCase();
   const exactFile = readdirSync(publicRoot).find((file) => file.toLowerCase() === lowerName);
   if (exactFile) return { publicPath: exactFile };
 
   const locMatch = lowerName.match(/^(.+)_loc\.fla$/);
-  if (locMatch?.[1] === scene.toLowerCase()) {
-    const sceneVariablesPath = findSceneVariablesPath(scene);
-    if (sceneVariablesPath && Object.keys(loadedVariables).length) {
+  if (locMatch?.[1] === ctx.scene.toLowerCase()) {
+    const sceneVariablesPath = findSceneVariablesPath(ctx.scene);
+    if (sceneVariablesPath && Object.keys(ctx.loadedVariables).length) {
       return {
         publicPath: basename(sceneVariablesPath),
         compatibility: "Resolved missing *_loc.fla variable load to the exported scene .txt variable file.",
@@ -1353,40 +1354,40 @@ function findSpriteDir(id) {
 }
 
 function listDir(name) {
-  const dir = join(extractedDir, name);
+  const dir = join(ctx.extractedDir, name);
   return existsSync(dir) ? readdirSync(dir) : [];
 }
 
 function relativeExtractedPath(filePath) {
-  return filePath.slice(extractedDir.length + 1).replaceAll("\\", "/");
+  return filePath.slice(ctx.extractedDir.length + 1).replaceAll("\\", "/");
 }
 
 function copyIfExists(name) {
-  const src = join(extractedDir, name);
+  const src = join(ctx.extractedDir, name);
   if (existsSync(src)) {
-    cpSync(src, join(publicDir, name), { recursive: true });
+    cpSync(src, join(ctx.publicDir, name), { recursive: true });
   }
 }
 
 function preserveGeneratedReports() {
-  if (!existsSync(secondaryDir) && !existsSync(parserReportPath)) return "";
-  const tempDir = mkdtempSync(join(root, ".tmp-secondary-"));
-  if (existsSync(secondaryDir)) renameSync(secondaryDir, join(tempDir, "secondary"));
-  if (existsSync(parserReportPath)) renameSync(parserReportPath, join(tempDir, "swf-parser-report.json"));
+  if (!existsSync(ctx.secondaryDir) && !existsSync(ctx.parserReportPath)) return "";
+  const tempDir = mkdtempSync(join(ctx.root, ".tmp-secondary-"));
+  if (existsSync(ctx.secondaryDir)) renameSync(ctx.secondaryDir, join(tempDir, "secondary"));
+  if (existsSync(ctx.parserReportPath)) renameSync(ctx.parserReportPath, join(tempDir, "swf-parser-report.json"));
   return tempDir;
 }
 
 function restoreGeneratedReports(tempDir) {
   if (!tempDir) return;
   const backupDir = join(tempDir, "secondary");
-  if (existsSync(backupDir)) renameSync(backupDir, secondaryDir);
+  if (existsSync(backupDir)) renameSync(backupDir, ctx.secondaryDir);
   const backupParserReport = join(tempDir, "swf-parser-report.json");
-  if (existsSync(backupParserReport)) renameSync(backupParserReport, parserReportPath);
+  if (existsSync(backupParserReport)) renameSync(backupParserReport, ctx.parserReportPath);
   rmSync(tempDir, { recursive: true, force: true });
 }
 
 function normalizeFrameSvgs(rootFrames, assetDefs) {
-  const framesDir = join(publicDir, "frames");
+  const framesDir = join(ctx.publicDir, "frames");
   if (!existsSync(framesDir)) return;
 
   for (const file of listPublicDir("frames").filter((name) => name.endsWith(".svg"))) {
@@ -1415,7 +1416,7 @@ function normalizeFrameSvgs(rootFrames, assetDefs) {
 }
 
 function normalizeSvgTextLayouts() {
-  const svgFiles = walkFiles(publicDir).filter((path) => path.endsWith(".svg"));
+  const svgFiles = walkFiles(ctx.publicDir).filter((path) => path.endsWith(".svg"));
 
   for (const path of svgFiles) {
     let svg = readFileSync(path, "utf8");
@@ -1440,7 +1441,7 @@ function normalizeSvgTextLayouts() {
 }
 
 function readExtractedText(characterId) {
-  const path = join(publicDir, "texts", `${characterId}.txt`);
+  const path = join(ctx.publicDir, "texts", `${characterId}.txt`);
   return existsSync(path) ? readFileSync(path, "utf8").trimEnd() : "";
 }
 
@@ -1448,7 +1449,7 @@ function replaceStaticVariableText(allTags) {
   const replacements = discoverStaticVariableTextReplacements(allTags);
   if (!Object.keys(replacements).length) return;
 
-  for (const path of walkFiles(publicDir).filter((file) => file.endsWith(".svg"))) {
+  for (const path of walkFiles(ctx.publicDir).filter((file) => file.endsWith(".svg"))) {
     let svg = readFileSync(path, "utf8");
     let changed = false;
 
@@ -1476,7 +1477,7 @@ function discoverStaticVariableTextReplacements(allTags) {
     if (!tag?.characterID || !tag.variableName) continue;
 
     const variableName = normalizeVariableName(tag.variableName);
-    const loadedText = loadedVariables[variableName];
+    const loadedText = ctx.loadedVariables[variableName];
     const initialText = normalizeLoadedText(String(tag.initialText ?? ""));
     if (!loadedText || !initialText.includes("\n")) continue;
     if (comparableText(initialText) !== comparableText(loadedText)) continue;
@@ -1504,19 +1505,19 @@ function replacementForMissingUse(tag, hrefId, characterId, frame, assetDefs) {
   const height = tag.match(/\bheight="([^"]+)"/)?.[1] ?? "0";
 
   if (asset.kind === "shape") {
-    return inlineSvgAsset(scene, join(publicDir, "shapes", `${characterId}.svg`), `${hrefId}_${characterId}`, transformAttribute);
+    return inlineSvgAsset(ctx.scene, join(ctx.publicDir, "shapes", `${characterId}.svg`), `${hrefId}_${characterId}`, transformAttribute);
   }
 
   if (asset.kind === "image") {
-    const href = dataUri(join(publicDir, "images", `${characterId}.png`), "image/png");
+    const href = dataUri(join(ctx.publicDir, "images", `${characterId}.png`), "image/png");
     return href ? `<image ffdec:characterId="${characterId}" width="${width}" height="${height}"${transformAttribute} href="${href}" xlink:href="${href}" preserveAspectRatio="none"/>` : "";
   }
 
   if (asset.kind === "sprite" && asset.frames?.length) {
     const src = spriteFrameForRootFrame(characterId, frame, asset);
-    const relative = src.split(`generated/${scene}/`).pop();
+    const relative = src.split(`generated/${ctx.scene}/`).pop();
     return relative
-      ? inlineSvgAsset(scene, join(publicDir, relative), `${hrefId}_${characterId}`, transformAttribute, characterId, registrationShift(asset))
+      ? inlineSvgAsset(ctx.scene, join(ctx.publicDir, relative), `${hrefId}_${characterId}`, transformAttribute, characterId, registrationShift(asset))
       : "";
   }
 
@@ -1534,23 +1535,23 @@ function spriteFrameForRootFrame(characterId, frame, asset) {
 }
 
 function firstReachedStopFrame(characterId, relativeFrame) {
-  const stops = spriteStopFrames[String(characterId)] ?? [];
+  const stops = ctx.spriteStopFrames[String(characterId)] ?? [];
   return stops.find((stopFrame) => stopFrame <= relativeFrame);
 }
 
 function firstNonEmptySpriteFrame(frames) {
   return (
     frames.find((src) => {
-      const relative = src.split(`generated/${scene}/`).pop();
+      const relative = src.split(`generated/${ctx.scene}/`).pop();
       if (!relative) return false;
-      const svg = readFileSync(join(publicDir, relative), "utf8");
+      const svg = readFileSync(join(ctx.publicDir, relative), "utf8");
       return /<(path|use|text|image|polygon|polyline|ellipse|circle|rect)\b/.test(svg);
     }) ?? frames[0]
   );
 }
 
 function listPublicDir(name) {
-  const dir = join(publicDir, name);
+  const dir = join(ctx.publicDir, name);
   return existsSync(dir) ? readdirSync(dir) : [];
 }
 
