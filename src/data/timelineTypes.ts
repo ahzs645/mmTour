@@ -135,6 +135,9 @@ export type ControlAction = {
    *  section click mirrors the SWF's `doRelease` (unload + load), so re-clicking replays it. */
   reload?: boolean;
   functionCalls?: FunctionCall[];
+  /** Simple `flag = value;` assignments in a button handler (e.g. a section icon's `isActive = 1;`),
+   *  applied to the owning clip's scope when the event fires. */
+  assignments?: { target: string; value?: unknown; rawValue?: string }[];
   /** Name of the AVM1 function this action belongs to (when context is "function"). */
   functionName?: string;
   /** "timeline" actions run on frame entry; "function"/"branch" are conditional. */

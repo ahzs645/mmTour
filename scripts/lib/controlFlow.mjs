@@ -66,6 +66,7 @@ export function discoverControlFlow(allTags, frameLabels, groupedEvents) {
               exitNavigation: event.release.exitNavigation,
               rootFunctionNavigation: event.release.rootFunctionNavigation,
               functionCalls: event.release.functionCalls,
+              assignments: event.release.assignments,
               nestedSection: ctx.nestedSectionTargets[event.release.target],
               source: event.release.source,
             }),
@@ -77,6 +78,7 @@ export function discoverControlFlow(allTags, frameLabels, groupedEvents) {
                   frameExpression: event.rollOver.frameExpression,
                   swf: event.rollOver.swf,
                   functionCalls: event.rollOver.functionCalls,
+                  assignments: event.rollOver.assignments,
                   source: event.rollOver.source,
                 })
               : undefined,
@@ -88,6 +90,7 @@ export function discoverControlFlow(allTags, frameLabels, groupedEvents) {
                   frameExpression: event.rollOut.frameExpression,
                   swf: event.rollOut.swf,
                   functionCalls: event.rollOut.functionCalls,
+                  assignments: event.rollOut.assignments,
                   source: event.rollOut.source,
                 })
               : undefined,

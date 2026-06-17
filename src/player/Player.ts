@@ -215,6 +215,17 @@ export class Player {
     if (!action) return;
     const owner = this.clipByPath.get(ownerPath) ?? this.root;
 
+    // Apply the handler's simple LOCAL state assignments first (a section icon's `isActive = 1;`
+    // and `_parent.holdState = 1;`). These drive the select/deselect state the calls below depend
+    // on — e.g. unSelect()'s return animation only fires while the clip's own `isActive` is set.
+    // Cross-level orchestration flags (`_level6.nav.targSection`, `_level0.bkgd.*`) are left to the
+    // build's navigation inference, so skip them here to avoid disturbing the nav hand-off.
+    for (const assign of action.assignments ?? []) {
+      if (/^_level\d+\b/i.test(assign.target)) continue;
+      const value = this.resolveExpr(assign.rawValue ?? String(assign.value ?? ""));
+      if (assign.target && value !== undefined) this.scopeSet(owner, assign.target, value);
+    }
+
     // A section button's on(release) is extracted as BOTH a top-level timeline command
     // (`gotoAndPlay <label>`) AND the SAME call inside functionCalls (`_parent.gotoAndPlay(<label>)`).
     // Running both double-navigates: the functionCall enters the destination frame (its `stop()`

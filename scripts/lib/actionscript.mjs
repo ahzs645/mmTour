@@ -21,6 +21,12 @@ export function parseActionScript(source, frameLabels, sourcePath) {
   const swf = doRelease?.[1] ?? loadMovie?.[1];
   const exitNavigation = inferExitNavigation(source, frameLabels);
   const functionCalls = discoverFunctionCalls(source);
+  // Simple `flag = value;` assignments in the handler (e.g. a section icon's `isActive = 1;`
+  // and `_parent.holdState = 1;`). FFDec's button handlers carry these alongside the calls;
+  // they drive the select/deselect state the runtime needs (without `isActive` the icon's
+  // unSelect() never fires its return animation and the icons stack at the replay slot).
+  const assignments = discoverFunctionAssignments(source);
+  const extraAssignments = assignments.length ? { assignments } : {};
 
   if (exitNavigation) {
     return {
@@ -32,6 +38,7 @@ export function parseActionScript(source, frameLabels, sourcePath) {
       ...(exitNavigation.level ? { level: exitNavigation.level } : {}),
       exitNavigation,
       ...(functionCalls.length ? { functionCalls } : {}),
+      ...extraAssignments,
       source: sourcePath,
       supported: true,
     };
@@ -48,6 +55,7 @@ export function parseActionScript(source, frameLabels, sourcePath) {
       ...(frame >= 0 ? { frame } : {}),
       swf,
       ...(functionCalls.length ? { functionCalls } : {}),
+      ...extraAssignments,
       source: sourcePath,
       supported: frame >= 0 || Boolean(swf),
       ...(frame >= 0 || swf ? {} : { reason: "Root goto target could not be resolved from exported frame labels." }),
@@ -65,6 +73,7 @@ export function parseActionScript(source, frameLabels, sourcePath) {
       ...(frame >= 0 ? { frame } : {}),
       swf,
       ...(functionCalls.length ? { functionCalls } : {}),
+      ...extraAssignments,
       source: sourcePath,
       supported: Boolean(swf),
       ...(swf ? {} : { reason: "Clip-local goto actions are extracted but not compiled into the frame-SVG runtime yet." }),
@@ -84,6 +93,7 @@ export function parseActionScript(source, frameLabels, sourcePath) {
       ...(parentMapsToRoot ? { frame } : {}),
       swf,
       ...(functionCalls.length ? { functionCalls } : {}),
+      ...extraAssignments,
       source: sourcePath,
       supported: parentMapsToRoot || Boolean(swf),
       ...(parentMapsToRoot || swf ? {} : { reason: "Nested MovieClip actions are extracted but not compiled into the frame-SVG runtime yet." }),
@@ -114,6 +124,7 @@ export function parseActionScript(source, frameLabels, sourcePath) {
       command: "callFunctions",
       functionCalls,
       swf,
+      ...extraAssignments,
       source: sourcePath,
       supported: true,
     };
