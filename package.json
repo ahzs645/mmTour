@@ -15,6 +15,7 @@
     "verify:text": "node scripts/verify-text-fonts.mjs",
     "verify:hover": "node scripts/verify-hover-effects.mjs",
     "verify:runtime": "node scripts/verify-ruffle-runtime.mjs",
+    "verify:player": "node scripts/compare-player-ruffle.mjs",
     "capture:render-modes": "node scripts/capture-render-mode-frames.mjs",
     "capture:direct": "node scripts/capture-direct-renderer-frames.mjs",
     "build": "tsc --noEmit && vite build",

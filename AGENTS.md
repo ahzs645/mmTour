@@ -64,7 +64,10 @@ scripts/                      build + verification (Node, .mjs)
     asParse.mjs                 ActionScript source parsers (brace/paren/statement scan)
     svgText.mjs                 SVG asset/text post-processing (reflow, inline embed)
     avm1Disasm.mjs / cfgNodes.mjs  AVM1 bytecode disasm; control-flow-graph node helpers
+    visualDiff.mjs              screenshot MAD diff + blankness (shared by the verifiers)
+    devServer.mjs / playerProbe.mjs  Vite-server boot; Playwright page helpers for the player
   verify-*.mjs                Playwright/headless checks
+  compare-player-ruffle.mjs   Decompiled Player vs Ruffle, per scene (see docs/)
 src/
   player/                     the Decompiled Player runtime (see below)
   app/                        the comparison-mode app (main.ts is a thin entry that
@@ -174,7 +177,9 @@ export PATH="/opt/homebrew/opt/openjdk/bin:$PATH"
   reload; no rebuild needed unless you changed a build script or the JSON.)
 - **Typecheck:** `npx tsc --noEmit`. **Full build:** `npm run build`.
 - **Verify:** `npm run verify:hover` / `verify:runtime` / `verify:text` / `verify:artifacts`,
-  plus ad‑hoc Playwright scripts.
+  plus ad‑hoc Playwright scripts. **`npm run verify:player`** diffs the Decompiled Player
+  against Ruffle per scene under natural playback — see `docs/player-ruffle-comparison.md`
+  (and its caveats: seeking ≠ playback, so compare while playing, never by scrubbing).
 
 ## Verifying player behaviour (the practical loop)
 

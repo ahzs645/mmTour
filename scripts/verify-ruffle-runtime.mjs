@@ -1,8 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { chromium } from "playwright";
-import { PNG } from "pngjs";
+import { compareScreenshotFiles } from "./lib/visualDiff.mjs";
 
 const root = resolve(new URL("..", import.meta.url).pathname);
 const outDir = join(root, "verification/ruffle-runtime");
@@ -569,39 +569,7 @@ async function screenshotStage(page, selector, fileName) {
 }
 
 function compareScreenshots(leftName, rightName) {
-  const leftPath = join(outDir, leftName);
-  const rightPath = join(outDir, rightName);
-  if (!existsSync(leftPath) || !existsSync(rightPath)) return { status: "skipped", reason: "missing screenshot" };
-
-  const left = PNG.sync.read(readFileSync(leftPath));
-  const right = PNG.sync.read(readFileSync(rightPath));
-  const width = Math.min(left.width, right.width);
-  const height = Math.min(left.height, right.height);
-  if (width <= 0 || height <= 0) return { status: "skipped", reason: "empty image" };
-  const leftBlank = imageBlankness(left, width, height);
-  const rightBlank = imageBlankness(right, width, height);
-  if (leftBlank.isBlank) return { status: "skipped", reason: "blank Ruffle reference", ruffleBlankness: leftBlank, generatedBlankness: rightBlank };
-  if (rightBlank.isBlank) return { status: "skipped", reason: "blank generated output", ruffleBlankness: leftBlank, generatedBlankness: rightBlank };
-
-  let total = 0;
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const li = (y * left.width + x) * 4;
-      const ri = (y * right.width + x) * 4;
-      total += Math.abs(left.data[li] - right.data[ri]);
-      total += Math.abs(left.data[li + 1] - right.data[ri + 1]);
-      total += Math.abs(left.data[li + 2] - right.data[ri + 2]);
-    }
-  }
-
-  return {
-    status: "ok",
-    comparedWidth: width,
-    comparedHeight: height,
-    ruffleBlankness: leftBlank,
-    generatedBlankness: rightBlank,
-    meanAbsoluteDifference: total / (width * height * 3),
-  };
+  return compareScreenshotFiles(join(outDir, leftName), join(outDir, rightName));
 }
 
 function summarizeVisualCoverage(comparisons) {
@@ -618,37 +586,6 @@ function summarizeVisualCoverage(comparisons) {
       .map((comparison) => comparison.meanAbsoluteDifference),
   );
   return { total, comparable, compared, skipped, expectedSkipped, unexpectedSkipped, maxMeanAbsoluteDifference };
-}
-
-function imageBlankness(image, width, height) {
-  let maxDistance = 0;
-  let nonTransparentPixels = 0;
-  const sums = [0, 0, 0];
-  const squaredSums = [0, 0, 0];
-
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const i = (y * image.width + x) * 4;
-      if ((image.data[i + 3] ?? 255) < 8) continue;
-      nonTransparentPixels += 1;
-      for (let channel = 0; channel < 3; channel += 1) {
-        const value = image.data[i + channel] ?? 0;
-        sums[channel] += value;
-        squaredSums[channel] += value * value;
-      }
-    }
-  }
-
-  if (!nonTransparentPixels) return { isBlank: true, averageStandardDeviation: 0, maxDistance, nonTransparentPixels };
-
-  const means = sums.map((sum) => sum / nonTransparentPixels);
-  const standardDeviations = squaredSums.map((sum, channel) =>
-    Math.sqrt(Math.max(0, sum / nonTransparentPixels - means[channel] * means[channel])),
-  );
-  const averageStandardDeviation = standardDeviations.reduce((total, value) => total + value, 0) / standardDeviations.length;
-  maxDistance = Math.max(...standardDeviations);
-
-  return { isBlank: averageStandardDeviation < 3, averageStandardDeviation, maxDistance, nonTransparentPixels };
 }
 
 async function startServer(serverPort) {
