@@ -5,14 +5,17 @@
  * `functionBranchCondition`s instead of hard-coding scene behaviour — so an
  * unrelated SWF with different defaults is interpreted from its own data.
  *
- * Names are normalised by stripping a leading `_levelN.` (or `_root.`) so that
- * `_level0.bkgd.OSVersion`, `_root.bkgd.OSVersion` and `bkgd.OSVersion` are the
- * same slot. Tour globals live on `_level0`, which every level references, so a
- * single shared store mirrors the runtime's shared global scope.
+ * Names are normalised by stripping a leading `_levelN.`, `_root.` or `_parent.`
+ * so that `_level0.bkgd.OSVersion`, `_root.bkgd.OSVersion` and `bkgd.OSVersion`
+ * are the same slot. Tour globals live on `_level0`, which every level references,
+ * so a single shared store mirrors the runtime's shared global scope. `_parent.` is
+ * stripped too: the store is flat (no per-clip nesting), so a clip reading
+ * `_parent.t_musicOn` resolves the same root-level variable (clip targeting, which
+ * IS relative, goes through resolveTarget — not the store).
  */
 export type VarValue = string | number | boolean;
 
-const LEVEL_PREFIX = /^_(?:level\d+|root)\./;
+const LEVEL_PREFIX = /^_(?:level\d+|root|parent)\./;
 
 export function normalizeVarName(name: string): string {
   let out = name.trim();

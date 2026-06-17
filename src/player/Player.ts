@@ -13,6 +13,7 @@ import { evalCondition } from "./conditions";
 import { IDENTITY, multiplyMatrix } from "./matrix";
 import { Ticker } from "./Ticker";
 import { clamp, type RenderNode } from "./types";
+import { normalizeVarName } from "./VariableStore";
 import type { VariableStore, VarValue } from "./VariableStore";
 
 export type ButtonEvent = "rollOver" | "rollOut" | "press" | "release";
@@ -91,6 +92,10 @@ export class Player {
   /** Text-field variables loaded via loadVariables() (key → value), keyed by the
    *  field's normalized variableName (e.g. `skipIntro`, `h_Segment4`). */
   private readonly textVars = new Map<string, string>();
+  /** Normalized variable names that back a dynamic text field, so a frame-script
+   *  assignment to one (e.g. the music control's `t_music = _parent.t_musicOn`) is
+   *  mirrored into textVars and the bound field re-renders with the new value. */
+  private readonly boundTextVars = new Set<string>();
   /** A playVO fired and the next 1-frame hold-loop should wait for it (sndDonePlaying). */
   private voWaiting = false;
 
@@ -103,6 +108,17 @@ export class Player {
     this.renderer = renderer;
     this.options = options;
     this.assets = timeline.assets ?? {};
+    // Collect every dynamic-text field's bound variable name (from the asset's own
+    // text binding and any dynamicTexts override) so frame-script assignments to one
+    // refresh the displayed field — see the setVariable handler in runScript.
+    for (const asset of Object.values(this.assets)) {
+      const vn = (asset as TimelineAsset | undefined)?.text?.normalizedVariableName;
+      if (vn) this.boundTextVars.add(normalizeVarName(vn));
+    }
+    for (const dyn of Object.values(timeline.control?.dynamicTexts ?? {})) {
+      const vn = (dyn as { normalizedVariableName?: string } | undefined)?.normalizedVariableName;
+      if (vn) this.boundTextVars.add(normalizeVarName(vn));
+    }
     this.rootFrames = timeline.frames ?? [];
     this.rootStop = new Set(timeline.control?.stopFrames ?? []);
     this.startFrame = clamp(options.startFrame ?? timeline.entryFrame ?? 0, 0, Math.max(0, this.rootFrames.length - 1));
@@ -374,8 +390,9 @@ export class Player {
     if (e === "false") return false;
     if (/^-?\d+(\.\d+)?$/.test(e)) return Number(e);
     if (locals && e in locals) return locals[e];
-    // A bare identifier/path is a variable read (e.g. a flag); fall back to the literal.
-    if (/^[A-Za-z_$][\w$.]*$/.test(e)) return this.store?.get(e) ?? undefined;
+    // A bare identifier/path is a variable read (e.g. a flag), then a loadVariables()
+    // text var (the music control's `_parent.t_musicOn`, which lives in textVars not the store).
+    if (/^[A-Za-z_$][\w$.]*$/.test(e)) return this.store?.get(e) ?? this.textVars.get(normalizeVarName(e)) ?? undefined;
     return e; // array literals etc. — kept as their source text
   }
 
@@ -789,7 +806,14 @@ export class Player {
           // timeline var (a toolbar button's `btnDown`/`labelHidden`) stays local to it, while
           // a dotted flag (`nav.bln_CoreNavLoaded = 1`) the orchestration polls goes to the store.
           const value = this.resolveExpr(action.rawValue ?? String(action.value ?? ""));
-          if (this.store && action.target && value !== undefined) this.scopeSet(clip, action.target, value);
+          if (this.store && action.target && value !== undefined) {
+            this.scopeSet(clip, action.target, value);
+            // If the assigned variable backs a dynamic text field, mirror it into the display
+            // cache the field reads (the music control's `t_music` status label flips to its
+            // toggled value; loadVariables-bound fields otherwise only show their loaded text).
+            const norm = normalizeVarName(action.target);
+            if (this.boundTextVars.has(norm)) this.textVars.set(norm, String(value));
+          }
           break;
         }
         default:
