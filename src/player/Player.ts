@@ -572,8 +572,18 @@ export class Player {
     // Guards resolve against the CLIP's scope — a toolbar button's hideMe/showMe gate on its own
     // local `btnDown`/`labelHidden`, so hovering one button only hides the others' labels.
     const scope = this.scopeFor(clip);
+    // An `else` arm fires only if NO real-condition arm in this function matched. The action list
+    // is merged from the sprite's defined-function body AND its frame-tagged actions, so an
+    // if/else pair can appear as a literal-`else` action alongside its `if`; evaluated in
+    // isolation a bare `else` reads as true and would fire unconditionally — e.g. the music
+    // control's over() runs `gotoAndPlay(28)` (slash, music-off) then its `else gotoAndPlay(5)`
+    // (no slash) overrides it, so the mute icon never sticks. Decide `else` group-wise instead.
+    const isElse = (c: string | undefined) => c === "else";
+    const anyReal = def.actions.some((a) => a.functionBranchCondition && !isElse(a.functionBranchCondition) && evalCondition(a.functionBranchCondition, scope));
     for (const action of def.actions) {
-      if (this.store && !evalCondition(action.functionBranchCondition, scope)) continue;
+      const cond = action.functionBranchCondition;
+      const pass = isElse(cond) ? !anyReal : !cond || evalCondition(cond, scope);
+      if (this.store && !pass) continue;
       this.runClipAction(clip, action);
     }
     this.render();
