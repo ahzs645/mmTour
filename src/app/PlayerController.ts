@@ -235,19 +235,23 @@ export class PlayerController {
   private handleNavigate(action: ControlAction) {
     if ((action.command !== "loadMovieNum" && action.command !== "loadMovie") || !action.swf) return;
     const level = Number(action.level ?? 0);
-    // First load per level within a synchronous burst wins (a transition that
-    // loads several movies into one level — segment4 then segment5 — should show
-    // the first; the rest are later, interaction-driven swaps).
-    if (this.loadBurst.has(level)) return;
-    if (this.loadBurst.size === 0) queueMicrotask(() => this.loadBurst.clear());
-    this.loadBurst.add(level);
-    void this.loadLevel(level, action.swf);
+    // A nav section click forces a fresh (re)load (the SWF's doRelease unloads+reloads), so it
+    // bypasses the burst/already-loaded guards that exist only for the initial multi-load.
+    if (!action.reload) {
+      // First load per level within a synchronous burst wins (a transition that
+      // loads several movies into one level — segment4 then segment5 — should show
+      // the first; the rest are later, interaction-driven swaps).
+      if (this.loadBurst.has(level)) return;
+      if (this.loadBurst.size === 0) queueMicrotask(() => this.loadBurst.clear());
+      this.loadBurst.add(level);
+    }
+    void this.loadLevel(level, action.swf, Boolean(action.reload));
   }
 
-  private async loadLevel(level: number, swf: string) {
+  private async loadLevel(level: number, swf: string, reload = false) {
     if (level <= 0) return; // _level0 is the selected scene; don't replace it
     const existing = this.levels.get(level);
-    if (existing && existing.swf.toLowerCase() === swf.toLowerCase()) return; // already loaded
+    if (!reload && existing && existing.swf.toLowerCase() === swf.toLowerCase()) return; // already loaded
     if (swf.toLowerCase() === this.mainSwf.toLowerCase()) return; // avoid loading self into a level
 
     const timeline = await loadTimeline(swf);

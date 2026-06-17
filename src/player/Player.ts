@@ -201,6 +201,12 @@ export class Player {
     // runs through the same dispatcher as frame scripts (cross-level calls, clip commands, waiters).
     if (action.functionCalls?.length) this.runCallFunctions(action, owner);
     if (action.command === "loadMovieNum" || action.command === "loadMovie") this.options.onNavigate?.(action);
+    // A nav section button is an exit-navigation: it plays the nav's exit animation (the gotoAndPlay
+    // below) AND loads the chosen segment into the content level. The SWF load is otherwise lost
+    // because the command is gotoAndPlay (the exit), not loadMovie — so dispatch it explicitly.
+    if (action.swf && action.command !== "loadMovieNum" && action.command !== "loadMovie") {
+      this.options.onNavigate?.({ command: "loadMovie", swf: action.swf, level: action.level, reload: true });
+    }
     if (action.command === "gotoAndPlay" || action.command === "gotoAndStop") {
       const target = this.resolveTarget(owner, action.target);
       const frame = this.resolveFrame(action, target);
@@ -241,6 +247,26 @@ export class Player {
         entry.actions.push(action);
         this.functions.set(action.functionName, entry);
       }
+    }
+    // Sprite-scoped functions whose body is just inner gotos (a control's over()/out() label
+    // reveal: `if(!musicOn) gotoAndPlay(28); else gotoAndPlay(5)`). The build flattens the branch,
+    // so run the calls in order (the matching arm's goto lands last and wins).
+    for (const def of Object.values(control?.definedFunctions ?? {}) as DefinedFunction[]) {
+      if (def.scope !== "sprite" || typeof def.spriteId !== "number" || !def.functionName || !def.calls?.length) continue;
+      let fns = this.spriteFunctions.get(def.spriteId);
+      if (!fns) this.spriteFunctions.set(def.spriteId, (fns = new Map()));
+      const entry = fns.get(def.functionName) ?? newDef();
+      for (const call of def.calls) {
+        if (!call.functionName?.startsWith("gotoAnd") || (call.target && call.target !== "self" && call.target !== "this")) continue;
+        const arg = (call.arguments ?? "").trim();
+        const num = Number(arg);
+        entry.actions.push({
+          command: call.functionName as ControlAction["command"],
+          target: "self",
+          ...(Number.isFinite(num) && arg !== "" ? { frame: num - 1 } : { label: arg.replace(/^["']|["']$/g, "") }),
+        });
+      }
+      fns.set(def.functionName, entry);
     }
     // Sprite-scoped functions (doFade etc.) from each sprite's tagged actions, so a
     // `tellTarget("clip"){ doFade() }` can run the clip's own function.
@@ -470,7 +496,13 @@ export class Player {
         if (/^_level\d+/i.test(target)) this.options.onClipCommand?.(target, fn, frame);
         else this.runNamedClipCommand(clip, target, fn, frame);
       } else if (target === "self" || target === "this" || target === "_root") {
-        this.callFunction(fn, call.arguments);
+        // Prefer a sprite-scoped function on the owning clip (a control's over()/out() label
+        // reveal lives on its own sprite); fall back to a root/global function.
+        if (target !== "_root" && this.spriteFunctions.get(clip.characterId)?.has(fn)) {
+          this.callClipFunction(clip, fn);
+        } else {
+          this.callFunction(fn, call.arguments);
+        }
       } else if (/^_level\d+/i.test(target)) {
         // Absolute level targets (`_level6`, `_level0.x`) are routed to the
         // controller, which maps the level back to its Player.

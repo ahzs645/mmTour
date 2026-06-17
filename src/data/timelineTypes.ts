@@ -118,6 +118,8 @@ export type DefinedFunction = {
   spriteId?: number;
   assignments?: { target: string; value?: unknown; rawValue?: string }[];
   body?: BodyStatement[];
+  /** Inner clip/function calls (e.g. a sprite's over()/out() → self gotoAndPlay frames). */
+  calls?: FunctionCall[];
   source?: string;
 };
 
@@ -129,6 +131,9 @@ export type ControlAction = {
   label?: string;
   swf?: string;
   level?: number;
+  /** Force a fresh (re)load of the target level even if that SWF is already loaded — a nav
+   *  section click mirrors the SWF's `doRelease` (unload + load), so re-clicking replays it. */
+  reload?: boolean;
   functionCalls?: FunctionCall[];
   /** Name of the AVM1 function this action belongs to (when context is "function"). */
   functionName?: string;

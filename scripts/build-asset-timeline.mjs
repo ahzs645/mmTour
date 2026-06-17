@@ -474,6 +474,10 @@ function discoverControlFlow(allTags, frameLabels, groupedEvents) {
           || event.release?.functionCalls?.length
           || event.rollOver?.functionCalls?.length
           || event.rollOut?.functionCalls?.length
+          // A control whose only hover behaviour is a self goto that reveals its label
+          // (the kiosk Exit/Replay buttons: on(rollOver) gotoAndPlay(2)) still counts.
+          || event.rollOver?.command
+          || event.rollOut?.command
           || nestedSectionTargets[event.release?.target])
         .map(([characterId, event]) => [
           characterId,
@@ -486,6 +490,7 @@ function discoverControlFlow(allTags, frameLabels, groupedEvents) {
               frame: event.release.frame,
               frameExpression: event.release.frameExpression,
               swf: event.release.swf,
+              level: event.release.level,
               exitNavigation: event.release.exitNavigation,
               rootFunctionNavigation: event.release.rootFunctionNavigation,
               functionCalls: event.release.functionCalls,
@@ -820,6 +825,7 @@ function parseActionScript(source, frameLabels, sourcePath) {
       label: exitNavigation.exitLabel,
       frame: exitNavigation.exitFrame,
       swf: exitNavigation.swf,
+      ...(exitNavigation.level ? { level: exitNavigation.level } : {}),
       exitNavigation,
       ...(functionCalls.length ? { functionCalls } : {}),
       source: sourcePath,
@@ -934,6 +940,16 @@ function discoverFunctionCalls(source) {
       functionName,
       arguments: match[3].trim(),
     });
+  }
+  // Bare self-calls (no target) — a control's `over()`/`out()` label-reveal functions, run on
+  // the button's own clip. Skip AS built-ins and the gotos/loads handled as the action command.
+  const BUILTINS = new Set(["trace", "stop", "play", "gotoAndPlay", "gotoAndStop", "nextFrame", "prevFrame",
+    "fscommand", "getURL", "stopAllSounds", "loadMovie", "loadMovieNum", "loadVariables", "unloadMovie",
+    "unloadMovieNum", "attachSound", "doRelease", "if", "while", "for", "function", "return", "Number", "String"]);
+  for (const match of source.matchAll(/(?:^|[;{}\n])\s*([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*;/g)) {
+    const functionName = match[1];
+    if (BUILTINS.has(functionName)) continue;
+    calls.push({ target: "self", functionName, arguments: match[2].trim() });
   }
   return calls;
 }
@@ -1115,7 +1131,25 @@ function inferExitNavigation(source, frameLabels) {
     swf: target.swf,
     exitLabel,
     exitFrame,
+    level: discoverMovieTargetLevel(),
   };
+}
+
+/** The level a nav section button loads its segment into — `loadMovieNum(strTarget, intMovieTargLevel)`
+ *  in the nav's doRelease(); intMovieTargLevel is a nav-wide constant (4). Resolve it from source so
+ *  the runtime loads the clicked segment into the content level instead of guessing. */
+var movieTargetLevelCache; // var: hoisted so the top-level button-event pass (line ~45) can call this before this line
+function discoverMovieTargetLevel() {
+  if (movieTargetLevelCache !== undefined) return movieTargetLevelCache;
+  const scriptsDir = join(extractedDir, "scripts");
+  movieTargetLevelCache = 0;
+  if (existsSync(scriptsDir)) {
+    for (const file of walkFiles(scriptsDir).filter((path) => path.endsWith(".as"))) {
+      const m = readFileSync(file, "utf8").match(/intMovieTargLevel\s*=\s*(\d+)/);
+      if (m) { movieTargetLevelCache = Number(m[1]); break; }
+    }
+  }
+  return movieTargetLevelCache;
 }
 
 function chooseExitNavigationTarget(targets, frameLabels) {
