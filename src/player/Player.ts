@@ -1036,14 +1036,14 @@ export class Player {
         out.push(buttonNode(key, order.n++, asset, matrix, instance, path, false));
         this.collectButtonText(asset, matrix, key, order, out, instance);
       } else if (asset.kind === "text") {
-        // editText is stripped from the baked sprite frame (FFDec bakes it mispositioned), so
-        // re-draw it here at its own bounds. Show it whenever it resolves to non-empty text: the
-        // loaded loadVariables() value, or — until that arrives — the field's own baked initial
-        // text (resolveTextField falls back to it). A bound section title ("Multiple Users: A
-        // Cinch to Switch") thus appears immediately like Ruffle instead of staying blank while
-        // the scene's variables load (or never showing if a higher-level load lags).
+        // editText is stripped from the baked sprite frame (FFDec bakes it mispositioned),
+        // so re-draw it here at its own bounds: a loadVariables()-bound field once its value
+        // loads, or a static field (e.g. the "Best for Business" nav title) from its own text.
         const field = this.resolveTextField(asset.id, asset);
-        if (field?.text && String(field.text).trim()) {
+        const show = field?.normalizedVariableName
+          ? this.textVars.has(field.normalizedVariableName)
+          : Boolean(field?.text && String(field.text).trim());
+        if (show) {
           out.push(this.leafNode(key, order.n++, asset, asset.src ?? "", matrix, instance.opacity, instance));
         }
       } else if (asset.kind === "sprite") {
@@ -1075,11 +1075,8 @@ export class Player {
       const fieldAsset = this.getAsset(field.id);
       if (!fieldAsset) continue;
       const resolved = this.resolveTextField(field.id, fieldAsset);
-      // Overlay the field's current value: the loaded loadVariables() value, or — until it
-      // arrives — its baked initial text (resolveTextField falls back to it). The button's baked
-      // art has this text stripped, so the label shows immediately like the SWF instead of
-      // staying blank while the scene's variables load.
-      if (!resolved?.text || !String(resolved.text).trim()) continue;
+      // Only overlay once a loadVariables() value exists (else the baked frame is authoritative).
+      if (!resolved?.normalizedVariableName || !this.textVars.has(resolved.normalizedVariableName)) continue;
       const matrix = multiplyMatrix(buttonMatrix, field.matrix);
       out.push(this.leafNode(`${key}/txt:${field.id}`, order.n++, fieldAsset, fieldAsset.src ?? "", matrix, instance.opacity, instance));
     }
