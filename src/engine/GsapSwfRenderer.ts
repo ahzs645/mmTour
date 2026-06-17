@@ -15,6 +15,10 @@ import type {
   DisplayEntry, GsapSwfRendererOptions, SpritePlaybackState, TimelineState,
   DisplayBinding, Avm1Object, MovieTimelineState, Avm1FunctionDef, Avm1Primitive, Avm1Value,
 } from "./GsapSwfRenderer.types";
+import {
+  clampFrame, decodeBytes, getAvm1Property, isAvm1Function, isDisplayTarget, isMovieTimelineState,
+  resolveAvm1Variable, setAvm1Variable, toAvm1Boolean, toAvm1Number, toAvm1String,
+} from "./avm1Values";
 
 
 const loadedFontFaces = new Map<string, Promise<void>>();
@@ -477,7 +481,7 @@ export class GsapSwfRenderer {
         return value;
       }
 
-      if (this.isDisplayTarget(value) || this.isAvm1Function(value)) {
+      if (isDisplayTarget(value) || isAvm1Function(value)) {
         return value;
       }
 
@@ -522,7 +526,7 @@ export class GsapSwfRenderer {
       const next = this.cloneMovieTimelineState(previous);
 
       if (tick > 0 && next.isPlaying) {
-        next.currentFrame = this.clampFrame(next.currentFrame + 1, this.movie.frameCount);
+        next.currentFrame = clampFrame(next.currentFrame + 1, this.movie.frameCount);
       }
 
       this.landOnMovieFrame(next, tick);
@@ -540,7 +544,7 @@ export class GsapSwfRenderer {
         state.currentFrame,
         state.isPlaying ? 1 : 0,
         state.timeMarkTick ?? -1,
-        this.toAvm1String(this.getAvm1Member(state.globals.get('nav'), 'targSection')),
+        toAvm1String(this.getAvm1Member(state.globals.get('nav'), 'targSection')),
       ].join(':');
       if (seen.has(marker)) {
         break;
@@ -941,7 +945,7 @@ export class GsapSwfRenderer {
 
     const syncedFrame = Math.max(0, currentRawFrame - Math.floor(ratio));
     return {
-      startFrame: this.clampFrame(syncedFrame, char.frameCount),
+      startFrame: clampFrame(syncedFrame, char.frameCount),
       startedAtTick: currentTick,
       isPlaying: true,
     };
@@ -954,7 +958,7 @@ export class GsapSwfRenderer {
     initialPlaying = true,
   ): TimelineState {
     const safeTick = Math.max(0, Math.floor(elapsedTicks));
-    const safeInitialFrame = this.clampFrame(initialFrame, char.frameCount);
+    const safeInitialFrame = clampFrame(initialFrame, char.frameCount);
     const cacheKey = `${char.id}:${safeInitialFrame}:${initialPlaying ? 1 : 0}`;
     let states = this.spriteTimelineStateCache.get(cacheKey);
 
@@ -970,7 +974,7 @@ export class GsapSwfRenderer {
         continue;
       }
 
-      const nextFrame = this.clampFrame(previous.currentFrame + 1, char.frameCount, true);
+      const nextFrame = clampFrame(previous.currentFrame + 1, char.frameCount, true);
       states.push(this.landOnSpriteFrame(char, nextFrame, previous.isPlaying));
     }
 
@@ -979,7 +983,7 @@ export class GsapSwfRenderer {
 
   private landOnSpriteFrame(char: SwfSpriteChar, frameIndex: number, isPlaying: boolean): TimelineState {
     const state: TimelineState = {
-      currentFrame: this.clampFrame(frameIndex, char.frameCount),
+      currentFrame: clampFrame(frameIndex, char.frameCount),
       isPlaying,
     };
     const seen = new Set<string>();
@@ -1069,14 +1073,14 @@ export class GsapSwfRenderer {
           break;
 
         case 0x0B: {
-          const a = this.toAvm1Number(stack.pop());
-          const b = this.toAvm1Number(stack.pop());
+          const a = toAvm1Number(stack.pop());
+          const b = toAvm1Number(stack.pop());
           stack.push(b - a);
           break;
         }
 
         case 0x12:
-          stack.push(!this.toAvm1Boolean(stack.pop()));
+          stack.push(!toAvm1Boolean(stack.pop()));
           break;
 
         case 0x17:
@@ -1084,29 +1088,29 @@ export class GsapSwfRenderer {
           break;
 
         case 0x1C: {
-          const name = this.toAvm1String(stack.pop());
-          stack.push(this.resolveAvm1Variable(name, options.displayList, options.globals));
+          const name = toAvm1String(stack.pop());
+          stack.push(resolveAvm1Variable(name, options.displayList, options.globals));
           break;
         }
 
         case 0x1D: {
           const value = stack.pop();
-          const name = this.toAvm1String(stack.pop());
-          this.setAvm1Variable(name, value, options.globals);
+          const name = toAvm1String(stack.pop());
+          setAvm1Variable(name, value, options.globals);
           break;
         }
 
         case 0x22: {
-          const propertyIndex = this.toAvm1Number(stack.pop());
+          const propertyIndex = toAvm1Number(stack.pop());
           const target = stack.pop();
-          stack.push(this.getAvm1Property(target, propertyIndex, options.timelineState?.currentFrame));
+          stack.push(getAvm1Property(target, propertyIndex, options.timelineState?.currentFrame));
           break;
         }
 
         case 0x52: {
-          const methodName = this.toAvm1String(stack.pop());
+          const methodName = toAvm1String(stack.pop());
           const object = stack.pop();
-          const argCount = Math.max(0, Math.floor(this.toAvm1Number(stack.pop())));
+          const argCount = Math.max(0, Math.floor(toAvm1Number(stack.pop())));
           const args: Avm1Value[] = [];
           for (let i = 0; i < argCount; i++) {
             args.unshift(stack.pop());
@@ -1116,8 +1120,8 @@ export class GsapSwfRenderer {
         }
 
         case 0x3D: {
-          const functionName = this.toAvm1String(stack.pop());
-          const argCount = Math.max(0, Math.floor(this.toAvm1Number(stack.pop())));
+          const functionName = toAvm1String(stack.pop());
+          const argCount = Math.max(0, Math.floor(toAvm1Number(stack.pop())));
           const args: Avm1Value[] = [];
           for (let i = 0; i < argCount; i++) {
             args.unshift(stack.pop());
@@ -1134,7 +1138,7 @@ export class GsapSwfRenderer {
         }
 
         case 0x4E: {
-          const memberName = this.toAvm1String(stack.pop());
+          const memberName = toAvm1String(stack.pop());
           const object = stack.pop();
           stack.push(this.getAvm1Member(object, memberName));
           break;
@@ -1142,7 +1146,7 @@ export class GsapSwfRenderer {
 
         case 0x4F: {
           const value = stack.pop();
-          const memberName = this.toAvm1String(stack.pop());
+          const memberName = toAvm1String(stack.pop());
           const object = stack.pop();
           this.setAvm1Member(object, memberName, value);
           break;
@@ -1151,7 +1155,7 @@ export class GsapSwfRenderer {
         case 0x81:
           if (options.timelineState && actionEnd - actionStart >= 2) {
             const targetFrame = bytes[actionStart] | (bytes[actionStart + 1] << 8);
-            options.timelineState.currentFrame = this.clampFrame(targetFrame, options.char.frameCount);
+            options.timelineState.currentFrame = clampFrame(targetFrame, options.char.frameCount);
           }
           break;
 
@@ -1174,7 +1178,7 @@ export class GsapSwfRenderer {
           if (parsed) {
             functions.set(parsed.def.name, parsed.def);
             if (parsed.def.name) {
-              this.setAvm1Variable(parsed.def.name, parsed.def, options.globals);
+              setAvm1Variable(parsed.def.name, parsed.def, options.globals);
             }
             pos = parsed.nextPos;
             continue;
@@ -1184,7 +1188,7 @@ export class GsapSwfRenderer {
 
         case 0x9D: {
           const offset = new DataView(bytes.buffer, bytes.byteOffset + actionStart, 2).getInt16(0, true);
-          if (this.toAvm1Boolean(stack.pop())) {
+          if (toAvm1Boolean(stack.pop())) {
             pos = actionEnd + offset;
             continue;
           }
@@ -1197,9 +1201,9 @@ export class GsapSwfRenderer {
             const target = stack.pop();
             const targetFrame = typeof target === 'string'
               ? this.resolveLabelFrame(options.char, target)
-              : Math.max(0, Math.floor(this.toAvm1Number(target) - 1));
+              : Math.max(0, Math.floor(toAvm1Number(target) - 1));
             if (targetFrame !== null) {
-              options.timelineState.currentFrame = this.clampFrame(targetFrame, options.char.frameCount);
+              options.timelineState.currentFrame = clampFrame(targetFrame, options.char.frameCount);
             }
             options.timelineState.isPlaying = (flags & 0x01) !== 0;
           }
@@ -1223,10 +1227,10 @@ export class GsapSwfRenderer {
     for (let i = 0; i < poolSize && pos < bytes.length; i++) {
       const end = bytes.indexOf(0, pos);
       if (end === -1) {
-        pool.push(this.decodeBytes(bytes.subarray(pos)));
+        pool.push(decodeBytes(bytes.subarray(pos)));
         break;
       }
-      pool.push(this.decodeBytes(bytes.subarray(pos, end)));
+      pool.push(decodeBytes(bytes.subarray(pos, end)));
       pos = end + 1;
     }
 
@@ -1243,10 +1247,10 @@ export class GsapSwfRenderer {
         case 0x00: {
           const end = bytes.indexOf(0, pos);
           if (end === -1) {
-            stack.push(this.decodeBytes(bytes.subarray(pos)));
+            stack.push(decodeBytes(bytes.subarray(pos)));
             return;
           }
-          stack.push(this.decodeBytes(bytes.subarray(pos, end)));
+          stack.push(decodeBytes(bytes.subarray(pos, end)));
           pos = end + 1;
           break;
         }
@@ -1301,7 +1305,7 @@ export class GsapSwfRenderer {
     const nameEnd = header.indexOf(0, pos);
     if (nameEnd === -1) return null;
 
-    const name = this.decodeBytes(header.subarray(pos, nameEnd));
+    const name = decodeBytes(header.subarray(pos, nameEnd));
     pos = nameEnd + 1;
     if (pos + 2 > header.length) return null;
 
@@ -1312,7 +1316,7 @@ export class GsapSwfRenderer {
     for (let i = 0; i < paramCount && pos < header.length; i++) {
       const end = header.indexOf(0, pos);
       if (end === -1) return null;
-      params.push(this.decodeBytes(header.subarray(pos, end)));
+      params.push(decodeBytes(header.subarray(pos, end)));
       pos = end + 1;
     }
 
@@ -1332,19 +1336,13 @@ export class GsapSwfRenderer {
     };
   }
 
-  private getAvm1Property(target: Avm1Value, propertyIndex: number, currentFrame: number | undefined): Avm1Value {
-    if ((target === '' || target === null || target === undefined) && propertyIndex === 4 && currentFrame !== undefined) {
-      return currentFrame + 1;
-    }
-    return undefined;
-  }
 
   private getAvm1Member(target: Avm1Value, memberName: string): Avm1Value {
-    if (!target || typeof target !== 'object' || this.isAvm1Function(target)) {
+    if (!target || typeof target !== 'object' || isAvm1Function(target)) {
       return undefined;
     }
 
-    if (this.isDisplayTarget(target)) {
+    if (isDisplayTarget(target)) {
       return undefined;
     }
 
@@ -1352,41 +1350,18 @@ export class GsapSwfRenderer {
   }
 
   private setAvm1Member(target: Avm1Value, memberName: string, value: Avm1Value) {
-    if (!target || typeof target !== 'object' || this.isAvm1Function(target)) {
+    if (!target || typeof target !== 'object' || isAvm1Function(target)) {
       return;
     }
 
-    if (this.isDisplayTarget(target)) {
+    if (isDisplayTarget(target)) {
       return;
     }
 
     (target as Avm1Object)[memberName] = value;
   }
 
-  private resolveAvm1Variable(
-    name: string,
-    displayList?: Map<number, DisplayEntry | DisplayBinding>,
-    globals?: Map<string, Avm1Value>,
-  ): Avm1Value {
-    if (globals?.has(name)) {
-      return globals.get(name);
-    }
 
-    if (!displayList) return undefined;
-
-    for (const [, entry] of displayList) {
-      if (entry.instanceName === name) {
-        return entry;
-      }
-    }
-
-    return undefined;
-  }
-
-  private setAvm1Variable(name: string, value: Avm1Value, globals?: Map<string, Avm1Value>) {
-    if (!globals) return;
-    globals.set(name, value);
-  }
 
   private callAvm1Method(
     object: Avm1Value,
@@ -1405,7 +1380,7 @@ export class GsapSwfRenderer {
       return this.callAvm1ObjectMethod(object, methodName, args, options);
     }
 
-    if (!options.playbackOverridesByName || !this.isDisplayTarget(object)) {
+    if (!options.playbackOverridesByName || !isDisplayTarget(object)) {
       return undefined;
     }
 
@@ -1422,13 +1397,13 @@ export class GsapSwfRenderer {
     const destination = args[0];
     const targetFrame = typeof destination === 'string'
       ? this.resolveLabelFrame(target, destination)
-      : Math.max(0, Math.floor(this.toAvm1Number(destination)));
+      : Math.max(0, Math.floor(toAvm1Number(destination)));
     if (targetFrame === null) {
       return undefined;
     }
 
     const playback: SpritePlaybackState = {
-      startFrame: this.clampFrame(targetFrame, target.frameCount),
+      startFrame: clampFrame(targetFrame, target.frameCount),
       startedAtTick: options.currentTick,
       isPlaying: methodName === 'gotoAndPlay',
     };
@@ -1461,9 +1436,9 @@ export class GsapSwfRenderer {
             const destination = args[0];
             const targetFrame = typeof destination === 'string'
               ? this.resolveLabelFrame(this.movie, destination)
-              : Math.max(0, Math.floor(this.toAvm1Number(destination) - 1));
+              : Math.max(0, Math.floor(toAvm1Number(destination) - 1));
             if (targetFrame !== null) {
-              options.timelineState.currentFrame = this.clampFrame(targetFrame, this.movie.frameCount);
+              options.timelineState.currentFrame = clampFrame(targetFrame, this.movie.frameCount);
             }
             options.timelineState.isPlaying = methodName === 'gotoAndPlay';
           }
@@ -1471,14 +1446,14 @@ export class GsapSwfRenderer {
         }
 
         case 'setTimeMark':
-          if (options.timelineState && this.isMovieTimelineState(options.timelineState)) {
+          if (options.timelineState && isMovieTimelineState(options.timelineState)) {
             options.timelineState.timeMarkTick = options.currentTick;
           }
           return undefined;
 
         case 'timeMarkDone': {
-          const waitMs = this.toAvm1Number(args[0]);
-          if (!options.timelineState || !this.isMovieTimelineState(options.timelineState)) {
+          const waitMs = toAvm1Number(args[0]);
+          if (!options.timelineState || !isMovieTimelineState(options.timelineState)) {
             return false;
           }
           if (options.timelineState.timeMarkTick === null) {
@@ -1511,7 +1486,7 @@ export class GsapSwfRenderer {
     }
 
     const member = object[methodName];
-    if (this.isAvm1Function(member)) {
+    if (isAvm1Function(member)) {
       return undefined;
     }
 
@@ -1534,7 +1509,7 @@ export class GsapSwfRenderer {
     },
   ): Avm1Value {
     const fn = functions.get(functionName) ?? options.globals?.get(functionName);
-    if (!this.isAvm1Function(fn)) {
+    if (!isAvm1Function(fn)) {
       return undefined;
     }
 
@@ -1581,9 +1556,9 @@ export class GsapSwfRenderer {
 
   private avm1Equals(a: Avm1Value, b: Avm1Value): boolean {
     if (typeof a === 'number' || typeof b === 'number') {
-      return this.toAvm1Number(a) === this.toAvm1Number(b);
+      return toAvm1Number(a) === toAvm1Number(b);
     }
-    return this.toAvm1String(a) === this.toAvm1String(b);
+    return toAvm1String(a) === toAvm1String(b);
   }
 
   private resolveLabelFrame(char: { frames: SwfFrame[]; id?: number }, label: string): number | null {
@@ -1606,57 +1581,17 @@ export class GsapSwfRenderer {
     return labels.get(label) ?? null;
   }
 
-  private clampFrame(frame: number, frameCount: number, wrap = false): number {
-    if (frameCount <= 0) return 0;
-    if (wrap) {
-      return ((frame % frameCount) + frameCount) % frameCount;
-    }
-    return Math.max(0, Math.min(frame, frameCount - 1));
-  }
 
-  private toAvm1Boolean(value: Avm1Value): boolean {
-    if (typeof value === 'boolean') return value;
-    if (typeof value === 'number') return value !== 0;
-    if (typeof value === 'string') return value.length > 0;
-    return Boolean(value);
-  }
 
-  private toAvm1Number(value: Avm1Value): number {
-    if (typeof value === 'number') return value;
-    if (typeof value === 'boolean') return value ? 1 : 0;
-    if (typeof value === 'string') {
-      const parsed = Number(value);
-      return Number.isFinite(parsed) ? parsed : 0;
-    }
-    return 0;
-  }
 
-  private toAvm1String(value: Avm1Value): string {
-    if (typeof value === 'string') return value;
-    if (typeof value === 'number') return String(value);
-    if (typeof value === 'boolean') return value ? 'true' : 'false';
-    return '';
-  }
 
-  private decodeBytes(bytes: Uint8Array): string {
-    return new TextDecoder().decode(bytes);
-  }
 
-  private isDisplayTarget(value: Avm1Value): value is DisplayEntry | DisplayBinding {
-    return Boolean(value && typeof value === 'object' && 'characterId' in value && 'depth' in value);
-  }
 
-  private isAvm1Function(value: Avm1Value): value is Avm1FunctionDef {
-    return Boolean(value && typeof value === 'object' && 'body' in value && 'params' in value);
-  }
 
   private isAvm1Object(value: Avm1Value): value is Avm1Object {
-    return Boolean(value && typeof value === 'object' && !this.isDisplayTarget(value) && !this.isAvm1Function(value));
+    return Boolean(value && typeof value === 'object' && !isDisplayTarget(value) && !isAvm1Function(value));
   }
 
-  private isMovieTimelineState(state: TimelineState | MovieTimelineState): state is MovieTimelineState {
-    return 'globals' in state;
-  }
 
   private spriteForcesTimelineChildren(char: SwfSpriteChar): boolean {
     return [124, 131, 137, 144, 153, 159].includes(char.id);
