@@ -585,11 +585,19 @@ export class Player {
     // (no slash) overrides it, so the mute icon never sticks. Decide `else` group-wise instead.
     const isElse = (c: string | undefined) => c === "else";
     const anyReal = def.actions.some((a) => a.functionBranchCondition && !isElse(a.functionBranchCondition) && evalCondition(a.functionBranchCondition, scope));
-    for (const action of def.actions) {
+    // Decide every guard against the clip scope as it is on ENTRY — AVM1 evaluates an `if` once
+    // when control reaches it. The build flattens an `if(g){ g-mutating-assign; goto }` block into
+    // a (now unconditional) assign followed by the still-guarded goto, so checking the goto's guard
+    // AFTER that assign runs would wrongly skip it (segment1's `unSelect` = `if(isActive){ isActive=0;
+    // gotoAndPlay(68) }`: the icon's return-to-shelf goto never fires and the icons stack at the
+    // replay slot). Snapshot the decisions first, then run.
+    const fire = def.actions.map((action) => {
       const cond = action.functionBranchCondition;
-      const pass = isElse(cond) ? !anyReal : !cond || evalCondition(cond, scope);
-      if (this.store && !pass) continue;
-      this.runClipAction(clip, action);
+      return isElse(cond) ? !anyReal : !cond || evalCondition(cond, scope);
+    });
+    for (let i = 0; i < def.actions.length; i += 1) {
+      if (this.store && !fire[i]) continue;
+      this.runClipAction(clip, def.actions[i]);
     }
     this.render();
   }

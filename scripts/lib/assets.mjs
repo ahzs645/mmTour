@@ -48,7 +48,6 @@ export function discoverAssets(allTags) {
       // bounds so the runtime renders it faithfully (e.g. segment5's white 18px section titles)
       // instead of the app's default sans-serif. The string itself is the FFDec-exported .txt.
       const bounds = tag.textBounds;
-      const matrix = tag.textMatrix;
       const styled = asArray(tag.textRecords?.item).find((r) => r && (r.styleFlagsHasFont === "true" || r.fontId));
       let content = "";
       try {
@@ -56,18 +55,22 @@ export function discoverAssets(allTags) {
       } catch { /* no exported text — fall back to a plain field */ }
       const width = bounds ? (number(bounds.Xmax, 0) - number(bounds.Xmin, 0)) / 20 : 0;
       const height = bounds ? (number(bounds.Ymax, 0) - number(bounds.Ymin, 0)) / 20 : 0;
-      // Static glyphs sit at textBounds (relative to the character origin), shifted by the
-      // text matrix. The placement matrix positions the character origin, so this x/y reproduces
-      // the SWF glyph layout (e.g. segment5's section title is centered in its bar, not flush left).
-      const x = bounds ? number(bounds.Xmin, 0) / 20 + (matrix ? number(matrix.translateX, 0) / 20 : 0) : 0;
-      const y = bounds ? number(bounds.Ymin, 0) / 20 + (matrix ? number(matrix.translateY, 0) / 20 : 0) : 0;
+      // textBounds is the glyph box in the character's PLACED space (the text matrix is already
+      // folded in — placement.tx + textBounds-center reproduces the SWF stage position). So x is
+      // just textBounds.Xmin: the left edge where the glyphs sit (e.g. segment5's section titles
+      // are centered in their bar). Centre-align within the box so a font whose metrics differ
+      // slightly from the embedded font still keeps the SWF's centre. Vertical: a DOM text box
+      // positions its LINE box at `top`, whose ascent already drops the glyphs to ~Ymin, so y stays
+      // at the origin (adding Ymin would double it and the title sits too low).
+      const x = bounds ? number(bounds.Xmin, 0) / 20 : 0;
       const style = styled && content
         ? compactObject({
             fontId: number(styled.fontId, 0) || undefined,
             fontHeight: number(styled.textHeight, 0) / 20 || undefined,
             color: colorFromTag(styled.textColor),
+            align: "center",
             x,
-            y,
+            y: 0,
             width: width || undefined,
             height: height || undefined,
             wordWrap: false,
@@ -79,7 +82,7 @@ export function discoverAssets(allTags) {
         id: Number(id),
         kind: "text",
         src: `generated/${ctx.scene}/texts/${id}.txt`,
-        origin: { x: style ? x : 0, y: style ? y : 0, width: width || 0, height: height || 0 },
+        origin: { x: style ? x : 0, y: 0, width: width || 0, height: height || 0 },
         ...(style ? { text: style } : {}),
       };
     }
