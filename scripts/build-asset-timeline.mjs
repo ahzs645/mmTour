@@ -2,6 +2,12 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, 
 import { basename, join, resolve } from "node:path";
 import { XMLParser } from "fast-xml-parser";
 import {
+  resolveSound, groupButtonEvents, discoverCallableFunctionNames, markCallableFunctionActionsSupported, runtimeCanExecuteCallableFunctionAction, discoverFunctionAssignments, discoverFunctionBodyCalls, discoverFunctionCallActions, frameVariableActions, chooseExitNavigationTarget,
+} from "./lib/asActions.mjs";
+import {
+  buildFrames, attachSpriteTimelines, markOverflowingSprites, discoverEntryFrame,
+} from "./lib/frames.mjs";
+import {
   collectNamedUses, iterSpriteFrameUses, parseSvgAttributes, buttonDynamicTextField, reflowSvgTextGroup, groupGlyphRows, svgTextReplacement, inlineSvgAsset, dataUri, registrationShift,
 } from "./lib/svgText.mjs";
 import {
@@ -321,141 +327,6 @@ function discoverRootSoundLibrary() {
   return sounds;
 }
 
-function resolveSound(library, requestedName) {
-  if (!requestedName) return undefined;
-  if (library[requestedName]) return library[requestedName];
-
-  const normalized = requestedName.toLowerCase();
-  return Object.values(library).find((sound) => sound.name.toLowerCase() === normalized);
-}
-
-function buildFrames(allTags) {
-  const displayList = new Map();
-  const snapshots = [];
-  let label = "";
-
-  for (const tag of allTags) {
-    if (!tag?.type) continue;
-
-    if (tag.type === "FrameLabelTag") {
-      label = tag.name ?? label;
-      continue;
-    }
-
-    if (tag.type === "RemoveObject2Tag") {
-      displayList.delete(Number(tag.depth));
-      continue;
-    }
-
-    if (tag.type === "PlaceObject2Tag") {
-      const depth = Number(tag.depth);
-      const existing = displayList.get(depth) ?? { depth, characterId: 0, matrix: identityMatrix(), opacity: 1, name: "" };
-      const characterId = Number(tag.characterId);
-      const hasNewCharacter = characterId > 0;
-      const clipDepth = Number(tag.clipDepth) || 0;
-      const next = {
-        ...existing,
-        depth,
-        characterId: hasNewCharacter ? characterId : existing.characterId,
-        placedFrame: hasNewCharacter ? snapshots.length : existing.placedFrame ?? snapshots.length,
-        name: tag.name ?? existing.name,
-        matrix: tag.matrix ? matrixFromTag(tag.matrix) : existing.matrix,
-        opacity: tag.colorTransform ? opacityFromTag(tag.colorTransform) : existing.opacity,
-        // Colour tint (RGB mult+add) lives on the placement, separate from alpha.
-        colorTransform: tag.colorTransform ? colorTransformFromTag(tag.colorTransform) : existing.colorTransform,
-        // A PlaceObject2 with clipDepth > 0 is a mask clipping depths (depth, clipDepth].
-        clipDepth: clipDepth > 0 ? clipDepth : hasNewCharacter ? undefined : existing.clipDepth,
-      };
-      displayList.set(depth, next);
-      continue;
-    }
-
-    if (tag.type === "ShowFrameTag") {
-      snapshots.push({
-        index: snapshots.length,
-        label,
-        instances: [...displayList.values()]
-          .filter((instance) => instance.characterId > 0)
-          .sort((a, b) => a.depth - b.depth),
-      });
-      label = "";
-    }
-  }
-
-  return snapshots;
-}
-
-/**
- * Extract each DefineSprite's internal display-list timeline (the same way the
- * root timeline is built) and attach it to the sprite asset. This preserves the
- * nested MovieClip structure FFDec otherwise flattens into baked per-frame SVGs,
- * giving the runtime the data it needs to drive nested playheads and _parent/
- * _root navigation. Baked `frames[]` SVGs are kept for leaf rendering.
- */
-function attachSpriteTimelines(assetDefs, allTags) {
-  for (const tag of allTags) {
-    if (tag?.type !== "DefineSpriteTag" || !tag.spriteId) continue;
-    const id = String(tag.spriteId);
-    const asset = assetDefs[id];
-    if (!asset || asset.kind !== "sprite") continue;
-
-    const subTags = asArray(tag.subTags?.item);
-    const spriteFrames = buildFrames(subTags);
-    // Only attach when there is an actual nested display list (placed children),
-    // so trivial single-shape sprites don't bloat the timeline JSON.
-    if (!spriteFrames.some((frame) => frame.instances.length)) continue;
-
-    asset.timeline = spriteFrames.map((frame) => compactObject({
-      index: frame.index,
-      label: frame.label || undefined,
-      instances: frame.instances,
-    }));
-  }
-}
-
-/**
- * Flag sprites whose animated content slides OUTSIDE their own bounds — FFDec bakes each
- * frame clipped to the sprite bounds, so moving content (e.g. the nav cascade buttons
- * sliding vertically through their ~28px-tall *ProAnim sprites) gets dropped from the baked
- * frame, making it flicker. The runtime renders these from the display-list tree instead
- * (the instances persist there, unclipped). Skip sprites that use a clip-mask (clipDepth) —
- * those rely on the baked composite, which the tree can't reproduce.
- */
-function markOverflowingSprites(assetDefs) {
-  for (const asset of Object.values(assetDefs)) {
-    if (asset?.kind !== "sprite" || !asset.timeline?.length || !asset.frames?.length) continue;
-    const b = asset.origin;
-    if (!b || !b.width || !b.height) continue;
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, hasMask = false, any = false;
-    for (const frame of asset.timeline) {
-      for (const ins of frame.instances ?? []) {
-        if (ins.clipDepth) hasMask = true;
-        const child = assetDefs[String(ins.characterId)] ?? assetDefs[`button:${ins.characterId}`];
-        const o = child?.origin;
-        if (!o || (!o.width && !o.height)) continue;
-        const m = ins.matrix ?? { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 };
-        for (const [cx, cy] of [[o.x, o.y], [o.x + o.width, o.y], [o.x, o.y + o.height], [o.x + o.width, o.y + o.height]]) {
-          const x = m.a * cx + m.c * cy + m.tx;
-          const y = m.b * cx + m.d * cy + m.ty;
-          minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); any = true;
-        }
-      }
-    }
-    if (!any || hasMask) continue;
-    const T = 20; // tolerance for minor/rounding overflow
-    if (minX < b.x - T || minY < b.y - T || maxX > b.x + b.width + T || maxY > b.y + b.height + T) {
-      asset.overflowsBounds = true;
-    }
-  }
-}
-
-function discoverEntryFrame(frameLabels) {
-  for (const label of ["noKiosk", "segStart", "desktop", "Code Setup"]) {
-    if (label in frameLabels) return frameLabels[label];
-  }
-  return 0;
-}
-
 function discoverControlFlow(allTags, frameLabels, groupedEvents) {
   const stopFrames = [];
   let frameIndex = 0;
@@ -617,72 +488,6 @@ function discoverDynamicTexts(allTags) {
   return dynamicTexts;
 }
 
-function groupButtonEvents(events) {
-  const grouped = {};
-  for (const event of events) {
-    const group = grouped[event.characterId] ?? { characterId: event.characterId, events: [] };
-    group.events = [...new Set([...group.events, ...event.events])];
-    if (event.release) group.release = event.release;
-    if (event.rollOver) group.rollOver = event.rollOver;
-    if (event.rollOut) group.rollOut = event.rollOut;
-    grouped[event.characterId] = group;
-  }
-  return grouped;
-}
-
-function discoverCallableFunctionNames(groupedEvents, ...actionEntryGroups) {
-  const names = new Set();
-  for (const group of Object.values(groupedEvents)) {
-    for (const eventName of ["release", "rollOver", "rollOut"]) {
-      for (const call of group[eventName]?.functionCalls ?? []) {
-        if (call.functionName) names.add(call.functionName);
-      }
-    }
-  }
-  for (const entries of actionEntryGroups) {
-    for (const entry of entries ?? []) {
-      for (const action of entry.actions ?? []) {
-        for (const call of action.functionCalls ?? []) {
-          if (call.functionName) names.add(call.functionName);
-        }
-      }
-    }
-  }
-  return names;
-}
-
-function markCallableFunctionActionsSupported(entries, callableNames) {
-  if (!callableNames.size) return entries;
-
-  return entries.map((entry) => ({
-    ...entry,
-    actions: (entry.actions ?? []).map((action) => {
-      if (action.executionContext !== "function" || !callableNames.has(action.functionName)) return action;
-      if (!runtimeCanExecuteCallableFunctionAction(action)) return action;
-
-      const { reason, ...supportedAction } = action;
-      return {
-        ...supportedAction,
-        supported: true,
-        invokedByButtonFunction: true,
-      };
-    }),
-  }));
-}
-
-function runtimeCanExecuteCallableFunctionAction(action) {
-  if ((action.command === "gotoAndPlay" || action.command === "gotoAndStop") && action.target === "self") {
-    return typeof action.frame === "number" || typeof action.frameExpression === "string" || typeof action.label === "string";
-  }
-  if ((action.command === "gotoAndPlay" || action.command === "gotoAndStop") && action.target && !/^_level\d+/i.test(action.target)) {
-    return typeof action.frame === "number" || typeof action.frameExpression === "string" || typeof action.label === "string";
-  }
-
-  if (action.command === "callFunctions") return Boolean(action.functionCalls?.length);
-  if (action.command === "stopSound") return true;
-  return (action.command === "playVO" || action.command === "attachSound") && Boolean(action.soundSrc);
-}
-
 function discoverDefinedFunctions() {
   const scriptsDir = join(extractedDir, "scripts");
   if (!existsSync(scriptsDir)) return [];
@@ -723,42 +528,6 @@ function discoverDefinedFunctions() {
   return functions.sort((a, b) => (
     a.source.localeCompare(b.source) || a.functionName.localeCompare(b.functionName)
   ));
-}
-
-function discoverFunctionAssignments(body) {
-  const source = stripActionScriptStrings(body);
-  const assignments = [];
-  for (const match of source.matchAll(/(?:^|[\s;{}])([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*=\s*([^;\n]+)\s*;/g)) {
-    const target = match[1];
-    if (target === "var") continue;
-    assignments.push(compactObject({
-      target,
-      value: parseActionScriptLiteral(match[2]),
-      rawValue: match[2].trim(),
-    }));
-  }
-  return assignments;
-}
-
-function discoverFunctionBodyCalls(body) {
-  const source = body;
-  const calls = [];
-  for (const match of source.matchAll(/([A-Za-z0-9_.$]+)\.([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*;?/g)) {
-    calls.push({
-      target: match[1],
-      functionName: match[2],
-      arguments: match[3].trim(),
-    });
-  }
-  for (const match of source.matchAll(/(?:^|[\s;{}])([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*;?/g)) {
-    if (["if", "while", "for", "switch", "return", "function", "trace", "int", "getTimer", "getSndTime"].includes(match[1])) continue;
-    calls.push({
-      target: "self",
-      functionName: match[1],
-      arguments: match[2].trim(),
-    });
-  }
-  return calls;
 }
 
 function discoverButtonOwnerSprites(characterId) {
@@ -926,46 +695,6 @@ function parseActionScript(source, frameLabels, sourcePath) {
   };
 }
 
-function discoverFunctionCallActions(source, functionContexts, branchContexts, tellTargets = []) {
-  const calls = [];
-  for (const match of source.matchAll(/([A-Za-z0-9_.$]+)\.([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*;?/g)) {
-    const target = match[1];
-    const functionName = match[2];
-    if (target === "_level0" || target === "_root") continue;
-    if (target.endsWith(".s1") || target.endsWith(".s2") || /^_root\.snd_/i.test(target)) continue;
-    if (functionName.startsWith("gotoAnd") || ["attachSound", "doRelease", "loadMovie", "loadMovieNum", "loadVariables", "stop", "setVolume", "getVolume"].includes(functionName)) continue;
-
-    calls.push({
-      call: {
-        target,
-        functionName,
-        arguments: match[3].trim(),
-      },
-      context: actionContextAt(functionContexts, branchContexts, match.index ?? 0),
-    });
-  }
-  for (const match of source.matchAll(/(?:^|[;{}\n])\s*([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*;?/g)) {
-    const functionName = match[1];
-    // `tellTarget(…)` is a scoping directive, not a real call — skip it.
-    if (functionName === "tellTarget") continue;
-    if (["if", "while", "for", "function", "switch", "trace", "stop", "play", "gotoAndPlay", "gotoAndStop", "loadVariables", "loadMovieNum", "getTimer", "int", "typeof", "unloadMovie", "unloadMovieNum"].includes(functionName)) continue;
-    const before = source.slice(Math.max(0, (match.index ?? 0) - 12), match.index ?? 0);
-    if (/\bfunction\s*$/i.test(before)) continue;
-
-    // Inside a tellTarget("clip") block the call runs on that nested clip; otherwise _root.
-    const clip = tellTargetAt(tellTargets, match.index ?? 0);
-    calls.push({
-      call: {
-        target: clip ?? "_root",
-        functionName,
-        arguments: match[2].trim(),
-      },
-      context: actionContextAt(functionContexts, branchContexts, match.index ?? 0),
-    });
-  }
-  return calls;
-}
-
 function inferRootFunctionNavigation(functionCalls) {
   const rootCall = functionCalls.find((call) => call.target === "_level0" || call.target === "_root");
   if (!rootCall) return null;
@@ -1101,15 +830,6 @@ function discoverMovieTargetLevel() {
   return movieTargetLevelCache;
 }
 
-function chooseExitNavigationTarget(targets, frameLabels) {
-  if (!targets.length) return null;
-  const proExitFrame = frameLabels["navAnim_Pro_Exit"];
-  const proTarget = Number.isFinite(proExitFrame)
-    ? targets.find((target) => target.frame > proExitFrame)
-    : undefined;
-  return proTarget ?? targets[0];
-}
-
 function discoverTargetSectionNavigation() {
   const scriptsDir = join(extractedDir, "scripts");
   if (!existsSync(scriptsDir)) return {};
@@ -1168,22 +888,6 @@ function discoverFrameActions(frameLabels) {
       };
     })
     .sort((a, b) => a.frame - b.frame);
-}
-
-/** Top-level `target = value;` assignments in a frame script, as setVariable actions. */
-function frameVariableActions(body, sourcePath) {
-  return parseStatements(body)
-    .filter((statement) => statement.kind === "assign")
-    .map((statement) => compactObject({
-      command: "setVariable",
-      target: statement.target,
-      value: statement.value,
-      rawValue: statement.rawValue,
-      branchCondition: statement.branchCondition,
-      executionContext: statement.branchCondition ? "branch" : "timeline",
-      supported: true,
-      source: sourcePath,
-    }));
 }
 
 function discoverSpriteActions(frameLabels) {
