@@ -95,6 +95,8 @@ import {
   pendingExternalLevelCalls, gsapDisplayRenderer, playerController,
 } from "./app/state";
 import type { RuffleElement } from "./app/frameModeTypes";
+import { playVoiceover, playBackgroundMusic, stopCurrentVoiceover, stopCurrentMusic } from "./app/audio";
+import { loadRuffle, waitForRuffle } from "./app/ruffle";
 
 
 renderModeSelect.selectedIndex = 0;
@@ -248,23 +250,6 @@ async function navigateToSceneBySwf(swf: string, entryTarget?: SceneEntryTarget)
   if (/^segment\d+\.swf$/i.test(targetScene.swf)) loadedLevelSwfs[4] = targetScene.swf;
   select.value = String(scenes.indexOf(appState.activeScene));
   await loadScene(appState.activeScene, entryTarget, true);
-}
-
-async function loadRuffle(scene: TourScene) {
-  await waitForRuffle();
-  appState.rufflePlayer = window.RufflePlayer!.newest().createPlayer();
-  appState.rufflePlayer.classList.add("ruffle-player");
-  appState.rufflePlayer.setAttribute("width", "640");
-  appState.rufflePlayer.setAttribute("height", "480");
-  ruffleMount.replaceChildren(appState.rufflePlayer);
-  const url = `/${scene.swf}`;
-  if (appState.rufflePlayer.ruffle) {
-    await appState.rufflePlayer.ruffle().load({ url });
-  } else if (appState.rufflePlayer.load) {
-    await appState.rufflePlayer.load({ url });
-  } else {
-    throw new Error("Ruffle player exposes no load API");
-  }
 }
 
 function isDirectRenderMode() {
@@ -832,43 +817,6 @@ function runFrameFunctionCalls(assetTimeline: AssetTimeline, frameIndex: number)
   for (const action of frameActionsAt(assetTimeline, frameIndex).filter((action) => action.command === "callFunctions" && action.functionCalls?.length)) {
     runFunctionCalls(assetTimeline, action.functionCalls!, frameIndex);
   }
-}
-
-async function playVoiceover(action: ControlAction) {
-  if (!action.soundSrc) return;
-  stopCurrentVoiceover();
-
-  const audio = new Audio(`/${action.soundSrc}`);
-  audio.preload = "auto";
-  appState.currentVoiceover = audio;
-  await audio.play();
-}
-
-async function playBackgroundMusic(action: ControlAction) {
-  if (!action.soundSrc || appState.currentMusic?.dataset.sound === action.sound) return;
-  stopCurrentMusic();
-
-  const audio = new Audio(`/${action.soundSrc}`);
-  audio.preload = "auto";
-  audio.loop = true;
-  audio.volume = 0.35;
-  audio.dataset.sound = action.sound ?? "";
-  appState.currentMusic = audio;
-  await audio.play();
-}
-
-function stopCurrentVoiceover() {
-  if (!appState.currentVoiceover) return;
-  appState.currentVoiceover.pause();
-  appState.currentVoiceover.currentTime = 0;
-  appState.currentVoiceover = null;
-}
-
-function stopCurrentMusic() {
-  if (!appState.currentMusic) return;
-  appState.currentMusic.pause();
-  appState.currentMusic.currentTime = 0;
-  appState.currentMusic = null;
 }
 
 function wireInlineFrameControls(frameIndex: number) {
@@ -2162,12 +2110,4 @@ function createAssetElement(asset: TimelineAsset, frameIndex: number) {
   image.draggable = false;
   image.src = asset.kind === "sprite" && asset.frames?.length ? `/${asset.frames[frameIndex % asset.frames.length]}` : `/${asset.src}`;
   return image;
-}
-
-async function waitForRuffle() {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    if (window.RufflePlayer) return;
-    await new Promise((resolve) => window.setTimeout(resolve, 50));
-  }
-  throw new Error("Ruffle did not load");
 }
