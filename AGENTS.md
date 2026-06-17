@@ -199,6 +199,14 @@ Gotchas that have burned us:
   always note the level (`z-index`) too.
 - Keep throwaway probe scripts out of the tree (delete them); land only real changes.
 
+## Known limitations
+
+- **A‑tour bottom‑bar sub‑section title is hidden in the full‑tour shell.** The nav
+  (`_level6`) draws its own opaque bottom bar over the segment's title (`_level4`); the
+  player composites levels correctly per Flash semantics, yet Ruffle shows the title.
+  Cosmetic, shell‑only — the standalone scene renders it fine. Full diagnosis (and what
+  was ruled out) in `docs/atour-bottom-title-occlusion.md`.
+
 ## Conventions
 
 - Data‑driven over special‑casing; modular files over monoliths (see the two rules above).
