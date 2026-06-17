@@ -59,10 +59,27 @@ scripts/                      build + verification (Node, .mjs)
   export-ffdec.mjs            FFDec/JPEXS extraction
   build-asset-timeline.mjs    extracted assets -> timeline.json (the interpreter's input)
   build-control-flow.mjs      -> control-flow.json
+  lib/                        shared pure build helpers (no module state):
+    util.mjs / geom.mjs         numeric/string/XML utils; MATRIX + CXFORM converters
+    asParse.mjs                 ActionScript source parsers (brace/paren/statement scan)
+    svgText.mjs                 SVG asset/text post-processing (reflow, inline embed)
+    avm1Disasm.mjs / cfgNodes.mjs  AVM1 bytecode disasm; control-flow-graph node helpers
   verify-*.mjs                Playwright/headless checks
 src/
   player/                     the Decompiled Player runtime (see below)
-  app/PlayerController.ts      multi-level orchestrator (one Player per Flash _levelN)
+  app/                        the comparison-mode app (main.ts is a thin entry that
+                              wires DOM events; everything else lives here):
+    dom.ts / state.ts           app-shell DOM refs; shared mutable state + singletons
+    modes.ts                    render-mode helpers + Decompiled Player activation
+    sceneLoader.ts              scene fetch/activate, fonts, Ruffle + GSAP wiring
+    frameMode.ts / buttonOverlays.ts / spriteLoops.ts  Frame-SVG reference mode
+    directMode.ts               Direct SWF renderer wiring
+    debugPanel.ts               display-list debug panel
+    externalLevels.ts           _levelN movie loading + queued cross-level calls
+    runtimeActions.ts / runtimeConditions.ts  action selection + branch eval
+    timelineQueries.ts / svgUtils.ts / fonts.ts / audio.ts / ruffle.ts  helpers
+    frameModeTypes.ts           types for the comparison modes (≠ data/timelineTypes)
+    PlayerController.ts         multi-level orchestrator (one Player per Flash _levelN)
   render/DomRenderer.ts        diffs RenderNodes -> DOM; wires button pointer events
   render/TextRenderer.ts       font registry / text
   data/                        timeline types, loader, scene metadata
