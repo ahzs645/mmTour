@@ -49,6 +49,28 @@ import {
 } from "./app/svgUtils";
 import { selectRuntimeActions, evaluateBranchCondition } from "./app/runtimeConditions";
 import { fontFamiliesForAsset, extractedFontFamilyStack } from "./app/fonts";
+import {
+  findFrameInstanceByTarget,
+  functionActionsFor,
+  rootFunctionActionsFor,
+  externalRootFunctionActionsFor,
+  buttonHitCharacterMap,
+  instanceTargetKeys,
+  actionTargetKeys,
+  normalizeTargetName,
+  hasReachedSpriteStop,
+  hasReachedSpriteStopSince,
+  hasActiveNestedSection,
+  isNestedSectionInstance,
+  allFrameActionsAt,
+  resolveSpriteFrame,
+  resolveSceneEntryFrame,
+  resolveRuntimeFrame,
+  clampFrame,
+  primaryRootSwfNavigation,
+  actionLevel,
+  frameLabel,
+} from "./app/timelineQueries";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("Missing #app root");
@@ -1244,36 +1266,6 @@ function flushPendingExternalLevelCalls(level: number) {
   for (const call of calls) runExternalLevelFunctionCall(call);
 }
 
-function findFrameInstanceByTarget(assetTimeline: AssetTimeline, frameIndex: number, target: string) {
-  const frame = assetTimeline.frames[frameIndex];
-  const targetKeys = actionTargetKeys(target);
-  return frame?.instances.find((instance) => instanceTargetKeys(instance.name).some((key) => targetKeys.includes(key)));
-}
-
-function functionActionsFor(assetTimeline: AssetTimeline, spriteId: number, functionName: string) {
-  return assetTimeline.control?.spriteActions
-    ?.filter((entry) => entry.spriteId === spriteId)
-    .flatMap((entry) => entry.actions)
-    .filter((action) => action.functionName === functionName) ?? [];
-}
-
-function rootFunctionActionsFor(assetTimeline: AssetTimeline, calls: NonNullable<ControlAction["functionCalls"]>) {
-  const rootFunctionNames = calls
-    .filter((call) => call.target === "_root" || call.target === "_parent" || call.target === "_level0")
-    .map((call) => call.functionName);
-  if (!rootFunctionNames.length) return [];
-
-  return assetTimeline.control?.frameActions
-    ?.flatMap((entry) => entry.actions)
-    .filter((action) => action.functionName && rootFunctionNames.includes(action.functionName)) ?? [];
-}
-
-function externalRootFunctionActionsFor(assetTimeline: AssetTimeline, functionName: string) {
-  return assetTimeline.control?.frameActions
-    ?.flatMap((entry) => entry.actions)
-    .filter((action) => action.functionName === functionName) ?? [];
-}
-
 function evaluateFunctionActionCondition(action: ControlAction, globals: Record<string, RuntimeGlobalValue>) {
   if (!action.functionBranchCondition) return true;
   return evaluateBranchCondition(action.functionBranchCondition, globals) === true;
@@ -1399,17 +1391,6 @@ function createButtonHitOverlays(
   });
 
   return count;
-}
-
-function buttonHitCharacterMap(assetTimeline: AssetTimeline) {
-  const mapped = new Map<string, string>();
-  for (const definition of assetTimeline.control?.buttonDefinitions ?? []) {
-    const buttonId = String(definition.id);
-    for (const record of definition.hitAreas ?? definition.states?.hitTest ?? []) {
-      mapped.set(String(record.characterId), buttonId);
-    }
-  }
-  return mapped;
 }
 
 function createTimelineButtonHitOverlays(
@@ -1573,34 +1554,6 @@ function playHoverSprite(
   hoverSpriteTimer = window.setInterval(() => {
     if (!render()) stopHoverSprite(false);
   }, 1000 / Math.max(1, assetTimeline.fps));
-}
-
-function resolveSpriteFrame(
-  action: ControlAction,
-  asset: TimelineAsset & { frames: string[] },
-  currentFrame = 0,
-  assetTimeline?: AssetTimeline,
-  spriteId?: number,
-) {
-  if (typeof action.frame === "number") return Math.max(0, Math.min(asset.frames.length - 1, action.frame));
-  if (action.label && assetTimeline && spriteId !== undefined) {
-    const frame = assetTimeline.control?.nestedMovieClips?.find((movieClip) => movieClip.spriteId === spriteId)?.labels?.[action.label];
-    if (frame !== undefined) return Math.max(0, Math.min(asset.frames.length - 1, frame));
-  }
-
-  const expression = action.frameExpression?.trim();
-  if (!expression) return -1;
-  const numericFrame = Number.parseInt(expression, 10);
-  if (Number.isFinite(numericFrame) && numericFrame > 0) return Math.max(0, Math.min(asset.frames.length - 1, numericFrame - 1));
-
-  const currentFrameExpression = expression.match(/^_currentframe\s*([+-])\s*(\d+)$/);
-  if (currentFrameExpression) {
-    const delta = Number(currentFrameExpression[2]);
-    const targetFrame = currentFrame + (currentFrameExpression[1] === "+" ? delta : -delta);
-    return Math.max(0, Math.min(asset.frames.length - 1, targetFrame));
-  }
-
-  return -1;
 }
 
 function stopHoverSprite(removeElement = true) {
@@ -1872,12 +1825,6 @@ function applyDepthHighlight() {
   assetStage.querySelectorAll<HTMLElement>(`[data-depth="${highlightedDepth}"]`).forEach((node) => {
     node.classList.add("depth-highlight");
   });
-}
-
-function frameLabel(assetTimeline: AssetTimeline, frameIndex: number) {
-  return assetTimeline.frames[frameIndex]?.label
-    || Object.entries(assetTimeline.labels ?? {}).find(([, frame]) => frame === frameIndex)?.[0]
-    || "";
 }
 
 function startAwaitingLoop(assetTimeline: AssetTimeline, frameIndex: number, sectionOnly = false) {
@@ -2180,21 +2127,6 @@ function expandedFrameTargetActionsAt(assetTimeline: AssetTimeline, frameIndex: 
   return [...actions, ...functionActions];
 }
 
-function instanceTargetKeys(name: string) {
-  const normalized = normalizeTargetName(name);
-  return normalized ? [normalized] : [];
-}
-
-function actionTargetKeys(name: string) {
-  const normalized = normalizeTargetName(name);
-  const lastSegment = normalizeTargetName(name.split(".").pop() ?? "");
-  return [...new Set([normalized, lastSegment].filter(Boolean))];
-}
-
-function normalizeTargetName(name: string) {
-  return name.replace(/^_root\./, "").replace(/^_parent\./, "").replace(/[^a-z0-9]/gi, "").toLowerCase();
-}
-
 function pauseAwaitingLoop() {
   if (awaitingLoopTimer) {
     window.clearInterval(awaitingLoopTimer);
@@ -2209,38 +2141,8 @@ function stopAwaitingLoop() {
   awaitingLoopLayer.replaceChildren();
 }
 
-function hasReachedSpriteStop(assetTimeline: AssetTimeline, characterId: number, relativeFrame: number) {
-  const stops = assetTimeline.control?.spriteStopFrames?.[String(characterId)] ?? [];
-  return stops.some((stopFrame) => stopFrame <= relativeFrame);
-}
-
-function hasReachedSpriteStopSince(assetTimeline: AssetTimeline, characterId: number, relativeFrame: number, startFrame: number) {
-  const stops = assetTimeline.control?.spriteStopFrames?.[String(characterId)] ?? [];
-  return stops.some((stopFrame) => stopFrame >= startFrame && stopFrame <= relativeFrame);
-}
-
-function hasActiveNestedSection(assetTimeline: AssetTimeline, frameIndex: number) {
-  const frame = assetTimeline.frames[frameIndex];
-  return frame.instances.some((instance) => {
-    const asset = assetTimeline.assets[String(instance.characterId)];
-    if (!asset || asset.kind !== "sprite" || !asset.frames?.length) return false;
-    const relativeFrame = Math.max(0, frame.index - instance.placedFrame);
-    return isNestedSectionInstance(instance, asset) && !hasReachedSpriteStop(assetTimeline, instance.characterId, relativeFrame);
-  });
-}
-
-function isNestedSectionInstance(instance: TimelineFrame["instances"][number], asset: TimelineAsset) {
-  return /^mc_/i.test(instance.name) && asset.kind === "sprite" && (asset.frames?.length ?? 0) >= 30;
-}
-
 function frameActionsAt(assetTimeline: AssetTimeline, frame: number) {
   return selectRuntimeActions(allFrameActionsAt(assetTimeline, frame), runtimeValues(assetTimeline));
-}
-
-function allFrameActionsAt(assetTimeline: AssetTimeline, frame: number) {
-  return assetTimeline.control?.frameActions
-    ?.filter((entry) => entry.frame === frame)
-    .flatMap((entry) => entry.actions) ?? [];
 }
 
 function spriteActionsAt(assetTimeline: AssetTimeline, spriteId: number, frame: number) {
@@ -2260,19 +2162,6 @@ function runtimeValues(assetTimeline: AssetTimeline) {
   };
 }
 
-function resolveSceneEntryFrame(assetTimeline: AssetTimeline, entryTarget?: SceneEntryTarget) {
-  if (!entryTarget) return assetTimeline.entryFrame ?? 0;
-  if (typeof entryTarget.frame === "number") return clampFrame(entryTarget.frame, assetTimeline);
-  if (entryTarget.label && assetTimeline.labels?.[entryTarget.label] !== undefined) {
-    return clampFrame(assetTimeline.labels[entryTarget.label], assetTimeline);
-  }
-
-  const expression = entryTarget.frameExpression?.trim();
-  const numericFrame = Number.parseInt(expression ?? "", 10);
-  if (Number.isFinite(numericFrame) && numericFrame > 0) return clampFrame(numericFrame - 1, assetTimeline);
-  return assetTimeline.entryFrame ?? 0;
-}
-
 function rootTimelineActionAtFrame(assetTimeline: AssetTimeline, frame: number) {
   return frameActionsAt(assetTimeline, frame).find((action) => {
     if (action.command !== "gotoAndPlay" && action.command !== "gotoAndStop") return false;
@@ -2290,23 +2179,12 @@ function rootSwfLoadActionsAtFrame(assetTimeline: AssetTimeline, frame: number) 
   });
 }
 
-function primaryRootSwfNavigation(actions: ControlAction[]) {
-  return actions.find((action) => actionLevel(action) === 4)
-    ?? actions.find((action) => actionLevel(action) !== 6)
-    ?? actions[0];
-}
-
 function rememberLoadedLevel(action: ControlAction, assetTimeline?: AssetTimeline, frame?: number) {
   const level = actionLevel(action);
   if (level === undefined || !action.swf) return;
   loadedLevelSwfs[level] = action.swf;
   if (level !== 4 && assetTimeline && frame !== undefined) queueExternalLevelCallsAtFrame(assetTimeline, frame, level);
   if (level !== 4) void ensureExternalLevel(level, action.swf);
-}
-
-function actionLevel(action: ControlAction) {
-  const value = typeof action.level === "number" ? action.level : Number.parseInt(String(action.level ?? ""), 10);
-  return Number.isFinite(value) ? value : undefined;
 }
 
 async function ensureExternalLevel(level: number, swf: string) {
@@ -2381,29 +2259,6 @@ function isChoiceLoopFrame(assetTimeline: AssetTimeline, frame: number) {
   if (nextFrameAction?.command !== "gotoAndPlay") return false;
   const target = resolveRuntimeFrame(nextFrameAction, assetTimeline, frame + 1);
   return target >= 0 && target <= frame;
-}
-
-function resolveRuntimeFrame(action: ControlAction, assetTimeline: AssetTimeline, currentFrame: number) {
-  if (typeof action.frame === "number") return clampFrame(action.frame, assetTimeline);
-  if (action.label && assetTimeline.labels?.[action.label] !== undefined) return clampFrame(assetTimeline.labels[action.label], assetTimeline);
-
-  const expression = action.frameExpression?.trim();
-  if (!expression) return -1;
-
-  const numericFrame = Number.parseInt(expression, 10);
-  if (Number.isFinite(numericFrame) && numericFrame > 0) return clampFrame(numericFrame - 1, assetTimeline);
-
-  const currentFrameExpression = expression.match(/^_currentframe\s*([+-])\s*(\d+)$/);
-  if (currentFrameExpression) {
-    const delta = Number(currentFrameExpression[2]);
-    return clampFrame(currentFrame + (currentFrameExpression[1] === "+" ? delta : -delta), assetTimeline);
-  }
-
-  return -1;
-}
-
-function clampFrame(frame: number, assetTimeline: AssetTimeline) {
-  return Math.max(0, Math.min(assetTimeline.frameCount - 1, frame));
 }
 
 function syncAssetStageScale() {
