@@ -19,6 +19,7 @@ import {
   clampFrame, decodeBytes, getAvm1Property, isAvm1Function, isDisplayTarget, isMovieTimelineState,
   resolveAvm1Variable, setAvm1Variable, toAvm1Boolean, toAvm1Number, toAvm1String,
 } from "./avm1Values";
+import { ensureSvgContentGroup, extractSvgOffset, getDescendantSvgTargets, getElementOffset, makeIdsUnique } from "./svgDom";
 
 
 const loadedFontFaces = new Map<string, Promise<void>>();
@@ -173,7 +174,7 @@ export class GsapSwfRenderer {
     if (!targetSvgs.length) return;
 
     const maskTarget = maskEntry?.element
-      ? this.getOwnedSvgTargets(maskEntry.element)[0] ?? this.getDescendantSvgTargets(maskEntry.element)[0]
+      ? this.getOwnedSvgTargets(maskEntry.element)[0] ?? getDescendantSvgTargets(maskEntry.element)[0]
       : undefined;
 
     targetSvgs.forEach(({ svg: targetSvg, group: targetGroup }, index) => {
@@ -228,7 +229,7 @@ export class GsapSwfRenderer {
   }
 
   private getViewportTransform(element: HTMLElement, matrix: SwfMatrix): SwfMatrix {
-    const offset = this.getElementOffset(element);
+    const offset = getElementOffset(element);
     return {
       a: matrix.a,
       b: matrix.b,
@@ -239,16 +240,10 @@ export class GsapSwfRenderer {
     };
   }
 
-  private getElementOffset(element: HTMLElement): { x: number; y: number } {
-    return {
-      x: parseFloat(element.dataset.offsetX || '0'),
-      y: parseFloat(element.dataset.offsetY || '0'),
-    };
-  }
 
   private applyColorTransform(entry: DisplayEntry, depth: number) {
     const ct = entry.colorTransform;
-    const svgTargets = this.getDescendantSvgTargets(entry.element);
+    const svgTargets = getDescendantSvgTargets(entry.element);
 
     if (!ct) {
       entry.element.style.opacity = '1';
@@ -300,23 +295,9 @@ export class GsapSwfRenderer {
     });
   }
 
-  private getDescendantSvgTargets(element: HTMLElement): Array<{ svg: SVGSVGElement; group: SVGGElement }> {
-    return Array.from(element.querySelectorAll('svg'))
-      .map((svg) => {
-        const group = Array.from(svg.children).find((child) => {
-          return child instanceof SVGGElement && child.classList.contains('swf-content');
-        }) as SVGGElement | undefined;
-        if (!group) return null;
-        return {
-          svg: svg as SVGSVGElement,
-          group,
-        };
-      })
-      .filter((target): target is { svg: SVGSVGElement; group: SVGGElement } => target !== null);
-  }
 
   private getOwnedSvgTargets(element: HTMLElement): Array<{ svg: SVGSVGElement; group: SVGGElement }> {
-    return this.getDescendantSvgTargets(element).filter(({ svg }) => {
+    return getDescendantSvgTargets(element).filter(({ svg }) => {
       return svg.closest('[data-char-id]') === element;
     });
   }
@@ -596,9 +577,9 @@ export class GsapSwfRenderer {
     const parser = new DOMParser();
     const doc = parser.parseFromString(char.svgPaths, 'image/svg+xml');
     const svg = doc.documentElement as unknown as SVGSVGElement;
-    this.ensureSvgContentGroup(svg);
-    this.makeIdsUnique(svg, `swf-shape-${char.id}-depth-${depth}`);
-    const offset = this.extractSvgOffset(svg, {
+    ensureSvgContentGroup(svg);
+    makeIdsUnique(svg, `swf-shape-${char.id}-depth-${depth}`);
+    const offset = extractSvgOffset(svg, {
       x: -char.bounds.xMin,
       y: -char.bounds.yMin,
     });
@@ -1646,104 +1627,8 @@ export class GsapSwfRenderer {
     return false;
   }
 
-  private makeIdsUnique(svg: Element, prefix: string) {
-    const idMap = new Map<string, string>();
 
-    svg.querySelectorAll('[id]').forEach((el) => {
-      const oldId = el.getAttribute('id');
-      if (!oldId) return;
-      const newId = `${prefix}-${oldId}`;
-      el.setAttribute('id', newId);
-      idMap.set(oldId, newId);
-    });
 
-    svg.querySelectorAll('*').forEach((el) => {
-      for (const attr of ['fill', 'stroke', 'clip-path', 'mask', 'filter']) {
-        const value = el.getAttribute(attr);
-        if (!value?.startsWith('url(#')) continue;
-
-        const oldId = value.match(/url\(#([^)]+)\)/)?.[1];
-        if (oldId && idMap.has(oldId)) {
-          el.setAttribute(attr, `url(#${idMap.get(oldId)})`);
-        }
-      }
-
-      const style = el.getAttribute('style');
-      if (style?.includes('url(#')) {
-        const updatedStyle = style.replace(/url\(#([^)]+)\)/g, (full, oldId: string) => {
-          return idMap.has(oldId) ? `url(#${idMap.get(oldId)})` : full;
-        });
-        el.setAttribute('style', updatedStyle);
-      }
-
-      for (const attr of ['href', 'xlink:href']) {
-        const value = el.getAttribute(attr);
-        if (!value?.startsWith('#')) continue;
-
-        const oldId = value.slice(1);
-        if (idMap.has(oldId)) {
-          el.setAttribute(attr, `#${idMap.get(oldId)}`);
-        }
-      }
-    });
-  }
-
-  private ensureSvgContentGroup(svg: SVGSVGElement): SVGGElement {
-    const existing = svg.querySelector('g.swf-content');
-    if (existing) {
-      return existing as SVGGElement;
-    }
-
-    const contentGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-    contentGroup.setAttribute('class', 'swf-content');
-
-    const nodesToMove = Array.from(svg.childNodes).filter((node) => {
-      return !(node instanceof SVGDefsElement);
-    });
-
-    for (const node of nodesToMove) {
-      contentGroup.appendChild(node);
-    }
-
-    svg.appendChild(contentGroup);
-    return contentGroup;
-  }
-
-  private extractSvgOffset(
-    svg: SVGSVGElement,
-    fallback: { x: number; y: number },
-  ): { x: number; y: number } {
-    if (svg.getAttribute('data-swf-use-bounds-offset') === 'true') {
-      return fallback;
-    }
-
-    const contentGroup = svg.querySelector('g.swf-content');
-    const transform = contentGroup?.getAttribute('transform');
-    if (transform) {
-      const match = transform.match(
-        /matrix\([^,]+,\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*([^,]+),\s*([^)]+)\)/,
-      );
-      if (match) {
-        return {
-          x: parseFloat(match[1]),
-          y: parseFloat(match[2]),
-        };
-      }
-    }
-
-    const viewBox = svg.getAttribute('viewBox');
-    if (viewBox) {
-      const [minX, minY] = viewBox.split(/[\s,]+/).slice(0, 2).map(Number);
-      if (Number.isFinite(minX) && Number.isFinite(minY)) {
-        return {
-          x: -minX,
-          y: -minY,
-        };
-      }
-    }
-
-    return fallback;
-  }
 
   private clearStage() {
     if (this.postLayoutSyncId !== null) {
