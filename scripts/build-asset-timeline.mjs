@@ -1,6 +1,16 @@
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { XMLParser } from "fast-xml-parser";
+import {
+  number, hex, rectSize, asArray, compactObject, escapeRegExp, roundSvgNumber,
+  escapeXmlAttribute, escapeXmlText, decodeXmlEntities, safeDecodeURIComponent,
+  normalizeVariableName, normalizeName, normalizeLoadedText, comparableText,
+  textAlignFromTag, htmlTextAlign, actionBytesStartWith,
+} from "./lib/util.mjs";
+import {
+  identityMatrix, matrixFromTag, matrixFromSvgTransform, multiplyMatrices,
+  opacityFromTag, colorTransformFromTag, colorFromTag,
+} from "./lib/geom.mjs";
 
 const root = resolve(new URL("..", import.meta.url).pathname);
 const scene = process.argv[2] ?? "segment4";
@@ -1871,52 +1881,6 @@ function discoverSpriteLocalDefaults() {
   return Object.fromEntries(Object.entries(defaults).filter(([, values]) => Object.keys(values).length));
 }
 
-function actionBytesStartWith(actionBytes, opcodeHex) {
-  return typeof actionBytes === "string" && actionBytes.toLowerCase().startsWith(opcodeHex.toLowerCase());
-}
-
-function matrixFromTag(matrix) {
-  const hasScale = matrix.hasScale === "true";
-  const hasRotate = matrix.hasRotate === "true";
-  // SWF MATRIX → SVG/CSS matrix(a,b,c,d,e,f):
-  //   x' = ScaleX*x + RotateSkew1*y + tx   → a=ScaleX, c=RotateSkew1
-  //   y' = RotateSkew0*x + ScaleY*y  + ty   → b=RotateSkew0, d=ScaleY
-  return {
-    a: hasScale ? number(matrix.scaleX, 1) : 1,
-    b: hasRotate ? number(matrix.rotateSkew0, 0) : 0,
-    c: hasRotate ? number(matrix.rotateSkew1, 0) : 0,
-    d: hasScale ? number(matrix.scaleY, 1) : 1,
-    tx: number(matrix.translateX, 0) / 20,
-    ty: number(matrix.translateY, 0) / 20,
-  };
-}
-
-function matrixFromSvgTransform(transform) {
-  const values = String(transform ?? "")
-    .match(/matrix\(([^)]+)\)/)?.[1]
-    ?.split(/[,\s]+/)
-    .filter(Boolean)
-    .map((value) => Number.parseFloat(value));
-  if (!values || values.length < 6 || values.some((value) => !Number.isFinite(value))) return identityMatrix();
-  const [a, b, c, d, tx, ty] = values;
-  return { a, b, c, d, tx, ty };
-}
-
-function multiplyMatrices(left, right) {
-  return {
-    a: left.a * right.a + left.c * right.b,
-    b: left.b * right.a + left.d * right.b,
-    c: left.a * right.c + left.c * right.d,
-    d: left.b * right.c + left.d * right.d,
-    tx: left.a * right.tx + left.c * right.ty + left.tx,
-    ty: left.b * right.tx + left.d * right.ty + left.ty,
-  };
-}
-
-function identityMatrix() {
-  return { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 };
-}
-
 /**
  * Find a button's embedded dynamic editText in its up-state SVG and return its
  * button-record placement matrix. FFDec nests the field as
@@ -1978,39 +1942,6 @@ function stripBakedDynamicText(assetDefs) {
   }
 }
 
-function opacityFromTag(transform) {
-  const mult = number(transform.alphaMultTerm, 256) / 256;
-  const add = number(transform.alphaAddTerm, 0) / 255;
-  return Math.max(0, Math.min(1, mult + add));
-}
-
-/**
- * Extract the RGB part of a CXFORMWITHALPHA as normalized mult (term/256) + add
- * (term/255) per channel. Alpha is handled separately via `opacity`, so this
- * returns only the colour tint (e.g. the tour-shell swoosh's #6699cc stroke is
- * lightened toward white). Returns undefined when the RGB transform is identity.
- */
-function colorTransformFromTag(transform) {
-  if (!transform) return undefined;
-  const rm = number(transform.redMultTerm, 256) / 256;
-  const gm = number(transform.greenMultTerm, 256) / 256;
-  const bm = number(transform.blueMultTerm, 256) / 256;
-  const ra = number(transform.redAddTerm, 0) / 255;
-  const ga = number(transform.greenAddTerm, 0) / 255;
-  const ba = number(transform.blueAddTerm, 0) / 255;
-  if (rm === 1 && gm === 1 && bm === 1 && ra === 0 && ga === 0 && ba === 0) return undefined;
-  const round = (n) => Math.round(n * 1000) / 1000;
-  return { rm: round(rm), gm: round(gm), bm: round(bm), ra: round(ra), ga: round(ga), ba: round(ba) };
-}
-
-function colorFromTag(color) {
-  if (!color) return "#ffffff";
-  const red = Math.max(0, Math.min(255, Math.round(number(color.red, 255))));
-  const green = Math.max(0, Math.min(255, Math.round(number(color.green, 255))));
-  const blue = Math.max(0, Math.min(255, Math.round(number(color.blue, 255))));
-  return `#${hex(red)}${hex(green)}${hex(blue)}`;
-}
-
 function loadSceneVariables(sceneName) {
   const variablesPath = findSceneVariablesPath(sceneName);
   if (!variablesPath) return {};
@@ -2060,73 +1991,6 @@ function resolveVariableSource(fileName) {
   }
 
   return null;
-}
-
-function normalizeVariableName(name) {
-  return String(name).replace(/^_root\./, "").split(".").pop();
-}
-
-function normalizeName(name) {
-  return String(name).replace(/^_root\./, "").replace(/^_parent\./, "").replace(/[^a-z0-9]/gi, "").toLowerCase();
-}
-
-function normalizeLoadedText(value) {
-  const decoded = safeDecodeURIComponent(value.replace(/\+/g, "%20"));
-  return decodeXmlEntities(decoded)
-    .replace(/\\r\\n/g, "\n")
-    .replace(/\\r/g, "\n")
-    .replace(/\\n/g, "\n")
-    .replace(/<\s*br\s*\/?>/gi, "\n")
-    .replace(/<\/p>\s*<p[^>]*>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .trim();
-}
-
-function comparableText(value) {
-  return normalizeLoadedText(value).replace(/\s+/g, " ").trim();
-}
-
-function safeDecodeURIComponent(value) {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-
-function decodeXmlEntities(value) {
-  return value
-    .replaceAll("&apos;", "'")
-    .replaceAll("&#39;", "'")
-    .replaceAll("&quot;", "\"")
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&amp;", "&");
-}
-
-function textAlignFromTag(value) {
-  if (String(value) === "1") return "right";
-  if (String(value) === "2") return "center";
-  if (String(value) === "3") return "justify";
-  return "left";
-}
-
-/**
- * Alignment for an edit-text field. For HTML fields the field's `align` attribute
- * is just the placeholder format; the rendered HTML governs and defaults to LEFT
- * (matching Flash/Ruffle) unless the content carries a <P ALIGN="…">. Non-HTML
- * fields use the field's align attribute directly.
- */
-function htmlTextAlign(tag, content) {
-  if (tag.html !== "true") return textAlignFromTag(tag.align);
-  const match = String(content ?? "").match(/ALIGN\s*=\s*["']?(LEFT|RIGHT|CENTER|JUSTIFY)/i);
-  return match ? match[1].toLowerCase() : "left";
-}
-
-function hex(value) {
-  return value.toString(16).padStart(2, "0");
 }
 
 function svgOrigin(path) {
@@ -2305,10 +2169,6 @@ function groupGlyphRows(glyphs) {
   }));
 }
 
-function roundSvgNumber(value) {
-  return Math.round(value * 100) / 100;
-}
-
 function replaceStaticVariableText(allTags) {
   const replacements = discoverStaticVariableTextReplacements(allTags);
   if (!Object.keys(replacements).length) return;
@@ -2371,14 +2231,6 @@ function svgTextReplacement(characterId, replacement, transform, width, height) 
     .join("");
 
   return `<text ffdec:characterId="${characterId}"${transformAttribute} fill="${replacement.color}" font-family="Franklin Gothic Medium, Franklin Gothic, FranklinGothic, XP Franklin Gothic, Arial Narrow, Arial, sans-serif" font-size="${roundSvgNumber(fontSize)}" font-weight="700" text-anchor="${anchor}">${tspans}</text>`;
-}
-
-function escapeXmlAttribute(value) {
-  return String(value).replaceAll("&", "&amp;").replaceAll("\"", "&quot;").replaceAll("<", "&lt;");
-}
-
-function escapeXmlText(value) {
-  return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
 function replacementForMissingUse(tag, hrefId, characterId, frame, assetDefs) {
@@ -2471,10 +2323,6 @@ function dataUri(path, mimeType) {
   return `data:${mimeType};base64,${readFileSync(path).toString("base64")}`;
 }
 
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 function listPublicDir(name) {
   const dir = join(publicDir, name);
   return existsSync(dir) ? readdirSync(dir) : [];
@@ -2485,22 +2333,4 @@ function walkFiles(dir) {
     const path = join(dir, entry.name);
     return entry.isDirectory() ? walkFiles(path) : [path];
   });
-}
-
-function rectSize(max, min) {
-  return (number(max, 0) - number(min, 0)) / 20;
-}
-
-function number(value, fallback) {
-  const parsed = Number.parseFloat(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function asArray(value) {
-  if (!value) return [];
-  return Array.isArray(value) ? value : [value];
-}
-
-function compactObject(value) {
-  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
 }
