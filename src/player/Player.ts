@@ -589,6 +589,11 @@ export class Player {
         const child = new ClipInstance(instance.characterId, instance.name, clip);
         clip.childClips.set(instance.depth, child);
         this.enterFrame(child, 0, 0);
+      } else if (instance.name && existing.name !== instance.name) {
+        // A later PlaceObject named this instance (FFDec emits the name on a frame
+        // after its first placement, e.g. nav's btn_yellow_pro_anim ring) — apply it
+        // so `_parent.<name>` clip commands (the hover-glow) can resolve it.
+        existing.name = instance.name;
       }
     }
     for (const [depth] of clip.childClips) {
@@ -956,7 +961,10 @@ export class Player {
     renderArtwork: boolean,
     opacity = 1,
   ): RenderNode {
-    const up = renderArtwork ? asset.states?.up : undefined;
+    // Buttons whose text is drawn by collectButtonText (editText overlay) must NOT also
+    // render their up-state artwork — FFDec bakes that text mispositioned, so it would
+    // double the label (e.g. the nav "Skip Intro"). The overlay is the authoritative text.
+    const up = renderArtwork && !asset.textFields?.length ? asset.states?.up : undefined;
     return {
       key,
       order,

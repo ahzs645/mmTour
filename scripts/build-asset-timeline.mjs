@@ -921,8 +921,13 @@ function discoverFunctionCalls(source) {
   const calls = [];
   for (const match of source.matchAll(/([A-Za-z0-9_.$]+)\.([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*;?/g)) {
     const functionName = match[2];
-    if (functionName.startsWith("gotoAnd") || ["attachSound", "doRelease", "loadMovie", "loadMovieNum", "loadVariables"].includes(functionName)) continue;
     const target = match[1];
+    const isGoto = functionName.startsWith("gotoAnd");
+    // A goto on a NAMED sibling clip (e.g. a button's `_parent.btn_green_anim.gotoAndPlay("over")`
+    // rollover glow) must be dispatched as a clip command; only _root/self gotos are the action's
+    // own command (handled in parseActionScript), so keep targeted clip gotos here.
+    if (isGoto && (target === "_root" || target === "_level0")) continue;
+    if (!isGoto && ["attachSound", "doRelease", "loadMovie", "loadMovieNum", "loadVariables"].includes(functionName)) continue;
     if (target.endsWith(".s1") || target.endsWith(".s2")) continue;
     calls.push({
       target,

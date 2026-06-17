@@ -3,6 +3,11 @@ import { assetUrl } from "../data/TimelineLoader";
 import type { MaskVisual, RenderNode } from "../player/types";
 import { applyColorTransform } from "./colorTransform";
 
+// A 1×1 fully-transparent GIF — used as the src for a button that has no artwork
+// (its visual lives in the baked sprite frame) so the <img> hit area shows nothing
+// instead of a broken-image box.
+const TRANSPARENT_PIXEL = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+
 // Mask shapes are inlined into the <mask> (Chrome won't rasterize an <image>-
 // referenced SVG inside a mask). Their fills are forced white → a robust
 // Mask shapes are inlined into the <clipPath>. CRITICAL: Chrome ignores nested
@@ -214,11 +219,13 @@ export class DomRenderer {
     if (node.kind === "button") {
       // The button is its own hit area; it shows its up-state artwork when one was
       // provided (tree path) and is otherwise transparent (visual lives in the baked
-      // sprite frame). An <img> with no src renders nothing but still sizes/hits.
+      // sprite frame). Seed a clear pixel so a no-art button shows nothing instead of
+      // a broken-image box (updateMedia's guard skips the empty→empty case).
       const hit = document.createElement("img");
       hit.className = "player-hit";
       hit.decoding = "async";
       hit.draggable = false;
+      hit.src = node.src ? assetUrl(node.src) : TRANSPARENT_PIXEL;
       return hit;
     }
     const image = document.createElement("img");
@@ -238,8 +245,9 @@ export class DomRenderer {
       return;
     }
     if (rendered.src !== node.src && rendered.media instanceof HTMLImageElement) {
-      if (node.src) rendered.media.src = assetUrl(node.src);
-      else rendered.media.removeAttribute("src"); // transparent hit area (visual is baked)
+      // An <img> with no src draws a broken-image box; an empty-src button (transparent
+      // hit area whose visual is baked) must stay invisible, so use a 1×1 clear pixel.
+      rendered.media.src = node.src ? assetUrl(node.src) : TRANSPARENT_PIXEL;
       rendered.src = node.src;
     }
   }
