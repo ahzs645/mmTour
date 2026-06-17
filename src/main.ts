@@ -24,205 +24,31 @@ type RuffleElement = HTMLElement & {
   };
 };
 
-type Matrix = {
-  a: number;
-  b: number;
-  c: number;
-  d: number;
-  tx: number;
-  ty: number;
-};
-
-type TimelineAsset = {
-  id: number;
-  kind: "shape" | "sprite" | "image" | "text" | "button" | "font" | "sound";
-  src?: string;
-  frames?: string[];
-  states?: Record<string, { src: string; origin: TimelineAsset["origin"] }>;
-  origin: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  };
-};
-
-type TimelineFrame = {
-  index: number;
-  label: string;
-  instances: Array<{
-    depth: number;
-    characterId: number;
-    placedFrame: number;
-    matrix: Matrix;
-    opacity: number;
-    name: string;
-    clipDepth?: number;
-    colorTransform?: {
-      rm?: number;
-      gm?: number;
-      bm?: number;
-      am?: number;
-      ra?: number;
-      ga?: number;
-      ba?: number;
-      aa?: number;
-    };
-  }>;
-};
-
-type ControlAction = {
-  target?: string;
-  command?: "stop" | "play" | "gotoAndPlay" | "gotoAndStop" | "doRelease" | "loadMovieNum" | "loadVariables" | "playVO" | "markSndSegment" | "attachSound" | "stopSound" | "callFunctions";
-  label?: string;
-  frame?: number;
-  frameExpression?: string;
-  level?: string | number;
-  swf?: string;
-  sound?: string;
-  soundSrc?: string;
-  soundRole?: "voiceover" | "music";
-  segment?: string;
-  ramp?: string;
-  exitNavigation?: {
-    variable: string;
-    value: string;
-    swf: string;
-    exitLabel?: string;
-    exitFrame: number;
-  };
-  functionCalls?: Array<{
-    target: string;
-    functionName: string;
-    arguments?: string;
-  }>;
-  nestedSection?: {
-    label: string;
-    frame: number;
-  };
-  rootFunctionSound?: {
-    sound: string;
-    soundSrc: string;
-    functionName: string;
-    arguments?: string;
-    sourceFunction: string;
-  };
-  targetPlacement?: {
-    characterId: number;
-    matrix: Matrix;
-    width?: number;
-    height?: number;
-  };
-  source: string;
-  supported?: boolean;
-  reason?: string;
-  functionName?: string;
-  functionBranchCondition?: string;
-  branchCondition?: string;
-  executionContext?: "timeline" | "function" | "branch";
-};
-
-type RenderedLoopItem = {
-  element: HTMLDivElement;
-  image: HTMLImageElement;
-  asset: TimelineAsset & { frames: string[] };
-  instance: TimelineFrame["instances"][number];
-  spriteFrame: number;
-  stopped: boolean;
-};
-
-type ButtonControl = {
-  ownerSpriteIds?: number[];
-  release?: ControlAction;
-  rollOver?: ControlAction;
-  rollOut?: ControlAction;
-};
-
-type ButtonDefinition = {
-  id: number;
-  states?: {
-    up?: ButtonStateRecord[];
-    over?: ButtonStateRecord[];
-    down?: ButtonStateRecord[];
-    hitTest?: ButtonStateRecord[];
-  };
-  hitAreas?: ButtonStateRecord[];
-};
-
-type ButtonStateRecord = {
-  characterId: number;
-  depth: number;
-  matrix: Matrix;
-};
-
-type DynamicTextControl = {
-  characterId: number;
-  variableName: string;
-  normalizedVariableName: string;
-  text: string;
-  fontHeight?: number;
-  leading?: number;
-  color?: string;
-  align?: "left" | "center" | "right" | "justify";
-  multiline?: boolean;
-  wordWrap?: boolean;
-  html?: boolean;
-};
-
-type RuntimeGlobalValue = string | number | boolean;
-type SceneEntryTarget = {
-  label?: string;
-  frame?: number;
-  frameExpression?: string;
-};
-
-type AssetTimeline = {
-  scene: string;
-  source: string;
-  dimensions: { width: number; height: number };
-  backgroundColor: string;
-  fps: number;
-  frameCount: number;
-  duration: number;
-  entryFrame?: number;
-  labels?: Record<string, number>;
-  control?: {
-    stopFrames?: number[];
-    spriteStopFrames?: Record<string, number[]>;
-    spriteLocalDefaults?: Record<string, Record<string, RuntimeGlobalValue>>;
-    frameActions?: Array<{
-      frame: number;
-      source: string;
-      actions: ControlAction[];
-    }>;
-    spriteActions?: Array<{
-      spriteId: number;
-      frame: number;
-      source: string;
-      actions: ControlAction[];
-    }>;
-    dynamicTexts?: Record<string, DynamicTextControl>;
-    buttonActions?: Record<string, ButtonControl>;
-    buttonDefinitions?: ButtonDefinition[];
-    soundLibrary?: Record<string, { name: string; src: string }>;
-    globalDefaults?: Record<string, RuntimeGlobalValue>;
-    nestedSectionTargets?: Record<string, { label: string; frame: number }>;
-    nestedMovieClips?: Array<{
-      spriteId: number;
-      labels?: Record<string, number>;
-    }>;
-    segmentNavigation?: Array<{ swf: string }>;
-  };
-  frameSvgs: string[];
-  assets: Record<string, TimelineAsset>;
-  frames: TimelineFrame[];
-};
-
-type RenderedInstance = {
-  characterId: number;
-  element: HTMLDivElement;
-  content: HTMLElement;
-};
+import type {
+  Matrix,
+  TimelineAsset,
+  TimelineFrame,
+  ControlAction,
+  RenderedLoopItem,
+  ButtonControl,
+  ButtonDefinition,
+  ButtonStateRecord,
+  DynamicTextControl,
+  RuntimeGlobalValue,
+  SceneEntryTarget,
+  AssetTimeline,
+  RenderedInstance,
+} from "./app/frameModeTypes";
+import {
+  walkVisibleSvgTree,
+  ffdecCharacterId,
+  matrixToSvg,
+  timelineMatrixToSvg,
+  timelineMatrixToDomMatrix,
+  escapeHtml,
+} from "./app/svgUtils";
+import { selectRuntimeActions, evaluateBranchCondition } from "./app/runtimeConditions";
+import { fontFamiliesForAsset, extractedFontFamilyStack } from "./app/fonts";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("Missing #app root");
@@ -833,31 +659,6 @@ async function loadExtractedFonts(assetTimeline: AssetTimeline) {
   }
 
   await Promise.allSettled(loads);
-}
-
-function fontFamiliesForAsset(asset: TimelineAsset) {
-  const fileName = asset.src?.split("/").pop()?.replace(/\.[^.]+$/, "") ?? "";
-  const familyFromFile = fileName.replace(/^\d+_/, "").replace(/_/g, " ").trim();
-  return [...new Set([
-    familyFromFile,
-    familyFromFile.replace(/\s+/g, ""),
-    "Franklin Gothic Medium",
-    "Franklin Gothic",
-    "FranklinGothic",
-    "XP Franklin Gothic",
-  ].filter(Boolean))];
-}
-
-function extractedFontFamilyStack() {
-  return [
-    '"Franklin Gothic Medium"',
-    '"Franklin Gothic"',
-    '"FranklinGothic"',
-    '"XP Franklin Gothic"',
-    '"Arial Narrow"',
-    "Arial",
-    "sans-serif",
-  ].join(", ");
 }
 
 function buildGsapAssetPlayer(assetTimeline: AssetTimeline) {
@@ -1844,73 +1645,6 @@ function restoreStaticAwaitingSources() {
   }
 }
 
-function walkVisibleSvgTree(element: Element, matrix: DOMMatrix, visit: (element: Element, matrix: DOMMatrix) => void, seen = new Set<string>()) {
-  const nextMatrix = matrix.multiply(parseSvgMatrix(element.getAttribute("transform")));
-  visit(element, nextMatrix);
-
-  const href = svgHref(element);
-  if (href?.startsWith("#")) {
-    const id = href.slice(1);
-    if (seen.has(id)) return;
-    const referenced = element.ownerDocument.getElementById(id);
-    if (referenced) {
-      const nextSeen = new Set(seen);
-      nextSeen.add(id);
-      for (const child of [...referenced.children]) {
-        walkVisibleSvgTree(child, nextMatrix, visit, nextSeen);
-      }
-    }
-  }
-
-  if (element.tagName.toLowerCase() !== "use") {
-    for (const child of [...element.children]) {
-      if (child.tagName.toLowerCase() === "defs") continue;
-      walkVisibleSvgTree(child, nextMatrix, visit, seen);
-    }
-  }
-}
-
-function parseSvgMatrix(transform: string | null) {
-  if (!transform) return new DOMMatrix();
-  const match = transform.match(/matrix\(([^)]+)\)/);
-  if (!match) return new DOMMatrix();
-  const parts = match[1].split(/[\s,]+/).filter(Boolean).map((part) => Number.parseFloat(part));
-  if (parts.length !== 6 || parts.some((part) => !Number.isFinite(part))) return new DOMMatrix();
-  return new DOMMatrix(parts);
-}
-
-function svgHref(element: Element) {
-  return (
-    element.getAttribute("href") ??
-    element.getAttribute("xlink:href") ??
-    element.getAttributeNS("http://www.w3.org/1999/xlink", "href") ??
-    ""
-  );
-}
-
-function ffdecCharacterId(element: Element) {
-  const namespaced = element.getAttribute("ffdec:characterId") ?? element.getAttributeNS("https://www.free-decompiler.com/flash", "characterId");
-  if (namespaced) return namespaced;
-
-  for (const attribute of [...element.attributes]) {
-    if (attribute.name.toLowerCase().endsWith("characterid")) return attribute.value;
-  }
-
-  return "";
-}
-
-function matrixToSvg(matrix: DOMMatrix) {
-  return `matrix(${matrix.a}, ${matrix.b}, ${matrix.c}, ${matrix.d}, ${matrix.e}, ${matrix.f})`;
-}
-
-function timelineMatrixToSvg(matrix: Matrix) {
-  return `matrix(${matrix.a}, ${matrix.b}, ${matrix.c}, ${matrix.d}, ${matrix.tx}, ${matrix.ty})`;
-}
-
-function timelineMatrixToDomMatrix(matrix: Matrix) {
-  return new DOMMatrix([matrix.a, matrix.b, matrix.c, matrix.d, matrix.tx, matrix.ty]);
-}
-
 function setFrameStatus(assetTimeline: AssetTimeline, frameIndex: number, wiredTargets: number) {
   const frame = assetTimeline.frames[frameIndex];
   const label = frame?.label || `frame ${frameIndex + 1}`;
@@ -2144,16 +1878,6 @@ function frameLabel(assetTimeline: AssetTimeline, frameIndex: number) {
   return assetTimeline.frames[frameIndex]?.label
     || Object.entries(assetTimeline.labels ?? {}).find(([, frame]) => frame === frameIndex)?.[0]
     || "";
-}
-
-function escapeHtml(value: string) {
-  return value.replace(/[&<>"']/g, (char) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "\"": "&quot;",
-    "'": "&#39;",
-  }[char]!));
 }
 
 function startAwaitingLoop(assetTimeline: AssetTimeline, frameIndex: number, sectionOnly = false) {
@@ -2534,98 +2258,6 @@ function runtimeValues(assetTimeline: AssetTimeline) {
     ...(assetTimeline.control?.globalDefaults ?? {}),
     ...runtimeGlobals,
   };
-}
-
-function isTimelineAction(action: ControlAction) {
-  return action.executionContext === undefined || action.executionContext === "timeline";
-}
-
-function selectRuntimeActions(actions: ControlAction[], globals: Record<string, RuntimeGlobalValue> = {}) {
-  const timelineActions = actions.filter(isTimelineAction);
-  const branchActions = actions.filter((action) => action.executionContext === "branch" && action.branchCondition);
-  if (!branchActions.length) return timelineActions;
-
-  const evaluatedBranches = branchActions
-    .filter((action) => action.branchCondition !== "else")
-    .map((action) => ({ action, value: evaluateBranchCondition(action.branchCondition ?? "", globals) }))
-    .filter((entry): entry is { action: ControlAction; value: boolean } => entry.value !== undefined);
-  const matchedBranches = evaluatedBranches.filter((entry) => entry.value).map((entry) => entry.action);
-  const elseBranchActions = branchActions.filter((action) => action.branchCondition === "else");
-  const selectedBranchActions = matchedBranches.length
-    ? matchedBranches
-    : evaluatedBranches.length
-      ? elseBranchActions
-      : branchActions.every((action) => action.branchCondition === "else")
-        ? elseBranchActions
-      : [];
-
-  return [...timelineActions, ...selectedBranchActions];
-}
-
-function evaluateBranchCondition(condition: string, globals: Record<string, RuntimeGlobalValue>): boolean | undefined {
-  const trimmed = condition.trim();
-  if (!trimmed || trimmed === "else") return undefined;
-
-  const andParts = splitCondition(trimmed, "&&");
-  if (andParts.length > 1) {
-    const values: Array<boolean | undefined> = andParts.map((part) => evaluateBranchCondition(part, globals));
-    return values.some((value: boolean | undefined) => value === undefined) ? undefined : values.every(Boolean);
-  }
-
-  const orParts = splitCondition(trimmed, "||");
-  if (orParts.length > 1) {
-    const values: Array<boolean | undefined> = orParts.map((part) => evaluateBranchCondition(part, globals));
-    return values.some((value: boolean | undefined) => value === undefined) ? undefined : values.some(Boolean);
-  }
-
-  const equality = trimmed.match(/^(.+?)\s*==\s*("[^"]*"|'[^']*'|-?\d+(?:\.\d+)?|true|false)$/);
-  if (equality) {
-    const value = runtimeValueFor(equality[1], globals);
-    return value === undefined ? undefined : value === parseRuntimeLiteral(equality[2]);
-  }
-
-  const inequality = trimmed.match(/^(.+?)\s*!=\s*("[^"]*"|'[^']*'|-?\d+(?:\.\d+)?|true|false)$/);
-  if (inequality) {
-    const value = runtimeValueFor(inequality[1], globals);
-    return value === undefined ? undefined : value !== parseRuntimeLiteral(inequality[2]);
-  }
-
-  const negated = trimmed.match(/^!(.+)$/);
-  if (negated) {
-    const value = runtimeValueFor(negated[1], globals);
-    return !Boolean(value);
-  }
-
-  const value = runtimeValueFor(trimmed, globals);
-  return Boolean(value);
-}
-
-function splitCondition(condition: string, operator: "&&" | "||"): string[] {
-  return condition
-    .split(operator)
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-
-function runtimeValueFor(expression: string, globals: Record<string, RuntimeGlobalValue>) {
-  const normalized = normalizeGlobalName(expression);
-  return globals[normalized];
-}
-
-function normalizeGlobalName(expression: string) {
-  return expression.trim()
-    .replace(/^_level0\./, "")
-    .replace(/^_root\./, "");
-}
-
-function parseRuntimeLiteral(value: string): RuntimeGlobalValue {
-  const trimmed = value.trim();
-  const stringValue = trimmed.match(/^"([^"]*)"$/)?.[1] ?? trimmed.match(/^'([^']*)'$/)?.[1];
-  if (stringValue !== undefined) return stringValue;
-  if (trimmed === "true") return true;
-  if (trimmed === "false") return false;
-  const numericValue = Number(trimmed);
-  return Number.isFinite(numericValue) ? numericValue : trimmed;
 }
 
 function resolveSceneEntryFrame(assetTimeline: AssetTimeline, entryTarget?: SceneEntryTarget) {
