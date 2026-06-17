@@ -206,7 +206,9 @@ export class PlayerController {
     const player = this.levels.get(Number(match[1]))?.player;
     if (!player) return;
     const path = target.replace(/^_level\d+\.?/i, ""); // "_level6.yellowPro" → "yellowPro"
-    if (path) player.runNamedClipCommand(player.rootClip, path, command, frame);
+    // Empty path = the whole level root (`_level4.gotoAndPlay("segStart")` — the attract loop
+    // playing the loaded segment); a non-empty path targets a named clip in that level.
+    player.runNamedClipCommand(player.rootClip, path, command, frame);
   }
 
   /** Fetch a `loadVariables` text file (`&key=value&…`) and feed it to the level's text fields. */

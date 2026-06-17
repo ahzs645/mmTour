@@ -668,6 +668,13 @@ export class Player {
           break;
         case "gotoAndPlay":
         case "gotoAndStop": {
+          // A cross-level timeline command (`_level4.gotoAndPlay("segStart")` — the attract loop
+          // telling the loaded segment to play its content) routes through the controller to that
+          // level's player. (_level0 stays local: it's the shared-global alias for this root.)
+          if (action.target && /^_level[1-9]\d*\b/i.test(action.target)) {
+            this.options.onClipCommand?.(action.target, action.command, action.label ?? action.frame ?? 0);
+            break;
+          }
           const target = this.resolveTarget(clip, action.target);
           const frame = this.resolveFrame(action, target);
           if (!target || frame < 0) break;
@@ -700,6 +707,11 @@ export class Player {
         case "loadMovieNum":
         case "loadMovie":
           this.options.onNavigate?.(action);
+          break;
+        case "doRelease":
+          // The nav's `doRelease("segmentN.swf")` (a frame action on the click/exit path) =
+          // load that segment fresh into the content level, like the on-click navigation.
+          if (action.swf) this.options.onNavigate?.({ command: "loadMovie", swf: action.swf, level: action.level, reload: true });
           break;
         case "loadVariables":
           this.options.onLoadVariables?.(action);
