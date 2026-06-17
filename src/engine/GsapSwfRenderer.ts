@@ -20,6 +20,7 @@ import {
   resolveAvm1Variable, setAvm1Variable, toAvm1Boolean, toAvm1Number, toAvm1String,
 } from "./avm1Values";
 import { ensureSvgContentGroup, extractSvgOffset, getDescendantSvgTargets, getElementOffset, makeIdsUnique } from "./svgDom";
+import { avm1Equals, readConstantPool, readFunctionDefinition, readPushValues } from "./avm1Bytecode";
 
 
 const loadedFontFaces = new Map<string, Promise<void>>();
@@ -1114,7 +1115,7 @@ export class GsapSwfRenderer {
         case 0x49: {
           const a = stack.pop();
           const b = stack.pop();
-          stack.push(this.avm1Equals(b, a));
+          stack.push(avm1Equals(b, a));
           break;
         }
 
@@ -1141,11 +1142,11 @@ export class GsapSwfRenderer {
           break;
 
         case 0x88:
-          constantPool = this.readConstantPool(bytes.subarray(actionStart, actionEnd));
+          constantPool = readConstantPool(bytes.subarray(actionStart, actionEnd));
           break;
 
         case 0x96:
-          this.readPushValues(bytes.subarray(actionStart, actionEnd), constantPool, stack);
+          readPushValues(bytes.subarray(actionStart, actionEnd), constantPool, stack);
           break;
 
         case 0x99: {
@@ -1155,7 +1156,7 @@ export class GsapSwfRenderer {
         }
 
         case 0x9B: {
-          const parsed = this.readFunctionDefinition(bytes, actionStart, actionEnd, constantPool);
+          const parsed = readFunctionDefinition(bytes, actionStart, actionEnd, constantPool);
           if (parsed) {
             functions.set(parsed.def.name, parsed.def);
             if (parsed.def.name) {
@@ -1198,124 +1199,8 @@ export class GsapSwfRenderer {
     }
   }
 
-  private readConstantPool(bytes: Uint8Array): string[] {
-    if (bytes.length < 2) return [];
 
-    const poolSize = bytes[0] | (bytes[1] << 8);
-    const pool: string[] = [];
-    let pos = 2;
 
-    for (let i = 0; i < poolSize && pos < bytes.length; i++) {
-      const end = bytes.indexOf(0, pos);
-      if (end === -1) {
-        pool.push(decodeBytes(bytes.subarray(pos)));
-        break;
-      }
-      pool.push(decodeBytes(bytes.subarray(pos, end)));
-      pos = end + 1;
-    }
-
-    return pool;
-  }
-
-  private readPushValues(bytes: Uint8Array, constantPool: string[], stack: Avm1Value[]) {
-    let pos = 0;
-
-    while (pos < bytes.length) {
-      const valueType = bytes[pos++];
-
-      switch (valueType) {
-        case 0x00: {
-          const end = bytes.indexOf(0, pos);
-          if (end === -1) {
-            stack.push(decodeBytes(bytes.subarray(pos)));
-            return;
-          }
-          stack.push(decodeBytes(bytes.subarray(pos, end)));
-          pos = end + 1;
-          break;
-        }
-
-        case 0x02:
-          stack.push(null);
-          break;
-
-        case 0x03:
-          stack.push(undefined);
-          break;
-
-        case 0x05:
-          stack.push(bytes[pos++] !== 0);
-          break;
-
-        case 0x07:
-          stack.push(
-            bytes[pos] |
-            (bytes[pos + 1] << 8) |
-            (bytes[pos + 2] << 16) |
-            (bytes[pos + 3] << 24),
-          );
-          pos += 4;
-          break;
-
-        case 0x08:
-          stack.push(constantPool[bytes[pos++]] ?? undefined);
-          break;
-
-        case 0x09: {
-          const index = bytes[pos] | (bytes[pos + 1] << 8);
-          stack.push(constantPool[index] ?? undefined);
-          pos += 2;
-          break;
-        }
-
-        default:
-          return;
-      }
-    }
-  }
-
-  private readFunctionDefinition(
-    bytes: Uint8Array,
-    headerStart: number,
-    headerEnd: number,
-    constantPool: string[],
-  ): { def: Avm1FunctionDef; nextPos: number } | null {
-    const header = bytes.subarray(headerStart, headerEnd);
-    let pos = 0;
-    const nameEnd = header.indexOf(0, pos);
-    if (nameEnd === -1) return null;
-
-    const name = decodeBytes(header.subarray(pos, nameEnd));
-    pos = nameEnd + 1;
-    if (pos + 2 > header.length) return null;
-
-    const paramCount = header[pos] | (header[pos + 1] << 8);
-    pos += 2;
-
-    const params: string[] = [];
-    for (let i = 0; i < paramCount && pos < header.length; i++) {
-      const end = header.indexOf(0, pos);
-      if (end === -1) return null;
-      params.push(decodeBytes(header.subarray(pos, end)));
-      pos = end + 1;
-    }
-
-    if (pos + 2 > header.length) return null;
-    const codeSize = header[pos] | (header[pos + 1] << 8);
-
-    const bodyStart = headerEnd;
-    const bodyEnd = Math.min(bytes.length, bodyStart + codeSize);
-    return {
-      def: {
-        name,
-        params,
-        body: bytes.subarray(bodyStart, bodyEnd),
-        constantPool: [...constantPool],
-      },
-      nextPos: bodyEnd,
-    };
-  }
 
 
   private getAvm1Member(target: Avm1Value, memberName: string): Avm1Value {
@@ -1535,12 +1420,6 @@ export class GsapSwfRenderer {
     objectTarget[memberPath[memberPath.length - 1]] = value;
   }
 
-  private avm1Equals(a: Avm1Value, b: Avm1Value): boolean {
-    if (typeof a === 'number' || typeof b === 'number') {
-      return toAvm1Number(a) === toAvm1Number(b);
-    }
-    return toAvm1String(a) === toAvm1String(b);
-  }
 
   private resolveLabelFrame(char: { frames: SwfFrame[]; id?: number }, label: string): number | null {
     const cacheKey = char.id;
