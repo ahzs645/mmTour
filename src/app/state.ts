@@ -26,7 +26,7 @@ export interface AppState {
   directSwfScene: string;
   directSwfLoad: Promise<GsapSwfRenderer | null> | null;
   renderedInstances: Map<number, RenderedInstance>;
-  activeDebugTab: "stage" | "labels" | "actions" | "live";
+  activeDebugTab: "stage" | "labels" | "actions" | "live" | "trace";
   highlightedDepth: number | null;
   /** Player "Live" debug tab: the data-key of the inspected live node (occlusion target). */
   selectedLiveKey: string | null;

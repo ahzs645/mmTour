@@ -1,8 +1,9 @@
 // Display-list debug panel rendering for the comparison modes.
 
 import {
-  assetStage, debugList, debugSummary, frameScrubber, liveDetail, liveFreeze, liveHideEmpty, liveKind,
-  liveLevelChips, liveSearch, playerLayer, referenceFrameMeta,
+  assetStage, debugList, debugSummary, frameScrubber, liveDetail, liveFilters, liveFreeze, liveHideEmpty,
+  liveKind, liveLevelChips, liveSearch, playerLayer, referenceFrameMeta, renderModeSelect, select,
+  traceBar, traceClear, traceCopy, traceRecord, traceStatus,
 } from "./dom";
 import { playerController, state as appState } from "./state";
 import { escapeHtml } from "./svgUtils";
@@ -17,11 +18,13 @@ export function updateDebugPanel(
   frameIndex = Number(frameScrubber.value),
   gsapEntries?: GsapDisplayDebugEntry[],
 ) {
-  // "Live" inspects the actual player DOM, not the frame-SVG timeline — handle it first.
-  if (appState.activeDebugTab === "live") {
-    renderLiveDebug();
-    return;
-  }
+  // "Live" / "Trace" inspect the live player, not the frame-SVG timeline — handle them first.
+  if (appState.activeDebugTab === "live") { renderLiveDebug(); return; }
+  if (appState.activeDebugTab === "trace") { renderTraceDebug(); return; }
+  // stage / labels / actions: no auxiliary bars.
+  liveFilters.hidden = true;
+  liveDetail.hidden = true;
+  traceBar.hidden = true;
 
   if (!assetTimeline) {
     debugSummary.textContent = "";
@@ -293,6 +296,10 @@ function passesFilter(n: LiveNode): boolean {
 }
 
 export function renderLiveDebug() {
+  // Own the bar visibility here too (robust against a stale main.ts handler).
+  liveFilters.hidden = false;
+  liveDetail.hidden = false;
+  traceBar.hidden = true;
   const prevScroll = debugList.scrollTop;
   const all = collectLiveNodes();
   clearLiveHighlights();
@@ -404,4 +411,90 @@ export function startLiveDebugLoop() {
     liveRaf = requestAnimationFrame(tick);
   };
   liveRaf = requestAnimationFrame(tick);
+}
+
+// --- Trace recorder: capture the click path through the player so it can be replayed ----------
+// Each click on a player hit area is logged with timing + stage-relative position + the node's
+// character/level, plus the starting scene/mode — so the exact path to a state (which has been the
+// hard part to reproduce, e.g. the segment-viewing state where the nav bar covers the title) can be
+// exported as JSON and replayed verbatim.
+type TraceStep = { t: number; relX: number; relY: number; char: string; level: number; label: string; hit: boolean };
+let tracing = false;
+let traceStart = 0;
+let traceWired = false;
+const traceSteps: TraceStep[] = [];
+
+const traceSummary = () => (tracing ? `recording… ${traceSteps.length} clicks` : `${traceSteps.length} clicks`);
+
+/** Wire the recorder once: a capture-phase pointerdown logger + the control buttons. */
+export function initTrace() {
+  if (traceWired) return;
+  traceWired = true;
+  // Capture phase on the STAGE (not playerLayer — it's pointer-events:none, so empty-space clicks
+  // pass through it) so we log every click on the player surface, hit area or not.
+  assetStage.addEventListener("pointerdown", (e) => {
+    if (!tracing) return;
+    const stage = assetStage.getBoundingClientRect();
+    const target = e.target as HTMLElement;
+    const inst = target.closest<HTMLElement>(".player-instance");
+    traceSteps.push({
+      t: Math.round(performance.now() - traceStart),
+      relX: Number(((e.clientX - stage.left) / stage.width).toFixed(4)),
+      relY: Number(((e.clientY - stage.top) / stage.height).toFixed(4)),
+      char: inst?.dataset.character ?? "-",
+      level: Number(inst?.closest<HTMLElement>(".player-level")?.style.zIndex ?? -1),
+      label: (inst?.textContent ?? "").trim().slice(0, 30),
+      hit: Boolean(target.closest(".player-hit")),
+    });
+    if (appState.activeDebugTab === "trace") renderTraceDebug();
+  }, true);
+
+  traceRecord.addEventListener("click", () => {
+    tracing = !tracing;
+    if (tracing) { traceStart = performance.now(); traceSteps.length = 0; }
+    renderTraceDebug();
+  });
+  traceClear.addEventListener("click", () => { traceSteps.length = 0; renderTraceDebug(); });
+  traceCopy.addEventListener("click", () => {
+    const json = JSON.stringify({
+      scene: select.value,
+      sceneLabel: (select.selectedOptions[0]?.textContent ?? "").trim(),
+      renderMode: renderModeSelect.value,
+      steps: traceSteps,
+    }, null, 2);
+    void navigator.clipboard?.writeText(json).then(() => {
+      traceStatus.textContent = "copied ✓";
+      setTimeout(() => { traceStatus.textContent = traceSummary(); }, 1200);
+    });
+  });
+}
+
+export function renderTraceDebug() {
+  // Self-contained: wire the controls and own the bar visibility here, so the Trace tab works even
+  // if main.ts's tab handler is stale (a partial HMR leaves the bar hidden otherwise).
+  initTrace();
+  traceBar.hidden = false;
+  liveFilters.hidden = true;
+  liveDetail.hidden = true;
+  traceRecord.classList.toggle("is-recording", tracing);
+  traceRecord.textContent = tracing ? "■ Stop" : "● Record";
+  traceStatus.textContent = traceSummary();
+  debugSummary.textContent = traceSummary();
+  debugList.replaceChildren();
+  if (!traceSteps.length) {
+    debugList.append(emptyDebugMessage("Press ● Record, then click through the player. Each click logs time + position + the node's char/level. Copy JSON to share the exact path."));
+    return;
+  }
+  traceSteps.forEach((s, i) => {
+    const row = document.createElement("div");
+    row.className = "debug-item";
+    row.innerHTML = `
+      <span class="debug-depth">${i + 1}</span>
+      <span class="debug-main">
+        <strong>${s.hit ? `char ${escapeHtml(s.char)}` : "(empty space)"}${s.label ? ` "${escapeHtml(s.label)}"` : ""}</strong>
+        <small>${s.t} ms · L${s.level} · ${(s.relX * 100).toFixed(1)}%, ${(s.relY * 100).toFixed(1)}%</small>
+      </span>
+    `;
+    debugList.append(row);
+  });
 }

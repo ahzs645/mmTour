@@ -1,7 +1,7 @@
 import { scenes } from "./data/scenes";
 import {
   assetWrap, externalLevelLayer, frameScrubber, infoBtn, infoModal, liveDetail, liveFilters, playBtn,
-  renderModeSelect, restartBtn, select,
+  renderModeSelect, restartBtn, select, traceBar,
 } from "./app/dom";
 import { playerController, state as appState } from "./app/state";
 import type { RuffleElement } from "./app/frameModeTypes";
@@ -10,7 +10,10 @@ import { activatePlayerMode, isDirectRenderMode, isPlayerMode, updatePlayButton 
 import {
   renderDirectSwfFrame, restartDirectRenderer, toggleDirectRendererPlayback, updateDirectDebugPanel,
 } from "./app/directMode";
-import { clearLiveHighlights, initLiveFilters, renderLiveDebug, startLiveDebugLoop, updateDebugPanel } from "./app/debugPanel";
+import {
+  clearLiveHighlights, initLiveFilters, initTrace, renderLiveDebug, renderTraceDebug,
+  startLiveDebugLoop, updateDebugPanel,
+} from "./app/debugPanel";
 import { shouldStopAtFrame } from "./app/runtimeActions";
 import { loadScene } from "./app/sceneLoader";
 import { goToFrame, renderFrame, syncAssetStageScale } from "./app/frameMode";
@@ -125,13 +128,20 @@ document.querySelectorAll<HTMLButtonElement>(".debug-tab").forEach((button) => {
       tab.classList.toggle("is-active", tab === button);
     });
     const live = appState.activeDebugTab === "live";
+    const trace = appState.activeDebugTab === "trace";
     liveFilters.hidden = !live;
     liveDetail.hidden = !live;
+    traceBar.hidden = !trace;
     if (!live) clearLiveHighlights(); // drop stage outlines when leaving Live
     if (live) {
       initLiveFilters();
       renderLiveDebug();
       startLiveDebugLoop();
+      return;
+    }
+    if (trace) {
+      initTrace();
+      renderTraceDebug();
       return;
     }
     if (isDirectRenderMode() && appState.directSwfRenderer) {

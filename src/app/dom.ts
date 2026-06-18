@@ -82,7 +82,13 @@ app.innerHTML = `
           <h2>Display List Debug</h2>
           <span id="debugSummary"></span>
         </div>
-        <div class="debug-tabs" role="tablist" aria-label="Display list debug views"><button class="debug-tab is-active" data-debug-tab="stage" type="button">On Stage</button><button class="debug-tab" data-debug-tab="labels" type="button">Labels</button><button class="debug-tab" data-debug-tab="actions" type="button">Actions</button><button class="debug-tab" data-debug-tab="live" type="button" title="Live player DOM: nodes in paint order across _levelN layers, with occlusion (what is drawn on top of a node)">Live</button></div>
+        <div class="debug-tabs" role="tablist" aria-label="Display list debug views"><button class="debug-tab is-active" data-debug-tab="stage" type="button">On Stage</button><button class="debug-tab" data-debug-tab="labels" type="button">Labels</button><button class="debug-tab" data-debug-tab="actions" type="button">Actions</button><button class="debug-tab" data-debug-tab="live" type="button" title="Live player DOM: nodes in paint order across _levelN layers, with occlusion (what is drawn on top of a node)">Live</button><button class="debug-tab" data-debug-tab="trace" type="button" title="Record your click path through the player (with timing + position) so it can be replayed">Trace</button></div>
+        <div id="traceBar" class="trace-bar" hidden>
+          <button id="traceRecord" type="button" class="trace-btn">● Record</button>
+          <button id="traceClear" type="button" class="trace-btn">Clear</button>
+          <button id="traceCopy" type="button" class="trace-btn">Copy JSON</button>
+          <span id="traceStatus" class="trace-status"></span>
+        </div>
         <div id="liveFilters" class="live-filters" hidden>
           <input id="liveSearch" type="search" placeholder="filter: char id or text…" />
           <span id="liveLevelChips" class="live-chips"></span>
@@ -157,3 +163,8 @@ export const liveHideEmpty = must<HTMLInputElement>("#liveHideEmpty");
 export const liveFreeze = must<HTMLInputElement>("#liveFreeze");
 export const liveLevelChips = must<HTMLSpanElement>("#liveLevelChips");
 export const liveDetail = must<HTMLElement>("#liveDetail");
+export const traceBar = must<HTMLDivElement>("#traceBar");
+export const traceRecord = must<HTMLButtonElement>("#traceRecord");
+export const traceClear = must<HTMLButtonElement>("#traceClear");
+export const traceCopy = must<HTMLButtonElement>("#traceCopy");
+export const traceStatus = must<HTMLSpanElement>("#traceStatus");

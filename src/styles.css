@@ -504,8 +504,42 @@ h2 {
 
 .debug-tabs {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   border-bottom: 1px solid #e1e6ee;
+}
+
+/* Trace recorder bar */
+.trace-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e1e6ee;
+  background: #f7f9fc;
+}
+
+.trace-btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid #cdd5e2;
+  border-radius: 5px;
+  background: #fff;
+  color: #515b6d;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.trace-btn.is-recording {
+  background: #d6263a;
+  border-color: #d6263a;
+  color: #fff;
+  font-weight: 700;
+}
+
+.trace-status {
+  font-size: 12px;
+  color: #7a8499;
 }
 
 .debug-tab {
