@@ -98,6 +98,10 @@ export class Player {
    *  assignment to one (e.g. the music control's `t_music = _parent.t_musicOn`) is
    *  mirrored into textVars and the bound field re-renders with the new value. */
   private readonly boundTextVars = new Set<string>();
+  /** A cross-level/named-clip command (`proToolbar.gotoAndPlay("hideInner")`) that arrived before
+   *  its target clip existed on stage — keyed by the clip's instance name. Applied when that clip is
+   *  next reconciled, so the command isn't silently dropped during a mid-transition race. */
+  private readonly pendingClipCommands = new Map<string, { command: string; frame: VarValue }>();
   /** A playVO fired and the next 1-frame hold-loop should wait for it (sndDonePlaying). */
   private voWaiting = false;
 
@@ -549,8 +553,17 @@ export class Player {
 
   /** Run a timeline command on a clip resolved by name/path (e.g. `yellowPro.gotoAndPlay("over")`). */
   runNamedClipCommand(from: ClipInstance, path: string, command: string, frame: VarValue): boolean {
+    const name = path.split(".").filter(Boolean).pop() ?? path;
     const clip = this.resolveTarget(from, path) ?? this.findClipByName(from, path) ?? this.findClipByName(this.root, path);
-    if (!clip) return false;
+    if (!clip) {
+      // The target clip isn't on stage yet — a cross-level call can land mid-transition (a segment's
+      // frame-1 `_level6.proToolbar.gotoAndPlay("hideInner")` fires before the nav has reconciled
+      // proToolbar). Remember the intent and apply it when that clip is next created (reconcile),
+      // so it isn't dropped and the nav bar actually hides over the segment's title.
+      this.pendingClipCommands.set(name, { command, frame });
+      return false;
+    }
+    this.pendingClipCommands.delete(name); // a now-resolvable command supersedes any queued intent
     const frameIndex = this.resolveClipFrame(clip, frame);
     if (frameIndex < 0) return false;
     clip.playing = command === "gotoAndPlay";
@@ -790,6 +803,14 @@ export class Player {
         const child = new ClipInstance(instance.characterId, instance.name, clip);
         clip.childClips.set(instance.depth, child);
         this.enterFrame(child, 0, 0);
+        // A command that arrived before this clip existed (e.g. the nav's proToolbar hide, issued by
+        // a segment on load) is applied now, on creation, instead of being lost.
+        const pending = instance.name ? this.pendingClipCommands.get(instance.name) : undefined;
+        if (pending) {
+          this.pendingClipCommands.delete(instance.name!);
+          const f = this.resolveClipFrame(child, pending.frame);
+          if (f >= 0) { child.playing = pending.command === "gotoAndPlay"; this.enterFrame(child, f, 0); }
+        }
       } else if (instance.name && existing.name !== instance.name) {
         // A later PlaceObject named this instance (FFDec emits the name on a frame
         // after its first placement, e.g. nav's btn_yellow_pro_anim ring) — apply it

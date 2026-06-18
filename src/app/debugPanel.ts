@@ -13,18 +13,25 @@ import { frameActionsAt } from "./runtimeActions";
 import type { GsapDisplayDebugEntry } from "../gsap-display-list-renderer";
 import type { AssetTimeline } from "./frameModeTypes";
 
+/** Single source of truth for the auxiliary debug bars: each shows only on its own tab. Called by
+ *  every render path so the bars stay correct regardless of which (possibly stale) caller triggered
+ *  the render — the Live filters/sidebar on "live", the Trace recorder bar on "trace", else hidden. */
+function syncDebugBars() {
+  const tab = appState.activeDebugTab;
+  liveFilters.hidden = tab !== "live";
+  liveDetail.hidden = tab !== "live";
+  traceBar.hidden = tab !== "trace";
+}
+
 export function updateDebugPanel(
   assetTimeline = appState.activeAssetTimeline,
   frameIndex = Number(frameScrubber.value),
   gsapEntries?: GsapDisplayDebugEntry[],
 ) {
+  syncDebugBars();
   // "Live" / "Trace" inspect the live player, not the frame-SVG timeline — handle them first.
   if (appState.activeDebugTab === "live") { renderLiveDebug(); return; }
   if (appState.activeDebugTab === "trace") { renderTraceDebug(); return; }
-  // stage / labels / actions: no auxiliary bars.
-  liveFilters.hidden = true;
-  liveDetail.hidden = true;
-  traceBar.hidden = true;
 
   if (!assetTimeline) {
     debugSummary.textContent = "";
@@ -296,10 +303,7 @@ function passesFilter(n: LiveNode): boolean {
 }
 
 export function renderLiveDebug() {
-  // Own the bar visibility here too (robust against a stale main.ts handler).
-  liveFilters.hidden = false;
-  liveDetail.hidden = false;
-  traceBar.hidden = true;
+  syncDebugBars(); // robust against a stale main.ts handler
   const prevScroll = debugList.scrollTop;
   const all = collectLiveNodes();
   clearLiveHighlights();
@@ -473,9 +477,7 @@ export function renderTraceDebug() {
   // Self-contained: wire the controls and own the bar visibility here, so the Trace tab works even
   // if main.ts's tab handler is stale (a partial HMR leaves the bar hidden otherwise).
   initTrace();
-  traceBar.hidden = false;
-  liveFilters.hidden = true;
-  liveDetail.hidden = true;
+  syncDebugBars();
   traceRecord.classList.toggle("is-recording", tracing);
   traceRecord.textContent = tracing ? "■ Stop" : "● Record";
   traceStatus.textContent = traceSummary();
