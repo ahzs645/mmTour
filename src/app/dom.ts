@@ -82,12 +82,7 @@ app.innerHTML = `
           <h2>Display List Debug</h2>
           <span id="debugSummary"></span>
         </div>
-        <div class="debug-tabs" role="tablist" aria-label="Display list debug views">
-          <button class="debug-tab is-active" data-debug-tab="stage" type="button">On Stage</button>
-          <button class="debug-tab" data-debug-tab="labels" type="button">Labels</button>
-          <button class="debug-tab" data-debug-tab="actions" type="button">Actions</button>
-          <button class="debug-tab" data-debug-tab="live" type="button" title="Live player DOM: nodes in paint order across _levelN layers, with occlusion (what is drawn on top of a node)">Live</button>
-        </div>
+        <div class="debug-tabs" role="tablist" aria-label="Display list debug views"><button class="debug-tab is-active" data-debug-tab="stage" type="button">On Stage</button><button class="debug-tab" data-debug-tab="labels" type="button">Labels</button><button class="debug-tab" data-debug-tab="actions" type="button">Actions</button><button class="debug-tab" data-debug-tab="live" type="button" title="Live player DOM: nodes in paint order across _levelN layers, with occlusion (what is drawn on top of a node)">Live</button></div>
         <div id="liveFilters" class="live-filters" hidden>
           <input id="liveSearch" type="search" placeholder="filter: char id or text…" />
           <span id="liveLevelChips" class="live-chips"></span>
@@ -99,6 +94,7 @@ app.innerHTML = `
             <option value="svg">svg</option>
           </select>
           <label class="live-toggle"><input type="checkbox" id="liveHideEmpty" checked /> hide 0×0</label>
+          <label class="live-toggle" title="Stop auto-refreshing so the list stays clickable (the view also auto-freezes while your pointer is over the panel)"><input type="checkbox" id="liveFreeze" /> freeze</label>
         </div>
         <div class="debug-body">
           <div id="debugList" class="debug-list"></div>
@@ -158,5 +154,6 @@ export const liveFilters = must<HTMLDivElement>("#liveFilters");
 export const liveSearch = must<HTMLInputElement>("#liveSearch");
 export const liveKind = must<HTMLSelectElement>("#liveKind");
 export const liveHideEmpty = must<HTMLInputElement>("#liveHideEmpty");
+export const liveFreeze = must<HTMLInputElement>("#liveFreeze");
 export const liveLevelChips = must<HTMLSpanElement>("#liveLevelChips");
 export const liveDetail = must<HTMLElement>("#liveDetail");

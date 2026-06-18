@@ -71,58 +71,50 @@ await clickSel(catSel, `category [${CATEGORY_CHARS.join(",")}]`);
 clearInterval(dbg);
 
 await mkdir(OUT, { recursive: true });
+await page.evaluate(() => { window.__t0 = performance.now(); });
 
-// Start the in-page coverage recorder at rAF frequency (catches sub-frame
-// teardown blanks). Probe 5 points across the bar width — the white can be
-// off-center where the nav bar extends but the segment bar doesn't.
-await page.evaluate(() => {
-  const layer = document.querySelector("#playerLayer");
-  const rect = layer.getBoundingClientRect();
-  const py = rect.bottom - 10;
-  const xs = [0.12, 0.31, 0.5, 0.69, 0.88].map((f) => rect.left + rect.width * f);
-  window.__t0 = performance.now();
-  window.__samples = [];
-  window.__gaps = [];
-  const coversPt = (r, px) => r.left <= px && r.right >= px && r.top <= py && r.bottom >= py;
-  let running = true;
-  window.__stop = () => { running = false; };
-  const tick = () => {
-    if (!running) return;
-    const levels = Array.from(document.querySelectorAll(".player-level")).map((lv) => {
-      const imgs = Array.from(lv.querySelectorAll("img.player-media")).filter((im) => im.getAttribute("src"));
-      return { z: lv.style.zIndex, imgs };
-    });
-    // For each x-point, is it covered by ANY image in ANY level?
-    const uncovered = xs.filter((px) => !levels.some((l) => l.imgs.some((im) => coversPt(im.getBoundingClientRect(), px))));
-    const t = Math.round(performance.now() - window.__t0);
-    if (uncovered.length) {
-      const detail = levels.map((l) => `z${l.z}:[${l.imgs.filter((im) => xs.some((px) => coversPt(im.getBoundingClientRect(), px))).map((im) => im.getAttribute("src").replace(/^.*\/generated\//, "")).join("|") || "-"}]`).join("  ");
-      window.__gaps.push({ t, nUncovered: uncovered.length, detail });
-    }
-    window.__samples.push({ t, uncovered: uncovered.length });
-    requestAnimationFrame(tick);
-  };
-  requestAnimationFrame(tick);
-});
-
-// Sample for ~20s: at the throttled headless rate the nav exit (384→437) takes
-// ~13s, so the toolbar-strip window (frames 432-437) lands ~12-15s after the click.
+// Dense screenshots through the transition. We analyse the actual PIXELS at the
+// bottom (white vs the periwinkle bar) afterwards — an image being present in the
+// DOM doesn't mean it's painting the bar, so trust pixels, not element coverage.
 const layerEl = await page.$("#playerLayer");
-for (let i = 0; i < 40; i++) {
+const shots = [];
+for (let i = 0; i < 80; i++) {
   const ms = await page.evaluate(() => Math.round(performance.now() - window.__t0));
-  if (layerEl) await layerEl.screenshot({ path: path.join(OUT, `s${String(i).padStart(2, "0")}_${String(ms).padStart(5, "0")}ms.png`) }).catch(() => {});
-  await page.waitForTimeout(400);
+  const file = path.join(OUT, `s${String(i).padStart(2, "0")}_${String(ms).padStart(5, "0")}ms.png`);
+  if (layerEl) { await layerEl.screenshot({ path: file }).catch(() => {}); shots.push({ ms, file }); }
+  await page.waitForTimeout(200);
 }
-await page.evaluate(() => window.__stop());
-const { samples, gaps } = await page.evaluate(() => ({ samples: window.__samples, gaps: window.__gaps }));
-
-console.log(`\n=== rAF coverage over bar width (${samples.length} frames sampled) ===`);
-console.log(`frames with ANY uncovered point: ${samples.filter((s) => s.uncovered).length} / ${samples.length}`);
-if (gaps.length) {
-  console.log(`\n!!! ${gaps.length} uncovered frames (white showing through the bottom bar):`);
-  for (const g of gaps) console.log(`  t=${String(g.t).padStart(5)}ms  ${g.nUncovered}/5 points white   ${g.detail}`);
-} else {
-  console.log("no uncovered frames — bottom bar fully continuous across the transition.");
-}
-
 await browser.close();
+
+// --- Pixel analysis: classify the bottom strip of each shot as white vs bar -----
+const { PNG } = await import("pngjs");
+const { readFileSync } = await import("node:fs");
+const classify = (file) => {
+  const png = PNG.sync.read(readFileSync(file));
+  const { width, height, data } = png;
+  const y0 = Math.max(0, height - 18), y1 = height - 3; // bottom strip, above the very edge
+  let white = 0, peri = 0, total = 0;
+  for (let y = y0; y < y1; y += 2) {
+    for (let x = Math.floor(width * 0.1); x < width * 0.9; x += 4) {
+      const i = (y * width + x) * 4;
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      total++;
+      if (r > 235 && g > 235 && b > 235) white++;
+      else if (b > 150 && b > r + 30 && g > 90 && g < 200) peri++; // ~#6687ff periwinkle bar
+    }
+  }
+  return { whitePct: Math.round((white / total) * 100), periPct: Math.round((peri / total) * 100) };
+};
+
+console.log("\n=== bottom-strip pixel classification (white% vs periwinkle-bar%) ===");
+let prev = "";
+for (const s of shots) {
+  const c = classify(s.file);
+  const tag = c.whitePct > 60 ? "  <<< MOSTLY WHITE (flash?)" : c.periPct > 40 ? "  bar" : "";
+  const sig = `${c.whitePct >= 60 ? "WHITE" : c.periPct >= 40 ? "BAR" : "other"}`;
+  if (sig !== prev || tag) console.log(`  t=${String(s.ms).padStart(5)}ms  white=${String(c.whitePct).padStart(3)}%  peri=${String(c.periPct).padStart(3)}%${tag}`);
+  prev = sig;
+}
+const whiteShots = shots.map((s) => ({ ...s, c: classify(s.file) })).filter((s) => s.c.whitePct > 60);
+console.log(`\nshots with bottom MOSTLY WHITE: ${whiteShots.length}/${shots.length}`);
+if (whiteShots.length) console.log("  white at:", whiteShots.map((s) => s.ms + "ms").join(", "));

@@ -1,8 +1,8 @@
 // Display-list debug panel rendering for the comparison modes.
 
 import {
-  assetStage, debugList, debugSummary, frameScrubber, liveDetail, liveHideEmpty, liveKind, liveLevelChips,
-  liveSearch, playerLayer, referenceFrameMeta,
+  assetStage, debugList, debugSummary, frameScrubber, liveDetail, liveFreeze, liveHideEmpty, liveKind,
+  liveLevelChips, liveSearch, playerLayer, referenceFrameMeta,
 } from "./dom";
 import { playerController, state as appState } from "./state";
 import { escapeHtml } from "./svgUtils";
@@ -252,14 +252,21 @@ const liveLabel = (n: LiveNode) => n.text ? `text "${escapeHtml(n.text.slice(0, 
 // computed against the FULL node set, so hiding noise here never hides a real occluder.
 const liveFilter = { search: "", kind: "", hideEmpty: true, level: null as number | null };
 let liveFiltersWired = false;
+// The auto-refresh rebuilds the list, which steals clicks. Pause it whenever the pointer is over
+// the panel (so it freezes exactly when you reach in to click) and/or when "freeze" is ticked.
+let livePointerInside = false;
 
-/** Attach the filter-bar listeners once (the inputs live in the app shell). */
+/** Attach the filter-bar + freeze/hover listeners once (the inputs live in the app shell). */
 export function initLiveFilters() {
   if (liveFiltersWired) return;
   liveFiltersWired = true;
   liveSearch.addEventListener("input", () => { liveFilter.search = liveSearch.value.trim().toLowerCase(); renderLiveDebug(); });
   liveKind.addEventListener("change", () => { liveFilter.kind = liveKind.value; renderLiveDebug(); });
   liveHideEmpty.addEventListener("change", () => { liveFilter.hideEmpty = liveHideEmpty.checked; renderLiveDebug(); });
+  liveFreeze.addEventListener("change", () => { if (!liveFreeze.checked) renderLiveDebug(); }); // refresh on un-freeze
+  const panel = liveSearch.closest<HTMLElement>(".debug-panel");
+  panel?.addEventListener("pointerenter", () => { livePointerInside = true; });
+  panel?.addEventListener("pointerleave", () => { livePointerInside = false; });
 }
 
 function renderLevelChips(levels: number[]) {
@@ -383,15 +390,17 @@ function renderLiveDetail(selected: LiveNode | null, all: LiveNode[]) {
   }
 }
 
-// Keep the Live view fresh while the player is playing (throttled), without rebuilding the
-// list while paused — so a paused scene stays clickable for inspection.
+// Keep the Live view fresh while the player is playing (throttled). It freezes when paused, when
+// the "freeze" flag is set, or while the pointer is over the panel — so the list stays clickable
+// (a rebuild mid-click is what made it impossible to select anything).
 let liveRaf = 0;
 let lastLiveRender = 0;
 export function startLiveDebugLoop() {
   cancelAnimationFrame(liveRaf);
   const tick = (t: number) => {
     if (appState.activeDebugTab !== "live") { clearLiveHighlights(); return; }
-    if (playerController.isPlaying && t - lastLiveRender > 150) { lastLiveRender = t; renderLiveDebug(); }
+    const frozen = liveFreeze.checked || livePointerInside;
+    if (playerController.isPlaying && !frozen && t - lastLiveRender > 150) { lastLiveRender = t; renderLiveDebug(); }
     liveRaf = requestAnimationFrame(tick);
   };
   liveRaf = requestAnimationFrame(tick);
