@@ -17,6 +17,11 @@ import {
 import { shouldStopAtFrame } from "./app/runtimeActions";
 import { loadScene } from "./app/sceneLoader";
 import { goToFrame, renderFrame, syncAssetStageScale } from "./app/frameMode";
+import { applySharpnessFlagsToRoot } from "./render/renderTuning";
+
+// Image-sharpness investigation: opt-in render experiments via `?sharpen=` (no-op
+// by default). See docs/image-sharpness-vs-ruffle.md.
+applySharpnessFlagsToRoot();
 
 declare global {
   interface Window {

@@ -418,6 +418,20 @@ h2 {
   display: block;
 }
 
+/* Image-sharpness experiment (?sharpen=nowill): stop promoting each instance to
+   its own GPU compositor texture, so the browser paints it into the shared stage
+   buffer with its high-quality rasteriser instead of bilinear-resampling a
+   pre-baked texture at a sub-pixel transform. See docs/image-sharpness-vs-ruffle.md. */
+.exp-sharpen-nowill .asset-instance,
+.exp-sharpen-nowill .player-instance,
+.exp-sharpen-nowill .gsap-display-entry,
+.exp-sharpen-nowill .direct-swf-layer .swf-shape,
+.exp-sharpen-nowill .direct-swf-layer .swf-image,
+.exp-sharpen-nowill .direct-swf-layer .swf-text,
+.exp-sharpen-nowill .direct-swf-layer .swf-sprite {
+  will-change: auto;
+}
+
 .player-text {
   position: absolute;
   transform-origin: 0 0;

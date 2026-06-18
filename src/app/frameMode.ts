@@ -27,6 +27,7 @@ import { playBackgroundMusic, playVoiceover, stopCurrentVoiceover } from "./audi
 import { updatePlayButton } from "./modes";
 import { updateDebugPanel } from "./debugPanel";
 import { renderDirectSwfFrame } from "./directMode";
+import { setStageScale, snapTranslate } from "../render/renderTuning";
 import { navigateToSceneBySwf } from "./sceneLoader";
 import { queueShellLevelCallsForLoadedScene, rememberLoadedLevel, runExternalLevelFunctionCall } from "./externalLevels";
 import type { AssetTimeline, ControlAction, RenderedLoopItem, TimelineAsset, TimelineFrame } from "./frameModeTypes";
@@ -151,9 +152,10 @@ export function renderFrame(assetTimeline: AssetTimeline, index: number) {
     liveDepths.add(instance.depth);
     const rendered = ensureRenderedInstance(instance.depth, instance.characterId, asset, frame.index);
     const { a, b, c, d, tx, ty } = instance.matrix;
+    const [stx, sty] = snapTranslate(tx, ty);
     rendered.element.style.zIndex = String(instance.depth);
     rendered.element.style.opacity = String(instance.opacity);
-    rendered.element.style.transform = `matrix(${a}, ${b}, ${c}, ${d}, ${tx}, ${ty})`;
+    rendered.element.style.transform = `matrix(${a}, ${b}, ${c}, ${d}, ${stx}, ${sty})`;
 
     if (asset.kind === "sprite" && asset.frames?.length && rendered.content instanceof HTMLImageElement) {
       const spriteFrame = Math.max(0, frame.index - instance.placedFrame) % asset.frames.length;
@@ -424,6 +426,7 @@ export function syncAssetStageScale() {
   const rect = assetWrap.getBoundingClientRect();
   const scale = Math.min(rect.width / 640, rect.height / 480);
   assetStage.style.setProperty("--stage-scale", String(scale));
+  setStageScale(scale);
 }
 
 export function ensureRenderedInstance(depth: number, characterId: number, asset: TimelineAsset, frameIndex: number) {

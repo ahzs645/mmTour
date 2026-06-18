@@ -184,3 +184,59 @@ isolating a single layer.
 > at target resolution. Do not re-try the CSS scale / dpr / image-rendering fixes.
 > Cheapest next probe: isolate which layer type (overlaid text vs baked SVG vs raw
 > img) carries the softness. Full write-up: `docs/image-sharpness-vs-ruffle.md`.
+
+---
+
+## 10. Follow-up (2026-06-18): the gap in §4, and two newly-implemented levers
+
+**The blind spot.** Re-reading §4 against §6: all three disproven fixes act on the
+**stage** (global `transform: scale`, global dpr, global `image-rendering`), yet the
+leading root-cause hypothesis (§6) blames the **per-instance** layer — "separately
+rasterised DOM/SVG layers, each with `will-change: transform`, placed with sub-pixel
+`transform: matrix(...)`." That mechanism was *hypothesised but never directly tested.*
+It also uniquely explains the dpr-immunity: a `will-change`-promoted layer is
+rasterised once into its own GPU texture and then **bilinear-resampled at its
+sub-pixel transform offset**; the sub-pixel *fraction* is identical at dpr=1 and dpr=2,
+so supersampling the stage can't remove it. That is a better fit for Finding B than the
+single-canvas hand-wave.
+
+**Two cheap levers that target it — now wired behind a no-op `?sharpen=` flag** (so
+they can be A/B-measured the way §3 demands, without changing default rendering):
+
+| Flag | What it does | Where |
+|---|---|---|
+| `?sharpen=nowill` | Drops `will-change` from instance layers (`.player-instance`, `.asset-instance`, `.swf-*`, `.gsap-display-entry`) → browser paints them into the shared stage buffer with its full-quality rasteriser instead of resampling a pre-baked texture. | `src/styles.css` (`.exp-sharpen-nowill …`), toggled by `applySharpnessFlagsToRoot()` in `src/main.ts`. |
+| `?sharpen=snap` | Rounds each instance's translation to a whole **device** pixel (accounting for `--stage-scale × dpr`) so there is no sub-pixel boundary to resample. | `src/render/renderTuning.ts` `snapTranslate()`, called from `DomRenderer.placeNode` and `frameMode.ts`. |
+| `?sharpen=all` | Both. | — |
+
+These are **distinct from the three disproven fixes** — those snapped the *stage* scale;
+these touch the *instances* the hypothesis actually implicates. They are **not yet
+measured** (the change was authored in a CI container with no browser and no built
+`public/generated/` assets).
+
+**How to A/B them** (on a machine that can run the harness):
+
+```bash
+# baseline
+PLAYER_RUFFLE_SAMPLES=2 node scripts/compare-player-ruffle.mjs
+# then re-capture with the app opened at ?sharpen=all and compare the player PNGs:
+node scripts/measure-sharpness.mjs <baseline-player>.png <sharpen-player>.png
+#   → ratio > 1.0 means the experiment sharpened our render.
+```
+
+`scripts/measure-sharpness.mjs` is the previously-throwaway metric from §3, now
+committed: it prints mean luminance, per-channel mean/stdev (contrast), and sharpness
+(mean |∇luma|) for one image, plus the sharpness ratio for two. The per-pixel mean
+makes the ratio valid even across different capture sizes (e.g. dpr=1 vs dpr=2).
+
+**Also worth doing — stop measuring against a moving target.** The 0.88 in §3 is
+**player-vs-Ruffle**: two independent renderers with different AA filters and sub-pixel
+placement. A gradient-energy *ratio* between two correct-but-different renders is
+essentially never 1.0, so part of the "12%" is just "we aren't Ruffle," which no CSS
+knob can ever fix. To learn whether *we* soften at all, point `measure-sharpness.mjs`
+at our capture **vs the source asset pixels** (a FFDec-baked frame PNG / the raw
+bitmaps) instead of Ruffle. If we match the source, nothing is being washed out and
+only §7 option 3 (single-canvas) could close the residual Ruffle gap. Within the
+"isolate by layer type" probe, prioritise **text**: our text is real DOM `<div>` glyphs
+with browser font AA (`DomRenderer.styleText`), which cannot match Flash glyph
+rasterisation, and text is the highest-gradient content on these tour screens.
