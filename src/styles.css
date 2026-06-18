@@ -136,21 +136,155 @@ button:disabled {
 
 .analysis-grid {
   display: grid;
-  grid-template-columns: minmax(280px, 420px) minmax(320px, 1fr) minmax(280px, 420px) 1fr;
+  grid-template-columns: 1fr;
   gap: 18px;
   margin-top: 18px;
 }
 
-.panel,
-.notes {
+.panel {
   background: #fff;
   border: 1px solid #d8dee8;
   border-radius: 8px;
   overflow: hidden;
 }
 
-.notes {
-  padding: 18px;
+/* Topbar info button + about modal */
+.topbar-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.info-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid #cdd5e2;
+  background: #fff;
+  color: #224ea8;
+  font-weight: 700;
+  font-style: italic;
+  font-family: Georgia, "Times New Roman", serif;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.info-btn:hover {
+  background: #eef4ff;
+}
+
+.info-modal {
+  width: min(560px, 92vw);
+  border: 1px solid #d8dee8;
+  border-radius: 10px;
+  padding: 0;
+  box-shadow: 0 18px 50px rgb(15 23 42 / 28%);
+}
+
+.info-modal::backdrop {
+  background: rgb(15 23 42 / 38%);
+}
+
+.info-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid #e1e6ee;
+}
+
+.info-close {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #515b6d;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.info-close:hover {
+  background: #eef1f6;
+}
+
+.info-modal-body {
+  padding: 16px 18px 20px;
+}
+
+.info-modal-body h3 {
+  margin: 14px 0 6px;
+  font-size: 14px;
+  color: #224ea8;
+}
+
+.info-modal-body h3:first-child {
+  margin-top: 0;
+}
+
+.info-modal-body p {
+  color: #515b6d;
+  line-height: 1.55;
+  font-size: 13px;
+}
+
+/* Live player-DOM inspector: filter bar + level chips */
+.live-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e1e6ee;
+  background: #f7f9fc;
+}
+
+.live-filters input[type="search"] {
+  flex: 1 1 130px;
+  min-width: 110px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid #cdd5e2;
+  border-radius: 5px;
+  font-size: 12px;
+}
+
+.live-filters select {
+  height: 26px;
+  border: 1px solid #cdd5e2;
+  border-radius: 5px;
+  font-size: 12px;
+}
+
+.live-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #515b6d;
+}
+
+.live-chips {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.live-chip {
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid #cdd5e2;
+  border-radius: 999px;
+  background: #fff;
+  color: #515b6d;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.live-chip.is-active {
+  background: #224ea8;
+  border-color: #224ea8;
+  color: #fff;
+  font-weight: 700;
 }
 
 .notes p {
@@ -393,13 +527,65 @@ h2 {
   font-weight: 700;
 }
 
+.debug-body {
+  display: flex;
+  align-items: stretch;
+}
+
 .debug-list {
+  flex: 1 1 auto;
   display: grid;
   align-content: start;
   gap: 6px;
-  max-height: 320px;
+  max-height: 460px;
   overflow: auto;
   padding: 10px;
+}
+
+/* Occlusion detail sidebar (Live tab): what's painted over the selected node */
+.live-detail {
+  flex: 0 0 320px;
+  max-height: 460px;
+  overflow: auto;
+  padding: 12px 14px;
+  border-left: 1px solid #e1e6ee;
+  background: #fafbfd;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #515b6d;
+}
+
+.live-detail .live-detail-title {
+  font-size: 13px;
+  color: #1f2937;
+  margin-bottom: 4px;
+}
+
+.live-detail .live-detail-sub {
+  color: #7a8499;
+  margin-bottom: 10px;
+}
+
+.live-detail .live-occ {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.live-detail .live-occ-row {
+  padding: 5px 7px;
+  border: 1px solid #e4e8f0;
+  border-radius: 5px;
+  background: #fff;
+}
+
+.live-detail .live-occ-row.is-solid {
+  border-color: #f1b0b0;
+  background: #fff6f6;
+}
+
+.live-detail .live-hint {
+  color: #98a1b3;
 }
 
 .debug-item {

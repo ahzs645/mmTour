@@ -1,6 +1,7 @@
 import { scenes } from "./data/scenes";
 import {
-  assetWrap, externalLevelLayer, frameScrubber, playBtn, renderModeSelect, restartBtn, select,
+  assetWrap, externalLevelLayer, frameScrubber, infoBtn, infoModal, liveDetail, liveFilters, playBtn,
+  renderModeSelect, restartBtn, select,
 } from "./app/dom";
 import { playerController, state as appState } from "./app/state";
 import type { RuffleElement } from "./app/frameModeTypes";
@@ -9,7 +10,7 @@ import { activatePlayerMode, isDirectRenderMode, isPlayerMode, updatePlayButton 
 import {
   renderDirectSwfFrame, restartDirectRenderer, toggleDirectRendererPlayback, updateDirectDebugPanel,
 } from "./app/directMode";
-import { updateDebugPanel } from "./app/debugPanel";
+import { clearLiveHighlights, initLiveFilters, renderLiveDebug, startLiveDebugLoop, updateDebugPanel } from "./app/debugPanel";
 import { shouldStopAtFrame } from "./app/runtimeActions";
 import { loadScene } from "./app/sceneLoader";
 import { goToFrame, renderFrame, syncAssetStageScale } from "./app/frameMode";
@@ -111,12 +112,28 @@ renderModeSelect.addEventListener("change", () => {
   renderFrame(appState.activeAssetTimeline, Number(frameScrubber.value));
 });
 
+infoBtn.addEventListener("click", () => infoModal.showModal());
+infoModal.addEventListener("click", (event) => {
+  // Click on the backdrop (the dialog element itself, outside its content) closes it.
+  if (event.target === infoModal) infoModal.close();
+});
+
 document.querySelectorAll<HTMLButtonElement>(".debug-tab").forEach((button) => {
   button.addEventListener("click", () => {
     appState.activeDebugTab = (button.dataset.debugTab as typeof appState.activeDebugTab | undefined) ?? "stage";
     document.querySelectorAll<HTMLButtonElement>(".debug-tab").forEach((tab) => {
       tab.classList.toggle("is-active", tab === button);
     });
+    const live = appState.activeDebugTab === "live";
+    liveFilters.hidden = !live;
+    liveDetail.hidden = !live;
+    if (!live) clearLiveHighlights(); // drop stage outlines when leaving Live
+    if (live) {
+      initLiveFilters();
+      renderLiveDebug();
+      startLiveDebugLoop();
+      return;
+    }
     if (isDirectRenderMode() && appState.directSwfRenderer) {
       updateDirectDebugPanel(appState.directSwfRenderer);
       return;

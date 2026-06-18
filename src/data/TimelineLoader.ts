@@ -16,7 +16,16 @@ export async function loadTimeline(swf: string): Promise<AssetTimeline | null> {
   const response = await fetch(`/generated/${scene}/timeline.json`);
   if (!response.ok) return null;
 
-  const timeline = (await response.json()) as AssetTimeline;
+  // A scene with no generated assets (e.g. the restart button's `mslogo.swf`, or a
+  // case-mismatched path) isn't a 404 under Vite — the dev/SPA server answers 200
+  // with index.html. Parsing that as JSON throws, so treat any non-JSON body as a
+  // missing scene and return null rather than crash the caller (runtime nav or prefetch).
+  let timeline: AssetTimeline;
+  try {
+    timeline = (await response.json()) as AssetTimeline;
+  } catch {
+    return null;
+  }
   if (!timeline.frameSvgs?.length) {
     timeline.frameSvgs = Array.from(
       { length: timeline.frameCount },

@@ -1,7 +1,10 @@
 // Display-list debug panel rendering for the comparison modes.
 
-import { assetStage, debugList, debugSummary, frameScrubber, referenceFrameMeta } from "./dom";
-import { state as appState } from "./state";
+import {
+  assetStage, debugList, debugSummary, frameScrubber, liveDetail, liveHideEmpty, liveKind, liveLevelChips,
+  liveSearch, playerLayer, referenceFrameMeta,
+} from "./dom";
+import { playerController, state as appState } from "./state";
 import { escapeHtml } from "./svgUtils";
 import { isDirectRenderMode } from "./modes";
 import { goToFrame } from "./frameMode";
@@ -14,6 +17,12 @@ export function updateDebugPanel(
   frameIndex = Number(frameScrubber.value),
   gsapEntries?: GsapDisplayDebugEntry[],
 ) {
+  // "Live" inspects the actual player DOM, not the frame-SVG timeline — handle it first.
+  if (appState.activeDebugTab === "live") {
+    renderLiveDebug();
+    return;
+  }
+
   if (!assetTimeline) {
     debugSummary.textContent = "";
     debugList.replaceChildren();
@@ -177,4 +186,213 @@ export function applyDepthHighlight() {
   assetStage.querySelectorAll<HTMLElement>(`[data-depth="${appState.highlightedDepth}"]`).forEach((node) => {
     node.classList.add("depth-highlight");
   });
+}
+
+// --- Live player-DOM inspector --------------------------------------------
+// The Decompiled Player renders to live DOM across stacked `_levelN` layers, which the
+// frame-SVG views above never capture. This view enumerates the live nodes in PAINT ORDER
+// (Flash level first, then z within the level) and, for a selected node, reports exactly
+// what is painted ON TOP of it (overlapping + higher in paint order) — e.g. a `_level6` nav
+// bar over a `_level4` segment title. Occlusion is geometric (rect overlap + paint order),
+// not `elementFromPoint`, so `pointer-events:none` text/art is still detected.
+
+type LiveNode = {
+  el: HTMLElement; level: number; z: number; key: string; char: string;
+  kind: string; isHit: boolean; fullStage: boolean; text: string;
+  x: number; y: number; w: number; h: number; opacity: number; visible: boolean;
+};
+
+function collectLiveNodes(): LiveNode[] {
+  const stage = assetStage.getBoundingClientRect();
+  return [...playerLayer.querySelectorAll<HTMLElement>(".player-instance")].map((el) => {
+    const levelEl = el.closest<HTMLElement>(".player-level");
+    const media = el.querySelector<HTMLElement>(".player-media") ?? (el.firstElementChild as HTMLElement | null);
+    const isHit = Boolean(media?.classList.contains("player-hit"));
+    const isText = Boolean(media?.classList.contains("player-text"));
+    const hasImg = media?.tagName === "IMG" || Boolean(media?.querySelector("img"));
+    const kind = isText ? "text" : isHit ? "hit" : hasImg ? "img" : el.innerHTML.includes("<svg") ? "svg" : "node";
+    // Measure the media child: the `.player-instance` wrapper has no intrinsic size (the visual
+    // box lives on its child), and the child's rect already reflects the wrapper's transform.
+    const r = (media ?? el).getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    const opacity = Number(cs.opacity);
+    return {
+      el, level: Number(levelEl?.style.zIndex ?? "0"), z: Number(el.style.zIndex || "0"),
+      key: el.dataset.key ?? "", char: el.dataset.character ?? "?",
+      kind, isHit,
+      // A node whose box spans (nearly) the whole stage is almost always a transparent overlay
+      // (the SVG draws only a few shapes), so it overlaps everything geometrically without
+      // visually covering it — flag it so it doesn't read as a real occluder.
+      fullStage: r.width >= stage.width * 0.95 && r.height >= stage.height * 0.95,
+      text: isText ? (el.textContent ?? "").trim() : "",
+      x: Math.round(r.left - stage.left), y: Math.round(r.top - stage.top),
+      w: Math.round(r.width), h: Math.round(r.height),
+      opacity, visible: cs.visibility !== "hidden" && opacity > 0,
+    };
+  });
+}
+
+const paintOrder = (n: LiveNode) => n.level * 1e6 + n.z; // level dominates, then z within a level
+const overlaps = (a: LiveNode, b: LiveNode) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
+function occludersOf(target: LiveNode, all: LiveNode[]): LiveNode[] {
+  if (!target.w || !target.h) return [];
+  return all
+    .filter((n) => n !== target && n.visible && paintOrder(n) > paintOrder(target) && overlaps(target, n))
+    .sort((a, b) => paintOrder(a) - paintOrder(b));
+}
+
+export function clearLiveHighlights() {
+  playerLayer.querySelectorAll<HTMLElement>(".player-instance").forEach((e) => { e.style.outline = ""; e.style.outlineOffset = ""; });
+}
+
+const liveLabel = (n: LiveNode) => n.text ? `text "${escapeHtml(n.text.slice(0, 28))}"` : `${n.kind} ${escapeHtml(n.char)}`;
+
+// Live-view filter state (persisted across the throttled re-renders). Occlusion is always
+// computed against the FULL node set, so hiding noise here never hides a real occluder.
+const liveFilter = { search: "", kind: "", hideEmpty: true, level: null as number | null };
+let liveFiltersWired = false;
+
+/** Attach the filter-bar listeners once (the inputs live in the app shell). */
+export function initLiveFilters() {
+  if (liveFiltersWired) return;
+  liveFiltersWired = true;
+  liveSearch.addEventListener("input", () => { liveFilter.search = liveSearch.value.trim().toLowerCase(); renderLiveDebug(); });
+  liveKind.addEventListener("change", () => { liveFilter.kind = liveKind.value; renderLiveDebug(); });
+  liveHideEmpty.addEventListener("change", () => { liveFilter.hideEmpty = liveHideEmpty.checked; renderLiveDebug(); });
+}
+
+function renderLevelChips(levels: number[]) {
+  liveLevelChips.replaceChildren();
+  const chip = (label: string, level: number | null) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "live-chip";
+    b.classList.toggle("is-active", liveFilter.level === level);
+    b.textContent = label;
+    b.addEventListener("click", () => { liveFilter.level = liveFilter.level === level ? null : level; renderLiveDebug(); });
+    return b;
+  };
+  liveLevelChips.append(chip("all", null), ...levels.map((l) => chip(`L${l}`, l)));
+}
+
+function passesFilter(n: LiveNode): boolean {
+  if (n.key === appState.selectedLiveKey) return true; // never hide the inspected node
+  if (liveFilter.hideEmpty && (!n.w || !n.h)) return false;
+  if (liveFilter.level !== null && n.level !== liveFilter.level) return false;
+  if (liveFilter.kind && n.kind !== liveFilter.kind) return false;
+  if (liveFilter.search && !n.char.toLowerCase().includes(liveFilter.search) && !n.text.toLowerCase().includes(liveFilter.search)) return false;
+  return true;
+}
+
+export function renderLiveDebug() {
+  const prevScroll = debugList.scrollTop;
+  const all = collectLiveNodes();
+  clearLiveHighlights();
+  debugList.replaceChildren();
+
+  const selected = all.find((n) => n.key === appState.selectedLiveKey) ?? null;
+  if (selected) { selected.el.style.outline = "2px solid #ff2bd6"; selected.el.style.outlineOffset = "1px"; }
+  renderLiveDetail(selected, all);
+
+  if (!all.length) {
+    debugSummary.textContent = "";
+    liveLevelChips.replaceChildren();
+    debugList.append(emptyDebugMessage("No live player nodes. Set render mode to Decompiled Player and reach a state (pause to inspect a moving scene)."));
+    return;
+  }
+
+  const levels = [...new Set(all.map((n) => n.level))].sort((a, b) => a - b);
+  renderLevelChips(levels);
+  const nodes = all.filter(passesFilter).sort((a, b) => paintOrder(a) - paintOrder(b));
+  debugSummary.textContent = nodes.length === all.length
+    ? `${all.length} live nodes · levels ${levels.join(", ")}`
+    : `${nodes.length} of ${all.length} nodes`;
+
+  if (!nodes.length) {
+    debugList.append(emptyDebugMessage("No nodes match the current filter."));
+    debugList.scrollTop = prevScroll;
+    return;
+  }
+
+  for (const node of nodes) {
+    const button = document.createElement("button");
+    button.className = "debug-item";
+    button.type = "button";
+    button.classList.toggle("is-highlighted", node.key === appState.selectedLiveKey);
+    button.innerHTML = `
+      <span class="debug-depth">L${node.level}</span>
+      <span class="debug-main">
+        <strong>${liveLabel(node)}</strong>
+        <small>z${node.z} · ${node.x},${node.y} · ${node.w}×${node.h}${node.visible ? "" : " · HIDDEN"}</small>
+      </span>
+      <span class="debug-opacity">${Math.round(node.opacity * 100)}%</span>
+    `;
+    button.addEventListener("click", () => {
+      appState.selectedLiveKey = appState.selectedLiveKey === node.key ? null : node.key;
+      renderLiveDebug();
+    });
+    debugList.append(button);
+  }
+  debugList.scrollTop = prevScroll;
+}
+
+/** Render the occlusion readout for the selected node into the sidebar. */
+function renderLiveDetail(selected: LiveNode | null, all: LiveNode[]) {
+  liveDetail.replaceChildren();
+  if (!selected) {
+    const hint = document.createElement("p");
+    hint.className = "live-hint";
+    hint.textContent = "Select a node to see what's painted over it (and outline it on the stage).";
+    liveDetail.append(hint);
+    return;
+  }
+
+  const title = document.createElement("div");
+  title.className = "live-detail-title";
+  title.innerHTML = `<strong>${liveLabel(selected)}</strong>`;
+  const sub = document.createElement("div");
+  sub.className = "live-detail-sub";
+  sub.textContent = `L${selected.level} · z${selected.z} · ${selected.x},${selected.y} · ${selected.w}×${selected.h} · ${Math.round(selected.opacity * 100)}%`;
+  liveDetail.append(title, sub);
+
+  const occ = occludersOf(selected, all); // vs the FULL set — filters never hide a real occluder
+  const solid = occ.filter((o) => !o.isHit && !o.fullStage);
+  const heading = document.createElement("div");
+  heading.innerHTML = occ.length
+    ? `<strong>${solid.length} likely-solid node(s) over this box</strong> (of ${occ.length} overlapping &amp; higher in paint order)`
+      + (solid.length
+        ? `<br><em>covered by: ${solid.map((o) => `L${o.level} ${o.kind} ${escapeHtml(o.char)}`).join(", ")}</em>`
+        : `<br><em>only hit areas / full-stage overlays — nothing solid covers it, so if it's invisible suspect position/color, not occlusion.</em>`)
+    : `<strong>Topmost here</strong> — nothing in the player paints over this node's box.`;
+  liveDetail.append(heading);
+
+  if (occ.length) {
+    const list = document.createElement("div");
+    list.className = "live-occ";
+    for (const o of occ) {
+      const row = document.createElement("div");
+      row.className = "live-occ-row";
+      const isSolid = !o.isHit && !o.fullStage;
+      row.classList.toggle("is-solid", isSolid);
+      const note = o.isHit ? " · hit (transparent)" : o.fullStage ? " · full-stage overlay" : "";
+      row.innerHTML = `L${o.level} z${o.z} · ${o.kind} ${escapeHtml(o.text ? `"${o.text.slice(0, 22)}"` : o.char)}${note} · ${Math.round(o.opacity * 100)}%`;
+      list.append(row);
+    }
+    liveDetail.append(list);
+  }
+}
+
+// Keep the Live view fresh while the player is playing (throttled), without rebuilding the
+// list while paused — so a paused scene stays clickable for inspection.
+let liveRaf = 0;
+let lastLiveRender = 0;
+export function startLiveDebugLoop() {
+  cancelAnimationFrame(liveRaf);
+  const tick = (t: number) => {
+    if (appState.activeDebugTab !== "live") { clearLiveHighlights(); return; }
+    if (playerController.isPlaying && t - lastLiveRender > 150) { lastLiveRender = t; renderLiveDebug(); }
+    liveRaf = requestAnimationFrame(tick);
+  };
+  liveRaf = requestAnimationFrame(tick);
 }

@@ -1,5 +1,6 @@
 import type { AssetTimeline, ControlAction } from "../data/timelineTypes";
 import { assetUrl, loadTimeline } from "../data/TimelineLoader";
+import { collectReferencedSwfs, prefetchScene } from "../data/prefetch";
 import { DomRenderer } from "../render/DomRenderer";
 import { FontRegistry } from "../render/TextRenderer";
 import { Player } from "../player/Player";
@@ -35,6 +36,8 @@ export class PlayerController {
   private pendingCalls: { level: number; name: string; args?: string }[] = [];
   /** Active AVM1 waiters (`waitForVal`): poll a store flag, then fire callBack on its level. */
   private waiters: { level: number; obj: string; val: VarValue; cb: number }[] = [];
+  /** Scenes already cache-warmed this session (so a section change paints instantly). */
+  private prefetched = new Set<string>();
   private mainSwf = "";
   private playing = false;
 
@@ -82,6 +85,7 @@ export class PlayerController {
     this.pendingCalls = [];
     this.waiters = [];
     this.loadBurst.clear();
+    this.prefetched.clear();
     this.sound.destroy();
     this.container.hidden = true;
     this.container.replaceChildren();
@@ -163,6 +167,23 @@ export class PlayerController {
     // intro/_level4 loads async, after the main Play already fired).
     if (this.playing) player.play();
     this.flushPendingCalls(level);
+    this.prefetchReferenced(timeline);
+  }
+
+  /** Warm the cache for the scenes this level can navigate to (e.g. the nav's five
+   *  section buttons → segmentN.swf), so a later section change paints immediately
+   *  instead of flashing the bare stage while a cold multi-MB timeline loads on
+   *  click. Without it the bottom bar flashes white on a section change: the nav
+   *  strips its own toolbar mid-exit (a real RemoveObject in nav.swf at that frame),
+   *  and the incoming segment — whose own bar should take over — hasn't painted yet.
+   *  Ruffle never shows this because it loads segments instantly from local SWF. */
+  private prefetchReferenced(timeline: AssetTimeline) {
+    for (const swf of collectReferencedSwfs(timeline)) {
+      const key = swf.toLowerCase();
+      if (key === this.mainSwf.toLowerCase() || this.prefetched.has(key)) continue;
+      this.prefetched.add(key);
+      void prefetchScene(swf);
+    }
   }
 
   /** Flush cross-level calls that were waiting on `level` to exist. The intro's

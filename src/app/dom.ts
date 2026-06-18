@@ -19,7 +19,10 @@ app.innerHTML = `
         <h1>Windows XP Tour Conversion Lab</h1>
         <p>Ruffle reference playback beside a GSAP renderer driven by FFDec-extracted SWF assets and timeline matrices.</p>
       </div>
-      <div class="source-mark">640 x 480 Flash 5</div>
+      <div class="topbar-meta">
+        <button id="infoBtn" class="info-btn" type="button" aria-haspopup="dialog" title="About this lab — pipeline &amp; scope notes">i</button>
+        <div class="source-mark">640 x 480 Flash 5</div>
+      </div>
     </header>
 
     <section class="controls" aria-label="Playback controls">
@@ -74,16 +77,6 @@ app.innerHTML = `
     </section>
 
     <section class="analysis-grid">
-      <article class="panel reference-panel">
-        <div class="panel-title">
-          <h2>Static Frame Reference</h2>
-          <span id="referenceName"></span>
-        </div>
-        <div class="reference-frame-stage">
-          <img id="referenceFrameImage" class="reference-frame-image" alt="Generated static frame reference" />
-          <div id="referenceFrameMeta" class="reference-frame-meta">Frame 0</div>
-        </div>
-      </article>
       <article class="panel debug-panel">
         <div class="panel-title">
           <h2>Display List Debug</h2>
@@ -93,18 +86,45 @@ app.innerHTML = `
           <button class="debug-tab is-active" data-debug-tab="stage" type="button">On Stage</button>
           <button class="debug-tab" data-debug-tab="labels" type="button">Labels</button>
           <button class="debug-tab" data-debug-tab="actions" type="button">Actions</button>
+          <button class="debug-tab" data-debug-tab="live" type="button" title="Live player DOM: nodes in paint order across _levelN layers, with occlusion (what is drawn on top of a node)">Live</button>
         </div>
-        <div id="debugList" class="debug-list"></div>
-      </article>
-      <article class="notes">
-        <h2>Asset Pipeline</h2>
-        <p>Decompiled Player (default) drives the extracted symbols like Flash: a root playhead plus an independent playhead per sprite, embedded-font text, button hover/click, and sound — played entirely from the decompiled assets, no SWF at runtime. Frame SVG (reference) renders FFDec full-frame SVGs for fidelity comparison; Direct SWF Renderer parses the raw SWF in-browser.</p>
-      </article>
-      <article class="notes">
-        <h2>Current Scope</h2>
-        <p>The fidelity path now exports every SWF frame-by-frame and maps root labels, stops, root frame gotos, waiting loops, and supported button choices. Remaining work is nested MovieClip hit areas, clip-local state, and full button over/down behavior.</p>
+        <div id="liveFilters" class="live-filters" hidden>
+          <input id="liveSearch" type="search" placeholder="filter: char id or text…" />
+          <span id="liveLevelChips" class="live-chips"></span>
+          <select id="liveKind" aria-label="Filter by node kind">
+            <option value="">all kinds</option>
+            <option value="text">text</option>
+            <option value="img">img</option>
+            <option value="hit">hit</option>
+            <option value="svg">svg</option>
+          </select>
+          <label class="live-toggle"><input type="checkbox" id="liveHideEmpty" checked /> hide 0×0</label>
+        </div>
+        <div class="debug-body">
+          <div id="debugList" class="debug-list"></div>
+          <aside id="liveDetail" class="live-detail" hidden></aside>
+        </div>
       </article>
     </section>
+
+    <div id="referenceHolder" hidden>
+      <span id="referenceName"></span>
+      <img id="referenceFrameImage" alt="" />
+      <div id="referenceFrameMeta">Frame 0</div>
+    </div>
+
+    <dialog id="infoModal" class="info-modal">
+      <form method="dialog" class="info-modal-head">
+        <h2>About the Conversion Lab</h2>
+        <button class="info-close" value="close" type="submit" aria-label="Close">×</button>
+      </form>
+      <div class="info-modal-body">
+        <h3>Asset Pipeline</h3>
+        <p>Decompiled Player (default) drives the extracted symbols like Flash: a root playhead plus an independent playhead per sprite, embedded-font text, button hover/click, and sound — played entirely from the decompiled assets, no SWF at runtime. Frame SVG (reference) renders FFDec full-frame SVGs for fidelity comparison; Direct SWF Renderer parses the raw SWF in-browser.</p>
+        <h3>Current Scope</h3>
+        <p>The fidelity path now exports every SWF frame-by-frame and maps root labels, stops, root frame gotos, waiting loops, and supported button choices. Remaining work is nested MovieClip hit areas, clip-local state, and full button over/down behavior.</p>
+      </div>
+    </dialog>
   </main>
 `;
 
@@ -132,3 +152,11 @@ export const referenceFrameMeta = must<HTMLDivElement>("#referenceFrameMeta");
 export const debugSummary = must<HTMLSpanElement>("#debugSummary");
 export const debugList = must<HTMLDivElement>("#debugList");
 export const playerLayer = must<HTMLDivElement>("#playerLayer");
+export const infoBtn = must<HTMLButtonElement>("#infoBtn");
+export const infoModal = must<HTMLDialogElement>("#infoModal");
+export const liveFilters = must<HTMLDivElement>("#liveFilters");
+export const liveSearch = must<HTMLInputElement>("#liveSearch");
+export const liveKind = must<HTMLSelectElement>("#liveKind");
+export const liveHideEmpty = must<HTMLInputElement>("#liveHideEmpty");
+export const liveLevelChips = must<HTMLSpanElement>("#liveLevelChips");
+export const liveDetail = must<HTMLElement>("#liveDetail");
