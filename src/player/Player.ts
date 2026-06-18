@@ -370,7 +370,21 @@ export class Player {
     // a parameter (initMusic's `whichSection == …`, playVO's `!doRamp`) must resolve against the
     // call's locals. The old per-action evalCondition loop did neither.
     const actionFire = this.functionActionDecisions(def.actions, locals);
-    def.actions.forEach((action, i) => { if (actionFire[i]) this.runFunctionAction(action); });
+    // The build encodes a function's calls TWICE: in its structured `body` (with the full nested
+    // if/else gates) AND as flattened function-tagged `callFunctions` actions (which keep only the
+    // OUTERMOST guard, losing the nested discrimination). Running both fires a call the body gate
+    // would suppress — LoadInitialInteractive's actions fire BOTH `startNavEntrance` (→ nav frame
+    // 71) and `startAddedNav` (→ nav frame 115) when the body picks exactly one by nav-loaded
+    // state, so the nav jumps PAST its entrance cascade. When the body already issues a call, let
+    // the body decide it (below) and skip the lossy action duplicate. Non-call actions (sound,
+    // loadMovie, assigns) aren't body-executable, so they still run here.
+    const bodyCalls = new Set(def.body.filter((s) => s.kind === "call").map((s) => (s as { functionName?: string }).functionName));
+    def.actions.forEach((action, i) => {
+      if (!actionFire[i]) return;
+      const calls = action.functionCalls ?? [];
+      if (action.command === "callFunctions" && calls.length > 0 && calls.every((c) => bodyCalls.has(c.functionName))) return;
+      this.runFunctionAction(action);
+    });
     // Decide every body guard against the store as it is on ENTRY — AVM1 checks an `if` once
     // when control reaches it, so a CONDITIONAL mutation inside a block (LoadInitialInteractive's
     // `if(!blnDisableSkip){ blnDisableSkip=1; … }`, whose nested arms all re-include the
@@ -573,10 +587,38 @@ export class Player {
         }
         break;
       }
+      // A function's sound actions (initMusic's attachSound, a VO function's playVO/stopSound)
+      // reach the SoundController exactly as frame-script sound actions do in runScript. This path
+      // previously dropped them in `default`, so a function selected a sound branch but never
+      // played it — and VO‑gated holds (`isVoiceDone`/`sndDonePlaying`) never saw the VO. A playVO
+      // arms the next hold-loop. (Body-form sound `call`s route elsewhere and no-op, so no double.)
+      case "attachSound":
+      case "playVO":
+      case "stopSound":
+        if (action.command === "playVO") this.voWaiting = true;
+        this.options.onSound?.(action);
+        break;
       case "loadMovieNum":
       case "loadMovie":
         this.options.onNavigate?.(action);
         break;
+      case "doRelease":
+        if (action.swf) this.options.onNavigate?.({ command: "loadMovie", swf: action.swf, level: action.level, reload: true });
+        break;
+      case "loadVariables":
+        this.options.onLoadVariables?.(action);
+        break;
+      case "setVariable": {
+        // Mirror runScript's setVariable: write to the root's scope, and if the var backs a
+        // dynamic text field, update the display cache so the bound field re-renders.
+        const value = this.resolveExpr(action.rawValue ?? String(action.value ?? ""));
+        if (this.store && action.target && value !== undefined) {
+          this.scopeSet(this.root, action.target, value);
+          const norm = normalizeVarName(action.target);
+          if (this.boundTextVars.has(norm)) this.textVars.set(norm, String(value));
+        }
+        break;
+      }
       case "callFunctions":
         this.runCallFunctions(action);
         break;

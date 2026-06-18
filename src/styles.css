@@ -406,17 +406,6 @@ h2 {
   pointer-events: none;
 }
 
-/* Top overlay for cross-level "content title" lift (see render/occlusionLift.ts): a covered
-   lower-level title is mirrored here so it paints above every level. Never intercepts input. */
-.player-lift-overlay {
-  position: absolute;
-  inset: 0;
-  width: 640px;
-  height: 480px;
-  z-index: 99999;
-  pointer-events: none;
-}
-
 .player-instance {
   position: absolute;
   left: 0;

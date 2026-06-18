@@ -1,24 +1,42 @@
 # Skip‑Intro nav‑entrance cascade timing (handoff)
 
 Date: 2026-06-18
-Status: **Open / characterized** — pacing differs from Ruffle; order is correct.
+Status: **RESOLVED 2026‑06‑18** — the skip cascade now plays its full button‑slide before the
+toolbar, matching Ruffle. Root cause + fix below; the rest of this doc is the original
+investigation, kept for context.
 Scope: full‑tour shell only (`#sceneSelect = "Tour Shell - A-tour.swf"`, `#renderMode = player`).
 
-> **Update 2026‑06‑18 — Lead #1 investigated, a real generic branch bug fixed (but it was
-> *not* the OS functions, and it does *not* change the skip pacing).** The OS‑version arms
-> on `startNavEntrance`/`startAddedNav`/`doIntroStart`/`goNavStatic` are extracted as
-> **explicit mutually‑exclusive conditions** (`OSVersion == "Pro"` / `OSVersion == "Per"`),
-> **not** `else` — so the old per‑action loop already evaluated them correctly (under Pro,
-> the `==Pro` arm passes and the `==Per` arm fails). However, the *general* gap the reviewer
-> flagged is real: `Player.callFunction`'s `def.actions` loop lacked the **group‑wise `else`**
-> and **parameter localization** that `runScript`/`callClipFunction` already have. A scan
-> found **22 function‑tagged `else` arms** + **12 parameter‑referencing conditions**
-> (`initMusic(whichSection)` per‑section music, `playVO(... !doRamp)`) that the old loop
-> mis‑evaluated (a bare `else` reads as `true` and double‑fires; params evaluated against the
-> store, not locals). Fixed via `functionActionDecisions` in `src/player/Player.ts`. Verified:
-> typecheck clean, the A‑tour Pro menu still builds in the right order (no regression), all 8
-> scenes load with zero console errors. Because the OS branch was already correct, **this does
-> not change the skip cascade pacing** — see Lead #1 below, now resolved.
+> **RESOLUTION 2026‑06‑18 — the pacing WAS a real bug, not just a clock difference.** Three
+> fixes in `src/player/Player.ts`, all generic AVM1 branch/execution semantics (no hardcoding):
+>
+> 1. **Group‑wise `else` + parameter localization in `callFunction`** (`functionActionDecisions`).
+>    The `def.actions` loop evaluated each function‑tagged action's `functionBranchCondition`
+>    independently; `evalCondition("else")` is `true`, so any `else` arm double‑fired, and
+>    parameter conditions (`initMusic(whichSection)`, `playVO(... !doRamp)`) were evaluated
+>    against the store, not the call's locals. A scan found **22 `else` arms + 12 param
+>    conditions** affected. (Committed as `198e02d`.)
+> 2. **`runFunctionAction` forwards sound/VO/data/variable actions.** It previously handled only
+>    stop/play/goto/loadMovie/callFunctions and dropped `attachSound`/`playVO`/`stopSound`/
+>    `loadVariables`/`setVariable`/`doRelease` in `default` — so a function could *select* a
+>    sound branch but never play it, and VO‑gated holds never saw the VO.
+> 3. **The actual cascade fix — dedup flattened `callFunctions` against the body.** The build
+>    encodes a function's calls TWICE: in the structured `body` (full nested if/else gates) AND
+>    as flattened function‑tagged `callFunctions` actions that keep only the OUTERMOST guard.
+>    `LoadInitialInteractive`'s actions therefore fired **both** `_level6.startNavEntrance`
+>    (→ nav frame 71) **and** `_level6.startAddedNav` (→ nav frame **115**), so the nav jumped
+>    *past* its button cascade and the menu/toolbar appeared compressed. The body has the correct
+>    mutually‑exclusive gates (`startNavEntrance` iff not loaded, `startAddedNav` iff loaded), so
+>    `callFunction` now skips an actions‑loop `callFunctions` whose calls the body already issues
+>    and lets the body decide.
+>
+> **Confirmed empirically:** instrumenting the nav showed `startAddedNav` no longer fires on skip
+> (only `startNavEntrance @frame 65`); and across 3 runs the category buttons now appear staggered
+> (yellow→red→green→blue→silver, ~250 ms apart) with the **toolbar arriving ~1.4 s AFTER the last
+> button** — the cascade Ruffle shows. Typecheck clean; all 8 scenes load with 0 console errors.
+>
+> The original investigation below concluded this was an inherent clock difference. That was
+> **wrong** — the reviewer was right to push on the branch/execution path. Kept for the mechanism
+> notes and probe technique, which are still accurate.
 
 This is a handoff for a future agent. It documents the symptom, the exact data‑flow
 (frames, functions, flags), **what has already been verified correct so you don't redo

@@ -168,6 +168,48 @@ export class PlayerController {
     if (this.playing) player.play();
     this.flushPendingCalls(level);
     this.prefetchReferenced(timeline);
+
+    // [FLASHDBG] Temporary: trace the segment-flash cause. Log the doAttractLoop
+    // flag at load, then watch the bottom-center for ~6s and report the exact
+    // instant it goes uncovered (white) with every level's current frame.
+    if (level > 0) {
+      const da = this.store.get("bkgd.doAttractLoop");
+      // eslint-disable-next-line no-console
+      console.log(`[FLASHDBG] load ${swf} → _level${level}  doAttractLoop=${JSON.stringify(da)}`);
+      this.watchBottom(swf);
+    }
+  }
+
+  /** [FLASHDBG] Temporary: rAF-watch the bottom-center of the stage after a segment
+   *  loads; log the moment it has no covering image (the white flash) with each
+   *  level's current frame, so we can see WHICH level fails to cover and when. */
+  private watchBottom(swf: string) {
+    const start = performance.now();
+    let reports = 0;
+    const tick = () => {
+      const t = performance.now() - start;
+      if (t > 6000 || reports > 4 || !this.active) return;
+      const root = this.container.getBoundingClientRect();
+      const px = root.left + root.width / 2, py = root.bottom - 12;
+      const covers = (r: DOMRect) => r.left <= px && r.right >= px && r.top <= py && r.bottom >= py;
+      const entries = [...this.levels.entries()].map(([lvl, L]) => {
+        const imgs = [...L.layer.querySelectorAll("img.player-media")].filter((im) => im.getAttribute("src"));
+        const cov = imgs.find((im) => covers(im.getBoundingClientRect()));
+        return { lvl, str: `_lvl${lvl}(${L.swf.replace(".swf", "")},f${L.player.currentFrame}):${cov ? "BAR" : "-"}` };
+      });
+      const levels = entries.map((e) => e.str);
+      // The level-0 shell's near-white swoosh covers this point continuously, so a
+      // "flash" is when NO content level (>0) — the nav bar or the segment bar —
+      // covers it, exposing that swoosh.
+      const barCovered = entries.some((e) => e.lvl > 0 && e.str.endsWith("BAR"));
+      if (!barCovered) {
+        reports++;
+        // eslint-disable-next-line no-console
+        console.log(`[FLASHDBG] !!! WHITE-BOTTOM @${Math.round(t)}ms after ${swf}: ${levels.join("  ")}`);
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
   }
 
   /** Warm the cache for the scenes this level can navigate to (e.g. the nav's five

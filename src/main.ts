@@ -1,9 +1,8 @@
 import { scenes } from "./data/scenes";
 import {
   assetWrap, externalLevelLayer, frameScrubber, infoBtn, infoModal, liveDetail, liveFilters, playBtn,
-  playerLayer, renderModeSelect, restartBtn, select,
+  renderModeSelect, restartBtn, select,
 } from "./app/dom";
-import { createOcclusionLift } from "./render/occlusionLift";
 import { playerController, state as appState } from "./app/state";
 import type { RuffleElement } from "./app/frameModeTypes";
 import { loadRuffle } from "./app/ruffle";
@@ -145,10 +144,3 @@ document.querySelectorAll<HTMLButtonElement>(".debug-tab").forEach((button) => {
 
 void loadScene(appState.activeScene);
 stageResizeObserver.observe(assetWrap);
-
-// NOTE: cross-level content-title lift (render/occlusionLift.ts) is intentionally NOT wired.
-// It makes a covered title (e.g. a segment sub-section title under the nav's level-6 bar) paint
-// on top, but a purely geometric "covered by an upper opaque bar" trigger ALSO exposes titles
-// Flash keeps hidden behind that bar (the menu state), which can't be told apart by geometry.
-// Left in the tree for reference; re-enable only with a data signal for "is this title active".
-void createOcclusionLift;

@@ -3,6 +3,51 @@
 Date: 2026-06-17
 Status: **Known limitation** — full‑tour shell only; not yet fixed.
 
+## Update 2026‑06‑18 — confirmed via the Live inspector; lift attempted & rejected; build ruled out
+
+A live DOM inspector ("Live" tab in Display List Debug, committed `b3665ea`) made this
+fully reproducible and pinned the culprit: select the title node and the sidebar reports
+**covered by: `L6 img 3`** (the nav's `DefineSprite_3` toolbar bar). The title (`ss_text1`,
+char 79, `_root.ss_text1`, level 4, `ty≈453`) renders at **100% opacity**; it is simply
+painted under the level‑6 bar. So it is a layering problem, not a text/load problem.
+
+What was tried and **rejected** — a generic **cross‑level compositing lift** (mirror any
+lower‑level text fully covered by an opaque higher‑level node into a top overlay). It made
+the title show, but it **over‑lifts**: the trigger "text covered by an upper opaque bar"
+*also* matches the other sub‑section titles (`ss_text2`/`ss_text3`, chars 51/29) that Flash
+keeps **hidden** behind the bar in the menu state — so they appeared, overlapping, as
+garbage. Which title should win is **state‑dependent** (the active sub‑section), and that
+lives in the segment's own AVM1 logic, not in geometry/opacity — so a purely geometric lift
+cannot tell "should show" from "should stay hidden." The inert code (`render/occlusionLift.ts`)
+has been removed.
+
+What was **ruled out** — the "build keeps the bar alive" hypothesis. `scripts/lib/frames.mjs`
+(`buildFrames`) only handles `PlaceObject2Tag` / `RemoveObject2Tag`; it ignores
+`PlaceObjectTag` / `PlaceObject3Tag` / `RemoveObjectTag`. But these are **Flash 5** SWFs — an
+audit of `extracted/nav/nav.xml` shows it uses **only** `PlaceObject2Tag` (2649) and
+`RemoveObject2Tag` (620); **zero** of the ignored tag types. `DefineSprite_3` is placed and
+removed entirely through handled tags, so the generated frames are faithful. (The builder
+gap is real for *generality* — a non‑Flash‑5 SWF could need those tags — but it is **not** the
+cause here. Fix `buildFrames` generically only if/when such a SWF is added.)
+
+### Highest‑value remaining lead: the nav's *settle frame* (playhead, not build/compositing)
+
+The bar is **not** placed on every nav frame. Per `nav/timeline.json`, char 3 is PRESENT on
+frames `15‑18` (Pro‑Static), `31‑35` (Per‑Static), `114‑133` (Pro‑ToolbarAnim), `197‑431`
+(Per‑ToolbarAnim → navAnim → exits) and ABSENT on `0‑14`, `19‑30`, `36‑113`, `134‑196`, and
+**`432‑437`** (the tail after `navAnim_Pro_Exit`). So the build *does* remove the bar on some
+frames. The player shows the bar because the nav's playhead is parked on a bar‑**present**
+frame. The open question — the likely real cause — is:
+
+> **Does Ruffle's nav settle on a bar‑ABSENT frame (controls still placed, bar removed →
+> the level‑4 title shows through), while the player's nav settles on a bar‑PRESENT frame?**
+
+If so the fix is about *which frame the nav stops/loops on* (a playhead / stop / branch issue,
+data‑driven), not compositing and not the tag builder. Next step: read the nav's level‑6
+`currentFrame` in the segment‑viewing state (expose it or infer from rendered baked‑sprite
+frames), check whether char 3 is placed there, and compare to where Ruffle's nav settles.
+Confirm whether the controls (chars 5/10/17) are still placed on the bar‑absent tail frames.
+
 ## Symptom
 
 In the **Decompiled Player** (`renderMode = "player"`), when a segment is viewed

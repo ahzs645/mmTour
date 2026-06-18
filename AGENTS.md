@@ -206,14 +206,6 @@ Gotchas that have burned us:
   player composites levels correctly per Flash semantics, yet Ruffle shows the title.
   Cosmetic, shell‑only — the standalone scene renders it fine. Full diagnosis (and what
   was ruled out) in `docs/atour-bottom-title-occlusion.md`.
-- **Skip‑Intro nav‑entrance cascade is paced differently than Ruffle.** Pressing Skip in
-  the shell brings the menu on with the right element *order* but different *timing*
-  (player's cascade compressed; toolbar arrives early). The data‑driven gating
-  (`bln_CoreNavLoading`/`bln_*Loaded` on `LoadInitialInteractive`) is already honored and
-  per‑level fps is correct; the residual is the two engines' different intro/load clocks.
-  Cosmetic, shell‑only. Full handoff — mechanism, what's verified correct, measurement
-  traps, and concrete leads to try — in `docs/skip-cascade-timing.md`.
-
 ## Conventions
 
 - Data‑driven over special‑casing; modular files over monoliths (see the two rules above).
