@@ -363,10 +363,14 @@ export class Player {
     const def = this.functions.get(name);
     if (!def) return false;
     const locals = this.bindParams(def.parameters, argsRaw, callerLocals);
-    for (const action of def.actions) {
-      if (this.store && !evalCondition(action.functionBranchCondition, this.store)) continue;
-      this.runFunctionAction(action);
-    }
+    // The function's frame-tagged actions are an if/else chain (initMusic's per-section music,
+    // startNavEntrance's Pro/Per goto). Decide them GROUP-WISE and localized — same semantics as
+    // runScript/callClipFunction: a bare `else` arm evaluated alone reads as true
+    // (evalCondition("else") === true) and would fire alongside the matched arm, and a condition on
+    // a parameter (initMusic's `whichSection == …`, playVO's `!doRamp`) must resolve against the
+    // call's locals. The old per-action evalCondition loop did neither.
+    const actionFire = this.functionActionDecisions(def.actions, locals);
+    def.actions.forEach((action, i) => { if (actionFire[i]) this.runFunctionAction(action); });
     // Decide every body guard against the store as it is on ENTRY — AVM1 checks an `if` once
     // when control reaches it, so a CONDITIONAL mutation inside a block (LoadInitialInteractive's
     // `if(!blnDisableSkip){ blnDisableSkip=1; … }`, whose nested arms all re-include the
@@ -384,6 +388,29 @@ export class Player {
     def.body.forEach((statement, i) => { if (decisions[i]) this.runBodyStatement(statement, locals); });
     this.render();
     return true;
+  }
+
+  /** Decide which of a function's frame-tagged actions fire, group-wise (cf. runScript). A run of
+   *  consecutive actions carrying a `functionBranchCondition` is one if/else chain: a real-condition
+   *  arm fires when its (parameter-localized) condition holds, and an `else` arm fires only when NO
+   *  real arm in that group matched. Unconditional actions break the run and always fire. */
+  private functionActionDecisions(actions: ControlAction[], locals: Locals): boolean[] {
+    const fire = actions.map(() => true);
+    if (!this.store) return fire;
+    const isElse = (c: string | undefined) => c === "else";
+    const passes = (c: string | undefined) => !c || this.evalGuard(localizeCondition(c, locals));
+    for (let i = 0; i < actions.length; ) {
+      if (!actions[i].functionBranchCondition) { i += 1; continue; }
+      let j = i;
+      while (j < actions.length && actions[j].functionBranchCondition) j += 1;
+      const anyReal = actions.slice(i, j).some((a) => !isElse(a.functionBranchCondition) && passes(a.functionBranchCondition));
+      for (let k = i; k < j; k += 1) {
+        const cond = actions[k].functionBranchCondition;
+        fire[k] = isElse(cond) ? !anyReal : passes(cond);
+      }
+      i = j;
+    }
+    return fire;
   }
 
   /** Bind a call's raw argument string to a function's parameter names. */
