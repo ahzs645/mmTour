@@ -21,6 +21,7 @@ import { clearButtonVisualState } from "./buttonOverlays";
 import { stopAwaitingLoop } from "./spriteLoops";
 import { stopCurrentVoiceover } from "./audio";
 import { scenes, type TourScene } from "../data/scenes";
+import { assetUrl, cacheKeyForSource, loadTimelineFromSource } from "../data/packedAssets";
 import type { AssetTimeline, SceneEntryTarget, TimelineAsset } from "./frameModeTypes";
 
 export async function loadScene(scene: TourScene, entryTarget?: SceneEntryTarget, preserveExternalLevels = false) {
@@ -114,15 +115,13 @@ export async function loadAssetTimeline(scene: TourScene, entryTarget?: SceneEnt
 }
 
 export async function fetchAssetTimeline(swf: string) {
-  const cacheKey = swf.toLowerCase();
+  const cacheKey = cacheKeyForSource(swf.toLowerCase());
   const cached = assetTimelineCache.get(cacheKey);
   if (cached) return cached;
 
   const sceneName = swf.replace(/\.swf$/i, "");
-  const response = await fetch(`/generated/${sceneName}/timeline.json?v=${Date.now()}`);
-  if (!response.ok) return null;
-
-  const assetTimeline = (await response.json()) as AssetTimeline;
+  const assetTimeline = (await loadTimelineFromSource(sceneName)) as AssetTimeline | null;
+  if (!assetTimeline) return null;
   if (!assetTimeline.frameSvgsOmitted && !assetTimeline.frameSvgs?.length) {
     assetTimeline.frameSvgs = Array.from(
       { length: assetTimeline.frameCount },
@@ -142,12 +141,13 @@ export async function loadExtractedFonts(assetTimeline: AssetTimeline) {
 
   const loads: Promise<void>[] = [];
   for (const asset of fontAssets) {
+    if (!asset.src) continue;
     const families = fontFamiliesForAsset(asset);
     for (const family of families) {
       const key = `${family}:${asset.src}`;
       if (loadedFontFaceKeys.has(key)) continue;
       loadedFontFaceKeys.add(key);
-      const face = new FontFace(family, `url(/${asset.src})`, {
+      const face = new FontFace(family, `url("${encodeURI(assetUrl(asset.src))}")`, {
         style: "normal",
         weight: family.includes("Medium") ? "700" : "400",
       });

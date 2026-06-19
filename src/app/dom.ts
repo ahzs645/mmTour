@@ -42,6 +42,13 @@ app.innerHTML = `
           <option value="direct">Direct SWF Renderer</option>
         </select>
       </label>
+      <label>
+        Asset source
+        <select id="assetSource">
+          <option value="files" selected>Generated files</option>
+          <option value="pack">Packed bundle</option>
+        </select>
+      </label>
       <button id="playBtn" type="button">Play GSAP</button>
       <button id="restartBtn" type="button">Restart</button>
       <span id="status" class="status">Ready</span>
@@ -146,6 +153,7 @@ export const restartBtn = must<HTMLButtonElement>("#restartBtn");
 export const playBtn = must<HTMLButtonElement>("#playBtn");
 export const frameScrubber = must<HTMLInputElement>("#frameScrubber");
 export const renderModeSelect = must<HTMLSelectElement>("#renderMode");
+export const assetSourceSelect = must<HTMLSelectElement>("#assetSource");
 export const ruffleName = must<HTMLSpanElement>("#ruffleName");
 export const assetName = must<HTMLSpanElement>("#assetName");
 export const referenceName = must<HTMLSpanElement>("#referenceName");

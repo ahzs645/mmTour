@@ -1,9 +1,9 @@
 import { scenes } from "./data/scenes";
 import {
-  assetWrap, externalLevelLayer, frameScrubber, infoBtn, infoModal, liveDetail, liveFilters, playBtn,
+  assetSourceSelect, assetWrap, externalLevelLayer, frameScrubber, infoBtn, infoModal, liveDetail, liveFilters, playBtn,
   renderModeSelect, restartBtn, select, traceBar,
 } from "./app/dom";
-import { playerController, state as appState } from "./app/state";
+import { assetTimelineCache, loadedFontFaceKeys, playerController, state as appState } from "./app/state";
 import type { RuffleElement } from "./app/frameModeTypes";
 import { loadRuffle } from "./app/ruffle";
 import { activatePlayerMode, isDirectRenderMode, isPlayerMode, updatePlayButton } from "./app/modes";
@@ -17,6 +17,7 @@ import {
 import { shouldStopAtFrame } from "./app/runtimeActions";
 import { loadScene } from "./app/sceneLoader";
 import { goToFrame, renderFrame, syncAssetStageScale } from "./app/frameMode";
+import { setAssetSource, type AssetSource } from "./data/packedAssets";
 
 declare global {
   interface Window {
@@ -30,6 +31,7 @@ declare global {
 
 renderModeSelect.selectedIndex = 0;
 renderModeSelect.value = "player";
+assetSourceSelect.value = "files";
 
 const stageResizeObserver = new ResizeObserver(syncAssetStageScale);
 
@@ -38,6 +40,13 @@ select.value = String(scenes.indexOf(appState.activeScene));
 
 select.addEventListener("change", () => {
   appState.activeScene = scenes[Number(select.value)] ?? scenes[0];
+  void loadScene(appState.activeScene);
+});
+
+assetSourceSelect.addEventListener("change", () => {
+  setAssetSource(assetSourceSelect.value as AssetSource);
+  assetTimelineCache.clear();
+  loadedFontFaceKeys.clear();
   void loadScene(appState.activeScene);
 });
 

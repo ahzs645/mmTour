@@ -2,12 +2,13 @@
 
 import { state as appState } from "./state";
 import type { ControlAction } from "./frameModeTypes";
+import { assetUrl } from "../data/packedAssets";
 
 export async function playVoiceover(action: ControlAction) {
   if (!action.soundSrc) return;
   stopCurrentVoiceover();
 
-  const audio = new Audio(`/${action.soundSrc}`);
+  const audio = new Audio(assetUrl(action.soundSrc));
   audio.preload = "auto";
   appState.currentVoiceover = audio;
   await audio.play();
@@ -17,7 +18,7 @@ export async function playBackgroundMusic(action: ControlAction) {
   if (!action.soundSrc || appState.currentMusic?.dataset.sound === action.sound) return;
   stopCurrentMusic();
 
-  const audio = new Audio(`/${action.soundSrc}`);
+  const audio = new Audio(assetUrl(action.soundSrc));
   audio.preload = "auto";
   audio.loop = true;
   audio.volume = 0.35;
