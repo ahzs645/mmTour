@@ -9,6 +9,9 @@ const jsonFiles = ["timeline.json", "control-flow.json"];
 
 const dropRootFrames = process.argv.includes("--drop-root-frames");
 const dropBakedSprites = process.argv.includes("--drop-baked-sprites");
+const dropDebugArtifacts = process.argv.includes("--drop-debug-artifacts");
+const compactJson = process.argv.includes("--compact-json");
+const minifySvg = process.argv.includes("--minify-svg");
 const requestedScenes = process.argv.slice(2).filter((arg) => !arg.startsWith("--"));
 const scenes = requestedScenes.length
   ? requestedScenes
@@ -32,7 +35,26 @@ for (const scene of scenes) {
   const duplicateMap = new Map();
   let sceneFilesRemoved = 0;
   let sceneBytesRemoved = 0;
+  let sceneBytesRewritten = 0;
   const spriteDirsToRemove = new Set();
+
+  if (dropDebugArtifacts) {
+    const scriptsDir = join(sceneDir, "scripts");
+    if (existsSync(scriptsDir)) {
+      const scriptsSize = directorySize(scriptsDir);
+      const scriptsCount = walkFiles(scriptsDir).length;
+      rmSync(scriptsDir, { recursive: true, force: true });
+      sceneFilesRemoved += scriptsCount;
+      sceneBytesRemoved += scriptsSize;
+    }
+    for (const file of ["swf-parser-report.json"]) {
+      const debugPath = join(sceneDir, file);
+      if (!existsSync(debugPath)) continue;
+      sceneFilesRemoved += 1;
+      sceneBytesRemoved += statSync(debugPath).size;
+      rmSync(debugPath);
+    }
+  }
 
   if (dropRootFrames) {
     const framesDir = join(sceneDir, "frames");
@@ -87,6 +109,17 @@ for (const scene of scenes) {
     }
   }
 
+  if (minifySvg) {
+    for (const file of walkFiles(sceneDir).filter((path) => path.endsWith(".svg"))) {
+      const before = readFileSync(file, "utf8");
+      const after = minifySvgText(before);
+      if (after !== before) {
+        writeFileSync(file, after);
+        sceneBytesRewritten += Buffer.byteLength(before) - Buffer.byteLength(after);
+      }
+    }
+  }
+
   let sceneJsonRewrites = 0;
   for (const file of jsonFiles) {
     const jsonPath = join(sceneDir, file);
@@ -108,16 +141,23 @@ for (const scene of scenes) {
       }
     }
     const { value, rewrites } = rewriteGeneratedRefs(parsed, duplicateMap);
-    if (rewrites > 0 || forceWrite) {
-      writeFileSync(jsonPath, `${JSON.stringify(value, null, file === "timeline.json" ? 0 : 2)}\n`);
+    if (rewrites > 0 || forceWrite || compactJson) {
+      const beforeSize = statSync(jsonPath).size;
+      const json = compactJson || file === "timeline.json"
+        ? JSON.stringify(value)
+        : JSON.stringify(value, null, 2);
+      writeFileSync(jsonPath, `${json}\n`);
+      sceneBytesRewritten += beforeSize - statSync(jsonPath).size;
       sceneJsonRewrites += rewrites;
     }
   }
 
+  removeEmptyDirs(sceneDir);
   totalFilesRemoved += sceneFilesRemoved;
   totalBytesRemoved += sceneBytesRemoved;
   totalJsonRewrites += sceneJsonRewrites;
-  console.log(`${scene}: removed ${sceneFilesRemoved} duplicate files (${formatBytes(sceneBytesRemoved)}), rewrote ${sceneJsonRewrites} refs`);
+  const rewritten = sceneBytesRewritten ? `, compacted ${formatBytes(sceneBytesRewritten)}` : "";
+  console.log(`${scene}: removed ${sceneFilesRemoved} files (${formatBytes(sceneBytesRemoved)}), rewrote ${sceneJsonRewrites} refs${rewritten}`);
 }
 
 console.log(`Total: removed ${totalFilesRemoved} duplicate files (${formatBytes(totalBytesRemoved)}), rewrote ${totalJsonRewrites} refs`);
@@ -145,6 +185,15 @@ function directorySize(dir) {
   return walkFiles(dir).reduce((sum, file) => sum + statSync(file).size, 0);
 }
 
+function removeEmptyDirs(dir) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const child = join(dir, entry.name);
+    removeEmptyDirs(child);
+    if (readdirSync(child).length === 0) rmSync(child, { recursive: true, force: true });
+  }
+}
+
 function removeBakedSpriteFrameRefs(timeline) {
   let removed = 0;
   for (const asset of Object.values(timeline.assets ?? {})) {
@@ -153,6 +202,16 @@ function removeBakedSpriteFrameRefs(timeline) {
     delete asset.frames;
   }
   return removed;
+}
+
+function minifySvgText(svg) {
+  return svg
+    .replace(/^\uFEFF?/, "")
+    .replace(/^<\?xml[^>]*>\s*/i, "")
+    .replace(/\s+xmlns:ffdec="[^"]*"/g, "")
+    .replace(/\s+ffdec:[A-Za-z0-9_-]+="[^"]*"/g, "")
+    .replace(/>\s+</g, "><")
+    .trim();
 }
 
 function generatedRef(scene, file) {

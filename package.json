@@ -12,7 +12,7 @@
     "build:secondary-cli": "node scripts/build-secondary-cli-reports.mjs",
     "optimize:generated": "node scripts/dedupe-generated-assets.mjs",
     "optimize:player-generated": "node scripts/dedupe-generated-assets.mjs --drop-root-frames",
-    "optimize:tree-player-generated": "node scripts/dedupe-generated-assets.mjs --drop-root-frames --drop-baked-sprites",
+    "optimize:tree-player-generated": "node scripts/dedupe-generated-assets.mjs --drop-root-frames --drop-baked-sprites --drop-debug-artifacts --compact-json --minify-svg",
     "convert": "npm run extract && npm run build:flasm && npm run build:timelines && npm run build:control-flow && npm run build:secondary-cli && npm run optimize:generated",
     "convert:player": "npm run extract && npm run build:flasm && npm run build:timelines && npm run build:control-flow && npm run build:secondary-cli && npm run optimize:player-generated",
     "convert:tree-player": "npm run extract && npm run build:flasm && npm run build:timelines && npm run build:control-flow && npm run build:secondary-cli && npm run optimize:tree-player-generated",
