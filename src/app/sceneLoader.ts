@@ -86,7 +86,7 @@ export async function loadAssetTimeline(scene: TourScene, entryTarget?: SceneEnt
 
   appState.activeAssetTimeline = loadedTimeline;
   await loadExtractedFonts(appState.activeAssetTimeline);
-  if (!appState.activeAssetTimeline.frameSvgs?.length) {
+  if (!appState.activeAssetTimeline.frameSvgsOmitted && !appState.activeAssetTimeline.frameSvgs?.length) {
     appState.activeAssetTimeline.frameSvgs = Array.from(
       { length: appState.activeAssetTimeline.frameCount },
       (_, index) => `generated/${appState.activeAssetTimeline!.scene}/frames/${index + 1}.svg`,
@@ -96,6 +96,8 @@ export async function loadAssetTimeline(scene: TourScene, entryTarget?: SceneEnt
   // The decompiled player is the primary experience; other modes remain for
   // comparison via the dropdown.
   renderModeSelect.value = "player";
+  const frameOption = [...renderModeSelect.options].find((option) => option.value === "frame");
+  if (frameOption) frameOption.disabled = Boolean(appState.activeAssetTimeline.frameSvgsOmitted);
   assetStage.style.background = appState.activeAssetTimeline.backgroundColor ?? "#ffffff";
   frameScrubber.max = String(appState.activeAssetTimeline.frameCount - 1);
   const entryFrame = resolveSceneEntryFrame(appState.activeAssetTimeline, entryTarget);
@@ -121,7 +123,7 @@ export async function fetchAssetTimeline(swf: string) {
   if (!response.ok) return null;
 
   const assetTimeline = (await response.json()) as AssetTimeline;
-  if (!assetTimeline.frameSvgs?.length) {
+  if (!assetTimeline.frameSvgsOmitted && !assetTimeline.frameSvgs?.length) {
     assetTimeline.frameSvgs = Array.from(
       { length: assetTimeline.frameCount },
       (_, index) => `generated/${assetTimeline.scene}/frames/${index + 1}.svg`,

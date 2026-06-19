@@ -222,6 +222,10 @@ export type AssetTimeline = {
   entryFrame?: number;
   control?: TimelineControl;
   frameSvgs?: string[];
+  /** Root full-frame SVG composites were intentionally omitted for a player-only bundle. */
+  frameSvgsOmitted?: boolean;
+  /** Baked sprite-frame SVGs were intentionally omitted when nested timelines can render them. */
+  bakedSpriteFramesOmitted?: boolean;
   assets: Record<string, TimelineAsset>;
   frames: TimelineFrame[];
 };

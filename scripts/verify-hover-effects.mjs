@@ -68,6 +68,20 @@ try {
 
 async function verifySceneHover(page, scene) {
   const timeline = JSON.parse(readFileSync(join(root, "public", "generated", scene, "timeline.json"), "utf8"));
+  if (timeline.frameSvgsOmitted) {
+    return {
+      scene,
+      skipped: true,
+      reason: "root frame SVGs omitted in player-only generated bundle",
+      expectedStateButtons: 0,
+      coveredStateButtons: 0,
+      expectedRollOverButtons: 0,
+      coveredRollOverButtons: 0,
+      framesScanned: 0,
+      coveredStates: {},
+      coveredRollOvers: {},
+    };
+  }
   const buttonActions = timeline.control?.buttonActions ?? {};
   const expectedStateButtons = new Set(
     Object.entries(buttonActions)

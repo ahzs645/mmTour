@@ -191,7 +191,9 @@ export type AssetTimeline = {
     }>;
     segmentNavigation?: Array<{ swf: string }>;
   };
-  frameSvgs: string[];
+  frameSvgs?: string[];
+  frameSvgsOmitted?: boolean;
+  bakedSpriteFramesOmitted?: boolean;
   assets: Record<string, TimelineAsset>;
   frames: TimelineFrame[];
 };
