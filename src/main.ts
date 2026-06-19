@@ -19,8 +19,8 @@ import { loadScene } from "./app/sceneLoader";
 import { goToFrame, renderFrame, syncAssetStageScale } from "./app/frameMode";
 import { applySharpnessFlagsToRoot } from "./render/renderTuning";
 
-// Image-sharpness investigation: opt-in render experiments via `?sharpen=` (no-op
-// by default). See docs/image-sharpness-vs-ruffle.md.
+// Image-sharpness fix: instances drop `will-change` by default; `?willchange`
+// restores it for an A/B comparison. See docs/image-sharpness-vs-ruffle.md §10.
 applySharpnessFlagsToRoot();
 
 declare global {

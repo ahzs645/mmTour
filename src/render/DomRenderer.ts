@@ -2,7 +2,6 @@ import { gsap } from "gsap";
 import { assetUrl } from "../data/TimelineLoader";
 import type { MaskVisual, RenderNode } from "../player/types";
 import { applyColorTransform } from "./colorTransform";
-import { snapTranslate } from "./renderTuning";
 
 // A 1×1 fully-transparent GIF — used as the src for a button that has no artwork
 // (its visual lives in the baked sprite frame) so the <img> hit area shows nothing
@@ -299,11 +298,10 @@ export class DomRenderer {
     }
 
     const { a, b, c, d, tx, ty } = node.matrix;
-    const [stx, sty] = snapTranslate(tx, ty);
     gsap.set(rendered.element, {
       zIndex: node.order,
       opacity: node.opacity,
-      transform: `matrix(${a}, ${b}, ${c}, ${d}, ${stx}, ${sty})`,
+      transform: `matrix(${a}, ${b}, ${c}, ${d}, ${tx}, ${ty})`,
     });
     applyColorTransform(rendered.media, node.colorTransform);
   }

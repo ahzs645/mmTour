@@ -1,8 +1,12 @@
 # Issue: Decompiled Player images look "washed out" / softer than Ruffle
 
-**Status:** Open / unresolved. Investigated 2026-06-18. Three obvious fixes were
-measured and **disproven**. Documented here as a self-contained handoff so the next
-person/AI does not repeat the dead ends.
+**Status:** **RESOLVED 2026-06-19** — root cause found and fixed. The softness was
+`will-change: transform, opacity` on every on-stage instance: it promoted each to its
+own GPU compositor texture that the browser then bilinear-resampled at the instance's
+sub-pixel transform, costing ~8% edge sharpness. Removing it (now the default) recovers
++7% and lands within ~2% of a single-SVG render, luminance-neutral. See §10 for the
+measurements. §§1–9 below are the original (still-valid) investigation; the three fixes
+in §4 are still dead ends — they acted on the *stage*, not the *instances*.
 
 > TL;DR — It is **not a colour problem** (brightness/contrast/RGB match Ruffle to
 > within <0.5/255). It is a small, consistent **~12% loss of edge/detail energy**
@@ -210,18 +214,47 @@ they can be A/B-measured the way §3 demands, without changing default rendering
 | `?sharpen=all` | Both. | — |
 
 These are **distinct from the three disproven fixes** — those snapped the *stage* scale;
-these touch the *instances* the hypothesis actually implicates. They are **not yet
-measured** (the change was authored in a CI container with no browser and no built
-`public/generated/` assets).
+these touch the *instances* the hypothesis actually implicates.
 
-**How to A/B them** (on a machine that can run the harness):
+### Measured 2026-06-19 (segment3, settled frame 33, dpr=1, 667×502)
+
+Instead of the noisy player-vs-Ruffle ratio, this compares **player mode vs the app's
+own `frame` mode** — i.e. the exact same content rendered as our stacked DOM/SVG
+instances vs as one inline baked SVG. Same browser, same frame, no independent-renderer
+confound. Sharpness = mean |∇luma| (`scripts/measure-sharpness.mjs`):
+
+| Comparison | sharpness ratio | reading |
+|---|---|---|
+| player (baseline) ÷ single-SVG `frame` | **0.916** | our DOM layering loses ~8% — confirms §6 |
+| `?sharpen=all` ÷ baseline | **1.070** | the levers recover ~7%, luminance Δ = −0.00 |
+| `?sharpen=all` ÷ single-SVG `frame` | **0.980** | gap to the clean render nearly closed |
+
+**Which lever?** Isolated, `nowill` (drop `will-change`) = **1.069**; `snap`
+(device-pixel translate) = **0.994** (noise). So **`will-change` was the entire cause**;
+the sub-pixel snap does nothing (without layer promotion the browser already rasterises
+at sub-pixel with full AA). The `snap` lever was therefore dropped, not shipped.
+
+### Fix shipped
+
+`will-change` was **removed from the instance layers by default** (`src/styles.css`:
+`.player-instance`, `.asset-instance`, `.swf-*`, `.gsap-display-entry`). Re-measured on
+the built app: new default is **+7.4%** over the old behaviour (luminance Δ = +0.01) and
+**0.979** of the single-SVG render. `?willchange` restores the old behaviour for A/B or
+to feel out animation smoothness (`src/render/renderTuning.ts`).
+
+> **Caveat:** `will-change` was presumably added for compositor-thread animation
+> smoothness. The measurement above is a *settled* frame; the perf impact of removing it
+> *during* playback was not benchmarked (these tour scenes animate lightly at SWF
+> framerate, so it should be negligible — but if jank appears, `?willchange` is the
+> instant A/B, and the revert is one CSS block).
+
+**How to re-measure** (on a machine with the harness + built `public/generated/`):
 
 ```bash
-# baseline
-PLAYER_RUFFLE_SAMPLES=2 node scripts/compare-player-ruffle.mjs
-# then re-capture with the app opened at ?sharpen=all and compare the player PNGs:
-node scripts/measure-sharpness.mjs <baseline-player>.png <sharpen-player>.png
-#   → ratio > 1.0 means the experiment sharpened our render.
+node_modules/.bin/vite --port 5174 &        # serve the app
+# capture #assetStage in player mode with and without ?willchange, then:
+node scripts/measure-sharpness.mjs <willchange>.png <default>.png
+#   → ratio > 1.0 means the default is sharper than the old will-change behaviour.
 ```
 
 `scripts/measure-sharpness.mjs` is the previously-throwaway metric from §3, now
