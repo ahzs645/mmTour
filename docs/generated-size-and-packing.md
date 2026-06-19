@@ -93,6 +93,51 @@ for this bundle. It improves the full generated transfer estimate by only about
 payloads are already compressed. Brotli's meaningful win is JSON (`0.92 MiB`
 gzip -> `0.59 MiB` Brotli q8).
 
+The repo includes an experimental pack generator:
+
+```sh
+npm run pack:generated
+```
+
+It writes ignored artifacts under `public/generated-packed/`:
+
+```text
+<scene>/<scene>.pack
+<scene>/<scene>.pack.gz
+<scene>/<scene>.pack.br
+<scene>/<scene>.shape-dict.json
+<scene>/<scene>.shape-dict.json.gz
+<scene>/<scene>.shape-dict.json.br
+report.json
+```
+
+The `.pack` format is a simple binary container: a 4-byte little-endian JSON
+header length, a JSON manifest with file paths/content types/offsets, then raw
+file bytes. It is not wired into runtime yet; it is for measuring and gives us a
+future `fetch(...).arrayBuffer()` load target.
+
+Current totals from `public/generated-packed/report.json`:
+
+```text
+binary pack raw:     74,811,180 bytes
+binary pack gzip:    41,243,347 bytes
+binary pack brotli:  39,557,094 bytes
+
+shape dict raw:      42,671,462 bytes
+shape dict gzip:     17,579,168 bytes
+shape dict brotli:   16,058,036 bytes
+```
+
+The binary pack confirms the earlier compression estimate: packaging the existing
+files into one binary blob does not shrink much beyond Brotli/gzip. It mainly
+reduces request count and gives a cleaner deployment unit.
+
+The `shape-dict` output is a prototype, not a complete runtime package: it packs
+timeline/control data and SVG-derived shape/button drawing records, but does not
+include the external PNG/MP3/TTF media payload. Its Brotli size (`~15.3 MiB`) is
+the useful signal: compact shape/timeline representation can get close to SWF
+scale, but only once the runtime can render those records directly.
+
 ## Packing Tests
 
 ### Tuple-packed timeline JSON
@@ -124,6 +169,12 @@ SVG gzip:  16.04 -> 15.96 MiB  save 0.08 MiB
 Conclusion: simple XML-to-JSON conversion is not useful enough. The real weight
 is long path `d` strings and embedded base64 PNG data, not just XML tags.
 
+The checked-in `pack:generated` shape-dictionary prototype is a more complete
+version of this test across scenes. It is still intentionally naive: path data
+stays as SVG `d` strings, gradients/patterns are stored as arrays, and media
+payloads are not embedded. It exists so future work can replace path strings
+with binary numeric path records and compare against a stable baseline.
+
 ## Prior Art
 
 The viable direction is not unique to this project:
@@ -133,8 +184,8 @@ The viable direction is not unique to this project:
   the original SWF.
 - Adobe Animate's HTML5 Canvas export uses CreateJS and documents spritesheets
   as a way to reduce requests, output size, and improve performance.
-- The vendored `tools/Fanvas-master` project is close to the target architecture:
-  SWF -> compact JSON -> Canvas runtime.
+- Fanvas-style converters are close to the target architecture: SWF -> compact
+  JSON -> Canvas runtime.
 
 Those systems all point at the same shape: keep a compact symbol dictionary and
 timeline/action stream, then render it with a purpose-built runtime. Do not emit
