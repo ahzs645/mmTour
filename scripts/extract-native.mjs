@@ -19,6 +19,7 @@ import {
   collectFonts, buildTtf,
   collectSounds, extractSound,
   collectButtons, composeButton,
+  collectStaticTexts, fontsById, reconstructText,
 } from "../src/convert/index.ts";
 
 const root = resolve(new URL("..", import.meta.url).pathname);
@@ -88,10 +89,18 @@ for (const scene of scenes) {
     if (wrote) counts.buttons++;
   }
 
-  // --- texts (DefineEditText initial content; static DefineText left to overlay) ---
+  // --- texts: editText literal content + static DefineText reconstructed from glyph indices ---
   for (const t of movie.tags) {
     if (t.type === swf.TagType.DefineDynamicText && t.text != null) {
       writeFileSync(join(dir("texts"), `${t.id}.txt`), String(t.text));
+      counts.texts++;
+    }
+  }
+  const fonts = fontsById(movie);
+  for (const t of collectStaticTexts(movie)) {
+    const text = reconstructText(t, fonts);
+    if (text) {
+      writeFileSync(join(dir("texts"), `${t.id}.txt`), text);
       counts.texts++;
     }
   }
