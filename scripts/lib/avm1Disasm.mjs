@@ -235,14 +235,20 @@ export function readU32(bytes, offset) {
   return ((bytes[offset] ?? 0) | ((bytes[offset + 1] ?? 0) << 8) | ((bytes[offset + 2] ?? 0) << 16) | ((bytes[offset + 3] ?? 0) << 24)) >>> 0;
 }
 
+// Browser-safe (also fine in Node): avoid the Buffer global so the disassembler
+// can run in the in-browser converter as well as the Node pipeline.
+const utf8Decoder = new TextDecoder("utf-8");
+
 export function readCString(bytes, offset) {
   let end = offset;
   while (end < bytes.length && bytes[end] !== 0) end += 1;
-  return Buffer.from(bytes.slice(offset, end)).toString("utf8");
+  return utf8Decoder.decode(bytes.slice(offset, end));
 }
 
 export function bytesToHex(bytes) {
-  return Buffer.from(bytes).toString("hex");
+  let hex = "";
+  for (let i = 0; i < bytes.length; i += 1) hex += bytes[i].toString(16).padStart(2, "0");
+  return hex;
 }
 
 export function hexByte(code) {

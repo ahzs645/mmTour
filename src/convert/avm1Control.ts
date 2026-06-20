@@ -51,6 +51,37 @@ function safeDisassemble(actions: Uint8Array): any[] {
   }
 }
 
+export interface SwfDependency {
+  swf: string; // e.g. "intro.swf"
+  level?: number; // target _levelN, if a level load
+}
+
+/** Find the other SWFs this movie loads (loadMovie/loadMovieNum → GetUrl with a
+ *  .swf target). A shell like A-tour pulls intro/nav/segments into stacked
+ *  levels — those must be compiled + registered too for cross-loads to resolve. */
+export function detectDependencies(movie: any): SwfDependency[] {
+  const seen = new Map<string, SwfDependency>();
+  const visit = (tags: any[]) => {
+    for (const t of tags) {
+      if (t.type === swf.TagType.DoAction) {
+        for (const op of safeDisassemble(t.actions)) {
+          if (op.op === "GetUrl" && typeof op.url === "string" && /\.swf$/i.test(op.url)) {
+            const m = /^_level(\d+)$/.exec(op.target ?? "");
+            const key = op.url.toLowerCase();
+            if (!seen.has(key)) seen.set(key, { swf: op.url, level: m ? Number(m[1]) : undefined });
+          }
+          // string constants ending in .swf (loadMovie via method call)
+          if (op.op === "ConstantPool") for (const v of op.values ?? []) if (typeof v === "string" && /\.swf$/i.test(v) && !seen.has(v.toLowerCase())) seen.set(v.toLowerCase(), { swf: v });
+        }
+      } else if (t.type === swf.TagType.DefineSprite) {
+        visit(t.tags);
+      }
+    }
+  };
+  visit(movie.tags);
+  return [...seen.values()];
+}
+
 export function extractControl(movie: any): ExtractedControl {
   const root = scanFrames(movie.tags);
   const spriteStopFrames: Record<string, number[]> = {};

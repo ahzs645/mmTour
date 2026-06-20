@@ -17,7 +17,7 @@ import {
   collectButtons, composeButton,
   fontsById, reconstructText,
 } from "./index.ts";
-import { extractControl } from "./avm1Control.ts";
+import { extractControl, detectDependencies, type SwfDependency } from "./avm1Control.ts";
 
 export interface CompileStats {
   shapes: number;
@@ -40,6 +40,8 @@ export interface CompiledScene {
   stats: CompileStats;
   width: number;
   height: number;
+  /** Other SWFs this scene loadMovie's (a shell like A-tour needs these too). */
+  dependencies: SwfDependency[];
 }
 
 const enc = new TextEncoder();
@@ -189,7 +191,7 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
   for (const f of files.values()) stats.assetBytes += f.bytes.length;
   stats.ms = Math.round(performance.now() - t0);
 
-  return { scene, timeline, files, stats, width, height };
+  return { scene, timeline, files, stats, width, height, dependencies: detectDependencies(movie) };
 }
 
 // --- helpers ---

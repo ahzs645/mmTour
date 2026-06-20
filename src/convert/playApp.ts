@@ -18,7 +18,6 @@ const playerWrap = $("#player-wrap"), playerEl = $("#player"), playerTitle = $("
 const SAMPLES = ["A-tour", "intro", "nav", "segment1", "segment4", "segment5"];
 
 let activePlayer: TourPlayer | null = null;
-let sceneCounter = 0;
 
 // --- bootstrap UI ---
 const samplesEl = $("#samples");
@@ -61,30 +60,54 @@ async function convertFile(name: string, bytes: Uint8Array) {
   cards.prepend(card);
   try {
     const compiled = await compile(bytes, name);
-    const thumb = await playAndShoot(compiled, bytes, name); // play + capture a thumbnail
-    renderCard(card, name, compiled, bytes);
-    const id = await saveConvert({
+    renderCard(card, name, compiled, bytes); // stats + Play immediately (main scene is playable now)
+    await saveConvert({
       name, swf: new Blob([bytes.slice().buffer], { type: "application/x-shockwave-flash" }),
-      stats: compiled.stats, width: compiled.width, height: compiled.height, thumb, createdAt: Date.now(),
+      stats: compiled.stats, width: compiled.width, height: compiled.height, createdAt: Date.now(),
     });
-    void id;
     renderHistory();
+    if (compiled.dependencies.length) setDepLine(card, compiled, await resolveDependencies(compiled));
   } catch (e) {
     card.classList.remove("busy");
     card.innerHTML = `<h3>${escapeHtml(name)}</h3><div class="meta" style="color:#ff8a8a">convert failed: ${escapeHtml((e as Error).message)}</div>`;
   }
 }
 
+/** Scene key a loadMovie("intro.swf") resolves to — basename, so cross-loads find it. */
+const canonical = (name: string) => name.replace(/\.swf$/i, "").replace(/[^\w.-]+/g, "-");
+const compiledScenes = new Map<string, CompiledScene>();
+
 async function compile(bytes: Uint8Array, name: string): Promise<CompiledScene> {
-  const scene = `swf_${++sceneCounter}_${name.replace(/\.swf$/i, "").replace(/[^a-z0-9]+/gi, "-")}`;
+  const scene = canonical(name);
   const compiled = await compileScene(bytes, scene);
   registerPackedScene(scene, compiled.files, compiled.timeline);
+  compiledScenes.set(scene, compiled);
   return compiled;
+}
+
+/** A shell (A-tour) loadMovie's the other SWFs into levels — compile + register
+ *  each so the cross-loads resolve. Pull from already-converted scenes first,
+ *  else fetch a bundled SWF of that name. Returns which resolved / are missing. */
+async function resolveDependencies(c: CompiledScene): Promise<{ resolved: string[]; missing: string[] }> {
+  const resolved: string[] = [], missing: string[] = [];
+  for (const dep of c.dependencies) {
+    if (compiledScenes.has(canonical(dep.swf))) { resolved.push(dep.swf); continue; }
+    try {
+      const r = await fetch(`${import.meta.env.BASE_URL}${dep.swf}`);
+      if (!r.ok) throw new Error("not found");
+      await compile(new Uint8Array(await r.arrayBuffer()), dep.swf);
+      resolved.push(dep.swf);
+    } catch { missing.push(dep.swf); }
+  }
+  return { resolved, missing };
 }
 
 function renderCard(card: HTMLElement, name: string, c: CompiledScene, bytes: Uint8Array) {
   const s = c.stats;
   card.classList.remove("busy");
+  const depPlaceholder = c.dependencies.length
+    ? `<div class="meta dep">⟳ resolving ${c.dependencies.length} linked SWF${c.dependencies.length > 1 ? "s" : ""}…</div>`
+    : "";
   card.innerHTML =
     `<h3>${escapeHtml(name)} <span class="dim">${c.width}×${c.height}</span></h3>` +
     `<div class="statgrid">` +
@@ -93,8 +116,19 @@ function renderCard(card: HTMLElement, name: string, c: CompiledScene, bytes: Ui
       stat(s.frames, "frames") + stat(s.sprites, "sprites") + stat(s.stopFrames, "stops") +
     `</div>` +
     `<div class="meta">${(s.assetBytes / 1024 / 1024).toFixed(2)} MB assets · compiled in ${s.ms} ms</div>` +
+    depPlaceholder +
     `<button class="play">▶ Play</button>`;
   (card.querySelector(".play") as HTMLButtonElement).onclick = () => play(c.scene, c, bytes, name);
+}
+
+/** Replace the "resolving…" placeholder with the dependency result once compiled. */
+function setDepLine(card: HTMLElement, c: CompiledScene, deps: { resolved: string[]; missing: string[] }) {
+  const el = card.querySelector(".dep");
+  if (!el) return;
+  el.innerHTML =
+    `loads ${c.dependencies.length} SWF${c.dependencies.length > 1 ? "s" : ""}: ` +
+    c.dependencies.map((d) => `<span class="pill ${deps.missing.includes(d.swf) ? "miss" : "ok"}">${escapeHtml(d.swf)}</span>`).join(" ") +
+    (deps.missing.length ? ` <span style="color:var(--warn)">— drop these too</span>` : ` <span style="color:var(--accent-2)">— all compiled ✓</span>`);
 }
 
 const stat = (n: number, label: string) => `<div><b>${n}</b><span>${label}</span></div>`;
@@ -127,11 +161,6 @@ function closePlayer() {
   playerEl.innerHTML = "";
   playerEl.style.transform = "";
   playerWrap.classList.remove("on");
-}
-
-/** Play briefly off-screen to grab a thumbnail of the first frame, then tidy up. */
-async function playAndShoot(c: CompiledScene, _bytes: Uint8Array, _name: string): Promise<string | undefined> {
-  return undefined; // thumbnail capture is best-effort; skipped to keep convert fast
 }
 
 // --- history (IndexedDB via Dexie) ---
