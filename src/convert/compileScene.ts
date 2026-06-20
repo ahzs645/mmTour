@@ -18,6 +18,8 @@ import {
   fontsById, reconstructText,
 } from "./index.ts";
 import { extractControl, detectDependencies, type SwfDependency } from "./avm1Control.ts";
+import { parseProgram } from "./avm1/parse.ts";
+import { runInit } from "./avm1/interp.ts";
 
 export interface CompileStats {
   shapes: number;
@@ -160,6 +162,30 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
   stats.frames = frames.length;
   stats.stopFrames = control.stopFrames.length;
 
+  // Execute the frame-1 init (function defs + startup calls) to discover what a
+  // shell brings on stage at startup — the level loads (intro→4, nav→6) and the
+  // seeded variable store. This is what lets A-tour self-drive its initial state.
+  const initBytes = firstFrameDoAction(movie);
+  let initLoads: { swf: string; level?: number }[] = [];
+  let globalDefaults: Record<string, any> = {};
+  if (initBytes) {
+    try {
+      const r = runInit(parseProgram(initBytes), { osVersion: "Pro" });
+      globalDefaults = r.globals;
+      initLoads = r.loads.filter((l) => l.level !== undefined);
+    } catch { /* init scan is best-effort */ }
+  }
+  // Fire the startup loads on the first PLAYBACK tick (frame after entry), not at
+  // frame 0 — frame 0's scripts run during the player's construction (buildRoot),
+  // before the level system + playback are ready, so a load there races. Defer to
+  // the next frame the root actually enters (capped before the first stop).
+  const entry = discoverEntryFrame(labels);
+  const firstStop = control.stopFrames.find((f: number) => f > entry);
+  const loadFrame = frames.length > 1 ? Math.min(entry + 1, firstStop ?? frames.length - 1) : 0;
+  const frameActions = initLoads.length
+    ? [{ frame: loadFrame, actions: initLoads.map((l) => ({ command: "loadMovieNum", swf: l.swf, level: l.level, executionContext: "timeline" })) }]
+    : [];
+
   const fr = movie.header.frameSize;
   const width = Math.round((fr.xMax - fr.xMin) / 20);
   const height = Math.round((fr.yMax - fr.yMin) / 20);
@@ -179,8 +205,8 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
     control: {
       stopFrames: control.stopFrames,
       spriteStopFrames: control.spriteStopFrames,
-      frameActions: [],
-      globalDefaults: {},
+      frameActions,
+      globalDefaults,
     },
     frameSvgs: [],
     assets,
@@ -196,6 +222,16 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
 
 // --- helpers ---
 const zero = () => ({ x: 0, y: 0, width: 0, height: 0 });
+
+/** The first root DoAction (frame 1's init script), where a shell defines its
+ *  functions and kicks off its startup loads. */
+function firstFrameDoAction(movie: any): Uint8Array | undefined {
+  for (const t of movie.tags) {
+    if (t.type === swf.TagType.DoAction) return t.actions;
+    if (t.type === swf.TagType.ShowFrame) return undefined;
+  }
+  return undefined;
+}
 
 function svgOrigin(svg: string) {
   const width = parseFloat(svg.match(/\bwidth="([\d.]+)px"/)?.[1] ?? "0");
