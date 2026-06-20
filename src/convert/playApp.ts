@@ -2,7 +2,8 @@
 // a persistent IndexedDB history. Ties the converter (compileScene) to the
 // player (createTourPlayer via the in-memory pack source) and Dexie history.
 
-import { compileScene, type CompiledScene } from "./compileScene.ts";
+import type { CompiledScene } from "./compileScene.ts";
+import { compileSceneAsync } from "./compileClient.ts";
 import { registerPackedScene, setAssetSource } from "../data/packedAssets.ts";
 import { createTourPlayer, type TourPlayer } from "../index.ts";
 
@@ -79,7 +80,7 @@ const compiledScenes = new Map<string, CompiledScene>();
 
 async function compile(bytes: Uint8Array, name: string): Promise<CompiledScene> {
   const scene = canonical(name);
-  const compiled = await compileScene(bytes, scene);
+  const compiled = await compileSceneAsync(bytes, scene); // off the main thread → UI stays responsive
   registerPackedScene(scene, compiled.files, compiled.timeline);
   compiledScenes.set(scene, compiled);
   return compiled;
