@@ -25,7 +25,24 @@
     "capture:render-modes": "node scripts/capture-render-mode-frames.mjs",
     "capture:direct": "node scripts/capture-direct-renderer-frames.mjs",
     "build": "tsc --noEmit && vite build",
+    "build:lib": "vite build --config vite.lib.config.ts && tsc -p tsconfig.lib.json",
     "preview": "vite preview --host 127.0.0.1"
+  },
+  "main": "./dist-lib/index.js",
+  "module": "./dist-lib/index.js",
+  "types": "./dist-lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist-lib/index.d.ts",
+      "import": "./dist-lib/index.js"
+    }
+  },
+  "files": [
+    "dist-lib",
+    "src"
+  ],
+  "peerDependencies": {
+    "gsap": "^3.15.0"
   },
   "dependencies": {
     "@ruffle-rs/ruffle": "^0.2.0-nightly.2026.5.4",

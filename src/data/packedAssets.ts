@@ -25,6 +25,20 @@ export type AssetSource = "files" | "pack";
 let assetSource: AssetSource = "files";
 const packedScenes = new Map<string, PackedScene>();
 
+// Base URL under which the converted `generated/` (and `generated-packed/`)
+// scene assets are served. Empty string = origin root (`/generated/...`), which
+// is how the dev lab serves them. A library consumer points this at wherever it
+// hosts the assets, e.g. `setAssetsBaseUrl("/apps/xp-tour/gsap")`.
+let assetsBaseUrl = "";
+
+export function setAssetsBaseUrl(url: string) {
+  assetsBaseUrl = url.replace(/\/+$/, "");
+}
+
+export function getAssetsBaseUrl(): string {
+  return assetsBaseUrl;
+}
+
 export function getAssetSource(): AssetSource {
   return assetSource;
 }
@@ -67,11 +81,11 @@ export function assetUrl(src: string): string {
       }
     }
   }
-  return src.startsWith("/") ? src : `/${src}`;
+  return `${assetsBaseUrl}/${src.replace(/^\//, "")}`;
 }
 
 async function loadTimelineFile(scene: string): Promise<AssetTimeline | null> {
-  const response = await fetch(`/generated/${scene}/timeline.json?v=${Date.now()}`);
+  const response = await fetch(`${assetsBaseUrl}/generated/${scene}/timeline.json?v=${Date.now()}`);
   if (!response.ok) return null;
   try {
     return (await response.json()) as AssetTimeline;
@@ -84,7 +98,7 @@ async function loadPackedScene(scene: string): Promise<PackedScene | null> {
   const cached = packedScenes.get(scene);
   if (cached) return cached;
 
-  const response = await fetch(`/generated-packed/${scene}/${scene}.pack?v=${Date.now()}`);
+  const response = await fetch(`${assetsBaseUrl}/generated-packed/${scene}/${scene}.pack?v=${Date.now()}`);
   if (!response.ok) return null;
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (bytes.byteLength < 4) return null;

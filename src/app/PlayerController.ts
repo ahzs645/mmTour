@@ -9,6 +9,8 @@ import { SoundController } from "../audio/SoundController";
 
 export type PlayerControllerOptions = {
   onFrame?: (rootFrame: number, playing: boolean, label: string) => void;
+  /** Enable temporary segment-flash tracing (console logs + a bottom-bar rAF watch). Off by default. */
+  debug?: boolean;
 };
 
 type Level = { player: Player; layer: HTMLElement; swf: string };
@@ -172,7 +174,7 @@ export class PlayerController {
     // [FLASHDBG] Temporary: trace the segment-flash cause. Log the doAttractLoop
     // flag at load, then watch the bottom-center for ~6s and report the exact
     // instant it goes uncovered (white) with every level's current frame.
-    if (level > 0) {
+    if (this.options.debug && level > 0) {
       const da = this.store.get("bkgd.doAttractLoop");
       // eslint-disable-next-line no-console
       console.log(`[FLASHDBG] load ${swf} → _level${level}  doAttractLoop=${JSON.stringify(da)}`);

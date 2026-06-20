@@ -3,6 +3,8 @@
  * structured data ready for GSAP timeline construction.
  */
 
+import { getAssetsBaseUrl } from "../data/packedAssets";
+
 // ===== Output Types =====
 
 export interface SwfMovie {
@@ -321,7 +323,7 @@ function getGeneratedSceneName(swfUrl: string): string | null {
 
 function getExtractedAssetBase(swfUrl: string, assetType: 'shapes' | 'sprites' | 'fonts'): string | null {
   const sceneName = getGeneratedSceneName(swfUrl);
-  return sceneName ? `/generated/${sceneName}/${assetType}` : null;
+  return sceneName ? `${getAssetsBaseUrl()}/generated/${sceneName}/${assetType}` : null;
 }
 
 function getExtractedShapeBase(swfUrl: string): string | null {
