@@ -20,6 +20,10 @@ export {
   isLosslessBitmap,
 } from "./imageDecoder.ts";
 export type { BitmapSet, RawImage, DecodedImage } from "./imageDecoder.ts";
+export { collectFonts, buildTtf } from "./fontBuilder.ts";
+export type { FontTag } from "./fontBuilder.ts";
+export { collectSounds, extractSound, soundToDataUrl } from "./soundExtractor.ts";
+export type { ExtractedSound } from "./soundExtractor.ts";
 
 export interface CollectedShape {
   id: number;
