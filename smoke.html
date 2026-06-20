@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body { margin: 0; background: #000; }
+      #stage { width: 640px; height: 480px; position: relative; overflow: hidden; }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <script type="module">
+      import { createTourPlayer } from "/src/index.ts";
+      window.__smoke = { status: "loading" };
+      try {
+        const source = new URLSearchParams(location.search).get("source") || "files";
+        const opts = { assetsBaseUrl: "", assetSource: source, scene: "A-tour.swf", autoplay: true };
+        if (source === "archive") opts.archiveUrl = "/generated-archive/xp-tour.pack";
+        const player = await createTourPlayer(document.getElementById("stage"), opts);
+        window.__player = player;
+        window.__smoke = { status: "ready", frameCount: player.frameCount };
+      } catch (e) {
+        window.__smoke = { status: "error", message: String((e && e.message) || e) };
+      }
+    </script>
+  </body>
+</html>

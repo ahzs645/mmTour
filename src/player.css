@@ -1,0 +1,30 @@
+/* Runtime styles for the embeddable tour player. The renderer sets transforms,
+ * sizes, and pointer-events inline; these classes provide the base layout the
+ * inline styles build on. The host container should be `position: relative`
+ * (or absolute) and 640x480 — see createTourPlayer docs — typically scaled to
+ * fit via a CSS transform on a wrapper. */
+.player-level {
+  position: absolute;
+  inset: 0;
+  width: 640px;
+  height: 480px;
+  pointer-events: none;
+}
+
+.player-instance {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  will-change: transform, opacity;
+}
+
+.player-media {
+  display: block;
+}
+
+.player-text {
+  position: absolute;
+  transform-origin: 0 0;
+  pointer-events: none;
+}

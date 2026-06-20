@@ -15,15 +15,24 @@
  *   // …later
  *   tour.destroy();
  */
+import "./player.css";
 import { PlayerController } from "./app/PlayerController";
 import { loadTimeline } from "./data/TimelineLoader";
-import { setAssetsBaseUrl, setAssetSource, type AssetSource } from "./data/packedAssets";
+import { setArchiveUrl, setAssetsBaseUrl, setAssetSource, type AssetSource } from "./data/packedAssets";
 
 export interface TourPlayerOptions {
   /** Where the converted `generated/` (and `generated-packed/`) assets are served. Default "" (origin root). */
   assetsBaseUrl?: string;
-  /** Load loose files ("files", default) or a packed per-scene bundle ("pack"). */
+  /**
+   * How assets are loaded:
+   * - "files" (default): loose files under `${assetsBaseUrl}/generated/`.
+   * - "bundle": one gzipped JSON of timeline+shapes per scene (media still loose).
+   * - "archive": ONE file for the whole tour, scenes read on demand via HTTP Range.
+   * - "scene-pack": one self-contained file per scene under `generated-packs/`.
+   */
   assetSource?: AssetSource;
+  /** For assetSource "archive": URL of the single archive. Default `${assetsBaseUrl}/xp-tour.pack`. */
+  archiveUrl?: string;
   /** Entry SWF. Default "A-tour.swf" — the Tour Shell that drives the full guided tour. */
   scene?: string;
   /** Begin playing immediately. Default true. */
@@ -59,6 +68,7 @@ export async function createTourPlayer(
   const {
     assetsBaseUrl = "",
     assetSource = "files",
+    archiveUrl,
     scene = "A-tour.swf",
     autoplay = true,
     debug = false,
@@ -67,6 +77,9 @@ export async function createTourPlayer(
 
   setAssetsBaseUrl(assetsBaseUrl);
   setAssetSource(assetSource);
+  if (assetSource === "archive") {
+    setArchiveUrl(archiveUrl ?? `${assetsBaseUrl.replace(/\/+$/, "")}/xp-tour.pack`);
+  }
 
   const timeline = await loadTimeline(scene);
   if (!timeline) {
@@ -100,7 +113,7 @@ export async function createTourPlayer(
 // createTourPlayer offers (custom level handling, asset source switching, etc.).
 export { PlayerController } from "./app/PlayerController";
 export type { PlayerControllerOptions } from "./app/PlayerController";
-export { setAssetsBaseUrl, getAssetsBaseUrl, setAssetSource, getAssetSource } from "./data/packedAssets";
+export { setAssetsBaseUrl, getAssetsBaseUrl, setAssetSource, getAssetSource, setArchiveUrl } from "./data/packedAssets";
 export type { AssetSource } from "./data/packedAssets";
 export { loadTimeline } from "./data/TimelineLoader";
 export { scenes, sceneNameFromSwf } from "./data/scenes";

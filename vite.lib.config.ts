@@ -9,6 +9,7 @@ export default defineConfig({
     outDir: "dist-lib",
     emptyOutDir: true,
     sourcemap: true,
+    copyPublicDir: false,
     lib: {
       entry: resolve(__dirname, "src/index.ts"),
       formats: ["es"],
