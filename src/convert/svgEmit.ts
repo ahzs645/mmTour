@@ -25,6 +25,11 @@ function hex(n: number): string {
 }
 const colorHex = (c: any) => `#${hex(c.r)}${hex(c.g)}${hex(c.b)}`;
 
+// SWF CapStyle 0=Round 1=None(butt) 2=Square ; JoinStyle 0=Round 1=Bevel 2=Miter
+const CAP: Record<number, string> = { 0: "round", 1: "butt", 2: "square" };
+const JOIN: Record<number, string> = { 0: "round", 1: "bevel", 2: "miter" };
+const joinType = (j: any) => (typeof j === "object" && j ? j.type : j) ?? 2;
+
 export interface ShapeSvgResult {
   svg: string;
   /** Fill styles encountered, for coverage reporting (e.g. ["Solid","LinearGradient"]). */
@@ -36,8 +41,27 @@ export function defineShapeToSvg(tag: any): ShapeSvgResult {
   const { bounds } = tag;
   const w = (bounds.xMax - bounds.xMin) / 20;
   const h = (bounds.yMax - bounds.yMin) / 20;
-  const { fills, lines } = rasterizeShape(tag.shape);
+  const inner = shapeInner(tag, "g");
 
+  const defsBlock = inner.defs ? `<defs>${inner.defs}</defs>` : "";
+  const g = `<g transform="matrix(1.0, 0.0, 0.0, 1.0, ${num(-bounds.xMin / 20)}, ${num(-bounds.yMin / 20)})">${inner.body}</g>`;
+  const svg = `<svg xmlns:xlink="http://www.w3.org/1999/xlink" height="${num(h)}px" width="${num(w)}px" xmlns="http://www.w3.org/2000/svg">${defsBlock}${g}</svg>`;
+  return { svg, fillTypes: inner.fillTypes, unsupported: inner.unsupported };
+}
+
+export interface ShapeInner {
+  /** `<path>` elements in the shape's native px space (twips/20), no origin shift. */
+  body: string;
+  /** gradient `<def>` contents (no wrapping <defs>); ids are prefixed to stay unique. */
+  defs: string;
+  fillTypes: string[];
+  unsupported: string[];
+}
+
+/** Build a shape's paint primitives without the outer <svg>/<g origin> — so a
+ *  caller (e.g. the button compositor) can place the shape under its own matrix. */
+export function shapeInner(tag: any, idPrefix: string): ShapeInner {
+  const { fills, lines } = rasterizeShape(tag.shape);
   const defs: string[] = [];
   const body: string[] = [];
   const fillTypes: string[] = [];
@@ -55,14 +79,12 @@ export function defineShapeToSvg(tag: any): ShapeSvgResult {
       body.push(`<path d="${d}" fill="${colorHex(c)}"${op} fill-rule="evenodd" stroke="none"/>`);
     } else if (type === FILL_LINEAR || type === FILL_RADIAL || type === FILL_FOCAL) {
       fillTypes.push(type === FILL_LINEAR ? "LinearGradient" : type === FILL_RADIAL ? "RadialGradient" : "FocalGradient");
-      const id = `grad${gradId++}`;
+      const id = `${idPrefix}_grad${gradId++}`;
       defs.push(gradientDef(id, fp.fill));
       body.push(`<path d="${d}" fill="url(#${id})" fill-rule="evenodd" stroke="none"/>`);
     } else if (type === FILL_BITMAP) {
       fillTypes.push("Bitmap");
       unsupported.push("Bitmap fill");
-      // Spike: bitmap fills need the image asset + pattern; mark the region so
-      // geometry comparison still works but the paint is a flat placeholder.
       body.push(`<path d="${d}" fill="#808080" fill-opacity="0" fill-rule="evenodd" stroke="none" data-bitmap-fill="${fp.fill.bitmapId}"/>`);
     }
   }
@@ -73,13 +95,12 @@ export function defineShapeToSvg(tag: any): ShapeSvgResult {
     const st = lp.line;
     const stroke = st.fill?.type === FILL_SOLID ? colorHex(st.fill.color) : st.color ? colorHex(st.color) : "#000000";
     const width = num(Math.max(st.width ?? 20, 20) / 20);
-    body.push(`<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${width}"/>`);
+    const cap = CAP[st.startCap] ?? "round";
+    const join = JOIN[joinType(st.join)] ?? "round";
+    body.push(`<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${width}" stroke-linecap="${cap}" stroke-linejoin="${join}"/>`);
   }
 
-  const defsBlock = defs.length ? `<defs>${defs.join("")}</defs>` : "";
-  const g = `<g transform="matrix(1.0, 0.0, 0.0, 1.0, ${num(-bounds.xMin / 20)}, ${num(-bounds.yMin / 20)})">${body.join("")}</g>`;
-  const svg = `<svg xmlns:xlink="http://www.w3.org/1999/xlink" height="${num(h)}px" width="${num(w)}px" xmlns="http://www.w3.org/2000/svg">${defsBlock}${g}</svg>`;
-  return { svg, fillTypes, unsupported };
+  return { body: body.join(""), defs: defs.join(""), fillTypes, unsupported };
 }
 
 function fillPathData(contours: Seg[][]): string {

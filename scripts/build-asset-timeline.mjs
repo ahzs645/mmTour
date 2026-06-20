@@ -30,6 +30,7 @@ import { discoverButtonEvents, discoverControlFlow, discoverFrameActions, discov
 import { copyIfExists, listDir, preserveGeneratedReports, restoreGeneratedReports } from "./lib/fileUtils.mjs";
 import { discoverGlobalDefaults, loadSceneVariables } from "./lib/sceneVars.mjs";
 import { discoverRootSoundLibrary, discoverSoundLibrary } from "./lib/sound.mjs";
+import { swfToFfdecModel } from "./lib/swfParserAdapter.mjs";
 
 ctx.root = resolve(new URL("..", import.meta.url).pathname);
 // Accept "segment4", "segment4.swf", or a path (e.g. "public/segment4.swf") — same as build-control-flow.
@@ -40,20 +41,30 @@ ctx.publicDir = join(ctx.root, "public/generated", ctx.scene);
 ctx.secondaryDir = join(ctx.publicDir, "secondary");
 ctx.parserReportPath = join(ctx.publicDir, "swf-parser-report.json");
 
-if (!existsSync(ctx.xmlPath)) {
-  throw new Error(`Missing FFDec XML at ${ctx.xmlPath}. Run: node scripts/export-ffdec.mjs ${ctx.scene}.swf`);
+// Tag source: FFDec `-swf2xml` (default) OR the pure-JS swf-parser adapter
+// (NATIVE_PARSE=1, or automatically when no FFDec XML is present). The adapter
+// produces the identical tag model — verified frame-for-frame against the FFDec
+// output by scripts/verify-adapter-timeline.mjs — so the downstream extractor is
+// unchanged. NATIVE_PARSE removes the Java dependency for the timeline/asset metadata.
+const useNativeParse = process.env.NATIVE_PARSE === "1" || !existsSync(ctx.xmlPath);
+
+if (useNativeParse) {
+  const swfPath = ["", "public/"].map((p) => join(ctx.root, p, `${ctx.scene}.swf`)).find((p) => existsSync(p));
+  if (!swfPath) {
+    throw new Error(`No FFDec XML at ${ctx.xmlPath} and no ${ctx.scene}.swf to parse natively.`);
+  }
+  const { swf } = swfToFfdecModel(new Uint8Array(readFileSync(swfPath)));
+  ctx.swf = swf;
+  ctx.tags = asArray(ctx.swf.tags?.item);
+} else {
+  ctx.parser = new XMLParser({
+    ignoreAttributes: false,
+    attributeNamePrefix: "",
+    isArray: (name) => name === "item",
+  });
+  ctx.swf = ctx.parser.parse(readFileSync(ctx.xmlPath, "utf8")).swf;
+  ctx.tags = asArray(ctx.swf.tags?.item);
 }
-
-ctx.parser = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: "",
-  isArray: (name) => name === "item",
-});
-
-/** Timeline commands on `self` — handled by the frameActions path, not the function body. */
-
-ctx.swf = ctx.parser.parse(readFileSync(ctx.xmlPath, "utf8")).swf;
-ctx.tags = asArray(ctx.swf.tags?.item);
 ctx.width = rectSize(ctx.swf.displayRect?.Xmax, ctx.swf.displayRect?.Xmin);
 ctx.height = rectSize(ctx.swf.displayRect?.Ymax, ctx.swf.displayRect?.Ymin);
 ctx.fps = Number.parseFloat(ctx.swf.frameRate) || 15;

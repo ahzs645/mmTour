@@ -38,6 +38,12 @@ export function discoverAssets(allTags) {
           frames: files.map((file) => `generated/${ctx.scene}/sprites/${dirName}/${file}`),
           origin: svgOrigin(join(ctx.extractedDir, "sprites", dirName, files[0])),
         };
+      } else if (asArray(tag.subTags?.item).some((sub) => sub?.type === "PlaceObject2Tag")) {
+        // No baked sprite SVGs (native parse, or the tree-player optimize dropped
+        // them): create a sprite asset with no frames[] so it tree-renders from its
+        // attached timeline. Children carry absolute matrices in the sprite's local
+        // space, so origin isn't needed for leaf positioning (only the baked path uses it).
+        defs[id] = { id: Number(id), kind: "sprite", origin: { x: 0, y: 0, width: 0, height: 0 } };
       }
     }
 
@@ -135,7 +141,8 @@ export function discoverAssets(allTags) {
   }
 
   for (const file of listDir("images")) {
-    const id = basename(file, ".png");
+    // FFDec exports .png; the native extractor keeps JPEGs as .jpg — accept both.
+    const id = file.replace(/\.(png|jpe?g)$/i, "");
     defs[id] ??= {
       id: Number(id),
       kind: "image",

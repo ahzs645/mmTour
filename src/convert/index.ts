@@ -24,6 +24,9 @@ export { collectFonts, buildTtf } from "./fontBuilder.ts";
 export type { FontTag } from "./fontBuilder.ts";
 export { collectSounds, extractSound, soundToDataUrl } from "./soundExtractor.ts";
 export type { ExtractedSound } from "./soundExtractor.ts";
+export { collectButtons, composeButton } from "./buttonComposer.ts";
+export type { ComposedButton } from "./buttonComposer.ts";
+export { shapeInner } from "./svgEmit.ts";
 
 export interface CollectedShape {
   id: number;
