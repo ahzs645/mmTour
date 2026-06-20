@@ -67,7 +67,11 @@ async function convertFile(name: string, bytes: Uint8Array) {
       stats: compiled.stats, width: compiled.width, height: compiled.height, createdAt: Date.now(),
     });
     renderHistory();
-    if (compiled.dependencies.length) setDepLine(card, compiled, await resolveDependencies(compiled));
+    if (compiled.dependencies.length) {
+      const state = new Map<string, DepStatus>(compiled.dependencies.map((d) => [d.swf, "pending"]));
+      renderDeps(card, compiled, state);
+      await resolveDependencies(compiled, (swf, status) => { state.set(swf, status); renderDeps(card, compiled, state); });
+    }
   } catch (e) {
     card.classList.remove("busy");
     card.innerHTML = `<h3>${escapeHtml(name)}</h3><div class="meta" style="color:#ff8a8a">convert failed: ${escapeHtml((e as Error).message)}</div>`;
@@ -86,29 +90,56 @@ async function compile(bytes: Uint8Array, name: string): Promise<CompiledScene> 
   return compiled;
 }
 
+type DepStatus = "pending" | "compiling" | "done" | "missing";
+
 /** A shell (A-tour) loadMovie's the other SWFs into levels — compile + register
  *  each so the cross-loads resolve. Pull from already-converted scenes first,
- *  else fetch a bundled SWF of that name. Returns which resolved / are missing. */
-async function resolveDependencies(c: CompiledScene): Promise<{ resolved: string[]; missing: string[] }> {
-  const resolved: string[] = [], missing: string[] = [];
-  for (const dep of c.dependencies) {
-    if (compiledScenes.has(canonical(dep.swf))) { resolved.push(dep.swf); continue; }
+ *  else fetch a bundled SWF of that name. Reports each step so the card shows
+ *  live progress (one dep compiled at a time in the worker). */
+async function resolveDependencies(c: CompiledScene, onStep: (swf: string, status: DepStatus) => void): Promise<void> {
+  // Compile the deps the scene loads AT STARTUP (intro/nav for A-tour) first, so
+  // the shell becomes playable quickly; the heavier on-click segments follow.
+  const startup = new Set(
+    (c.timeline?.control?.frameActions ?? []).flatMap((f: any) => f.actions ?? []).filter((a: any) => a.swf).map((a: any) => String(a.swf).toLowerCase()),
+  );
+  const ordered = [...c.dependencies].sort((a, b) => (startup.has(b.swf.toLowerCase()) ? 1 : 0) - (startup.has(a.swf.toLowerCase()) ? 1 : 0));
+  for (const dep of ordered) {
+    if (compiledScenes.has(canonical(dep.swf))) { onStep(dep.swf, "done"); continue; }
+    onStep(dep.swf, "compiling");
     try {
       const r = await fetch(`${import.meta.env.BASE_URL}${dep.swf}`);
       if (!r.ok) throw new Error("not found");
       await compile(new Uint8Array(await r.arrayBuffer()), dep.swf);
-      resolved.push(dep.swf);
-    } catch { missing.push(dep.swf); }
+      onStep(dep.swf, "done");
+    } catch { onStep(dep.swf, "missing"); }
   }
-  return { resolved, missing };
+}
+
+/** Render the dependency line with live per-SWF status pills + a progress count. */
+function renderDeps(card: HTMLElement, c: CompiledScene, state: Map<string, DepStatus>) {
+  const el = card.querySelector(".dep");
+  if (!el) return;
+  const total = c.dependencies.length;
+  const finished = c.dependencies.filter((d) => { const s = state.get(d.swf); return s === "done" || s === "missing"; }).length;
+  const compiling = c.dependencies.find((d) => state.get(d.swf) === "compiling");
+  const head = finished < total
+    ? `⟳ linking ${finished}/${total}${compiling ? ` · compiling ${escapeHtml(compiling.swf)}…` : "…"} `
+    : `links ${total} SWF${total > 1 ? "s" : ""}: `;
+  const pills = c.dependencies.map((d) => {
+    const s = state.get(d.swf) ?? "pending";
+    const cls = s === "done" ? "ok" : s === "missing" ? "miss" : s === "compiling" ? "go" : "pend";
+    return `<span class="pill ${cls}">${escapeHtml(d.swf)}</span>`;
+  }).join(" ");
+  const tail = finished < total ? ""
+    : [...state.values()].includes("missing") ? ` <span style="color:var(--warn)">— drop the missing ones</span>`
+    : ` <span style="color:var(--accent-2)">— all compiled ✓</span>`;
+  el.innerHTML = head + pills + tail;
 }
 
 function renderCard(card: HTMLElement, name: string, c: CompiledScene, bytes: Uint8Array) {
   const s = c.stats;
   card.classList.remove("busy");
-  const depPlaceholder = c.dependencies.length
-    ? `<div class="meta dep">⟳ resolving ${c.dependencies.length} linked SWF${c.dependencies.length > 1 ? "s" : ""}…</div>`
-    : "";
+  const depPlaceholder = c.dependencies.length ? `<div class="meta dep">⟳ linking ${c.dependencies.length} SWFs…</div>` : "";
   card.innerHTML =
     `<h3>${escapeHtml(name)} <span class="dim">${c.width}×${c.height}</span></h3>` +
     `<div class="statgrid">` +
@@ -120,16 +151,6 @@ function renderCard(card: HTMLElement, name: string, c: CompiledScene, bytes: Ui
     depPlaceholder +
     `<button class="play">▶ Play</button>`;
   (card.querySelector(".play") as HTMLButtonElement).onclick = () => play(c.scene, c, bytes, name);
-}
-
-/** Replace the "resolving…" placeholder with the dependency result once compiled. */
-function setDepLine(card: HTMLElement, c: CompiledScene, deps: { resolved: string[]; missing: string[] }) {
-  const el = card.querySelector(".dep");
-  if (!el) return;
-  el.innerHTML =
-    `loads ${c.dependencies.length} SWF${c.dependencies.length > 1 ? "s" : ""}: ` +
-    c.dependencies.map((d) => `<span class="pill ${deps.missing.includes(d.swf) ? "miss" : "ok"}">${escapeHtml(d.swf)}</span>`).join(" ") +
-    (deps.missing.length ? ` <span style="color:var(--warn)">— drop these too</span>` : ` <span style="color:var(--accent-2)">— all compiled ✓</span>`);
 }
 
 const stat = (n: number, label: string) => `<div><b>${n}</b><span>${label}</span></div>`;

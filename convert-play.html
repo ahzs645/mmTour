@@ -47,6 +47,10 @@
       .pill { display: inline-block; font-size: 11px; border-radius: 999px; padding: 0 7px; border: 1px solid var(--line); }
       .pill.ok { color: var(--accent-2); border-color: #2e6b52; }
       .pill.miss { color: var(--warn); border-color: #6b5a2e; }
+      .pill.pend { color: var(--muted); opacity: .55; }
+      .pill.go { color: var(--accent); border-color: var(--accent); animation: pulse 1s ease-in-out infinite; }
+      @keyframes pulse { 50% { opacity: .5; } }
+      .card .dep { margin-top: 2px; }
       .card .play { width: 100%; background: linear-gradient(180deg, #1f6feb, #1857c4); color: #fff; border: 0; border-radius: 9px;
         padding: 9px; cursor: pointer; font-weight: 600; }
       .card .play:hover { filter: brightness(1.08); }
