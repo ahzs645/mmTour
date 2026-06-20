@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SWF Studio · convert &amp; play in the browser</title>
+    <style>
+      :root {
+        --bg: #0b0e16; --panel: #141925; --panel-2: #1b2233; --line: #28324a;
+        --ink: #e7ecf6; --muted: #8a97b2; --accent: #5bc8ff; --accent-2: #7df0c0; --warn: #ffd166;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        background: radial-gradient(1200px 600px at 75% -10%, #16203a 0%, var(--bg) 55%); color: var(--ink); min-height: 100vh; }
+      a { color: var(--accent); }
+      .wrap { max-width: 1200px; margin: 0 auto; padding: 28px; }
+      header h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: -0.01em; }
+      header h1 .x { color: var(--accent); }
+      header p { margin: 0; color: var(--muted); }
+      .layout { display: grid; grid-template-columns: 1fr 360px; gap: 22px; margin-top: 22px; align-items: start; }
+      @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+      #drop { border: 1.5px dashed var(--line); border-radius: 14px; background: linear-gradient(180deg, var(--panel) 0%, #10141f 100%);
+        padding: 26px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; }
+      #drop.drag { border-color: var(--accent); background: var(--panel-2); }
+      #drop strong { color: var(--accent); }
+      #drop small { color: var(--muted); display: block; margin-top: 6px; }
+      .samples { margin-top: 12px; color: var(--muted); font-size: 13px; }
+      .samples button, .ghost { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 999px;
+        padding: 4px 11px; margin: 0 4px 6px 0; cursor: pointer; font-size: 12px; }
+      .samples button:hover, .ghost:hover { border-color: var(--accent); color: var(--accent); }
+      #player-wrap { margin-top: 18px; background: #000; border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+        display: none; position: relative; }
+      #player-wrap.on { display: block; }
+      #player { position: relative; margin: 0 auto; }
+      .player-bar { display: flex; gap: 10px; align-items: center; padding: 8px 12px; background: var(--panel); border-top: 1px solid var(--line); }
+      .player-bar button { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 5px 12px; cursor: pointer; }
+      .player-bar .title { color: var(--accent-2); font-size: 13px; margin-right: auto; }
+      .cards { margin-top: 18px; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+      .card h3 { margin: 0 0 8px; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+      .card h3 .dim { color: var(--muted); font-weight: 400; font-size: 12px; }
+      .statgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 8px 0; }
+      .statgrid div { background: var(--panel-2); border-radius: 7px; padding: 6px 8px; }
+      .statgrid b { display: block; font-size: 15px; }
+      .statgrid span { color: var(--muted); font-size: 11px; }
+      .card .meta { color: var(--muted); font-size: 12px; margin: 4px 0 10px; }
+      .card .play { width: 100%; background: linear-gradient(180deg, #1f6feb, #1857c4); color: #fff; border: 0; border-radius: 9px;
+        padding: 9px; cursor: pointer; font-weight: 600; }
+      .card .play:hover { filter: brightness(1.08); }
+      .card.busy { opacity: .7; }
+      aside h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px;
+        display: flex; justify-content: space-between; align-items: center; }
+      .hist { display: flex; flex-direction: column; gap: 8px; }
+      .hrow { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; display: flex; gap: 10px; align-items: center; }
+      .hrow img { width: 52px; height: 39px; object-fit: contain; background: #000; border-radius: 5px; flex: none; }
+      .hrow .info { flex: 1; min-width: 0; }
+      .hrow .info b { display: block; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .hrow .info span { color: var(--muted); font-size: 11px; }
+      .hrow .acts { display: flex; gap: 4px; }
+      .hrow .acts button { background: var(--panel-2); border: 1px solid var(--line); color: var(--ink); border-radius: 7px; padding: 4px 8px; cursor: pointer; font-size: 12px; }
+      .hrow .acts button:hover { border-color: var(--accent); color: var(--accent); }
+      .empty { color: var(--muted); font-size: 13px; padding: 8px; }
+      #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--line);
+        color: var(--ink); padding: 9px 16px; border-radius: 10px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+      #toast.on { opacity: 1; }
+      code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; color: var(--accent-2); }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>SWF Studio <span class="x">·</span> convert &amp; play</h1>
+        <p>Drop Flash <code>.swf</code> files — they convert entirely in your browser (no Java, no server) and play in the GSAP runtime. Every convert is saved to your local history (IndexedDB).</p>
+      </header>
+      <div class="layout">
+        <main>
+          <div id="drop" tabindex="0">
+            <div><strong>Drop .swf files here</strong> or click to choose (batch supported)</div>
+            <small>Parsed with swf-parser; assets + timeline + stop-frame control built in-browser, then played.</small>
+            <input id="file" type="file" accept=".swf" multiple hidden />
+            <div class="samples" id="samples">Bundled tour: </div>
+          </div>
+
+          <div id="player-wrap">
+            <div id="player"></div>
+            <div class="player-bar">
+              <span class="title" id="player-title"></span>
+              <button id="btn-play">⏯︎ Play/Pause</button>
+              <button id="btn-restart">↻ Restart</button>
+              <button id="btn-close">✕ Close</button>
+            </div>
+          </div>
+
+          <div class="cards" id="cards"></div>
+        </main>
+        <aside>
+          <h2>History <button class="ghost" id="clear-hist">clear</button></h2>
+          <div class="hist" id="hist"><div class="empty">No converts yet.</div></div>
+        </aside>
+      </div>
+    </div>
+    <div id="toast"></div>
+    <script type="module" src="/src/convert/playApp.ts"></script>
+  </body>
+</html>

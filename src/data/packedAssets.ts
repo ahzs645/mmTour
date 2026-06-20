@@ -49,6 +49,22 @@ export function setAssetSource(source: AssetSource) {
   clearPackedScenes();
 }
 
+/**
+ * Register an in-browser-compiled scene so the player serves its assets from
+ * memory (blob URLs) with no server — used by the convert→play demo. `files`
+ * maps scene-relative paths ("shapes/108.svg", "images/106.jpg", …) to bytes;
+ * pass the parsed timeline so loadTimelineFromSource resolves it directly.
+ */
+export function registerPackedScene(
+  scene: string,
+  files: Map<string, { type: string; bytes: Uint8Array }>,
+  timeline: AssetTimeline | null,
+) {
+  const existing = packedScenes.get(scene);
+  if (existing) for (const f of existing.files.values()) if (f.url) URL.revokeObjectURL(f.url);
+  packedScenes.set(scene, { scene, files: new Map(files), timeline });
+}
+
 export function clearPackedScenes() {
   for (const scene of packedScenes.values()) {
     for (const file of scene.files.values()) {

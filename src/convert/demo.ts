@@ -26,7 +26,7 @@ for (const name of SAMPLES) {
   b.onclick = async () => {
     try {
       setStatus(`Fetching ${name}.swf…`);
-      const bytes = new Uint8Array(await (await fetch(`/${name}.swf`)).arrayBuffer());
+      const bytes = new Uint8Array(await (await fetch(`${import.meta.env.BASE_URL}${name}.swf`)).arrayBuffer());
       await convert(bytes, `${name}.swf`);
     } catch (e) {
       setStatus(`Couldn't load ${name}.swf (${(e as Error).message})`, "err");
