@@ -24,7 +24,12 @@ const bool = (v) => (v ? "true" : "false");
 
 /** Parse SWF bytes into the FFDec-shaped `{ swf, tags }` the extractor expects. */
 export function swfToFfdecModel(bytes) {
-  const movie = parseSwf(bytes);
+  return ffdecModelFromMovie(parseSwf(bytes));
+}
+
+/** Adapt an ALREADY-PARSED movie — lets a caller parse the SWF once and reuse it
+ *  (parseSwf is expensive on big SWFs: ~49s for the 17MB segment5). */
+export function ffdecModelFromMovie(movie) {
   const fs = movie.header.frameSize;
   const tags = movie.tags.map(adaptTag).filter(Boolean);
   const swfModel = {

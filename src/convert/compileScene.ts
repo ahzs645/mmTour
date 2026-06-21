@@ -6,11 +6,11 @@
 
 import { parseSwf, swf } from "swf-parser";
 // @ts-ignore — pure-JS fs-free builders, reused verbatim from the Node pipeline
-import { swfToFfdecModel } from "../../scripts/lib/swfParserAdapter.mjs";
+import { ffdecModelFromMovie } from "../../scripts/lib/swfParserAdapter.mjs";
 // @ts-ignore
 import { buildFrames, attachSpriteTimelines, discoverEntryFrame } from "../../scripts/lib/frames.mjs";
 import {
-  collectShapes, defineShapeToSvg,
+  defineShapeToSvg,
   collectBitmaps, isJpegBitmap, mergeJpeg, decodeLossless,
   collectFonts, buildTtf,
   collectSounds, extractSound,
@@ -50,8 +50,10 @@ const enc = new TextEncoder();
 
 export async function compileScene(bytes: Uint8Array, scene: string): Promise<CompiledScene> {
   const t0 = performance.now();
+  // Parse the SWF ONCE — parseSwf is expensive on big movies (~49s for segment5),
+  // so reuse `movie` for the adapter + every converter instead of re-parsing.
   const movie = parseSwf(bytes);
-  const { tags } = swfToFfdecModel(bytes);
+  const { tags } = ffdecModelFromMovie(movie);
 
   const files = new Map<string, { type: string; bytes: Uint8Array }>();
   const put = (path: string, type: string, data: Uint8Array | string) =>
@@ -61,11 +63,12 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
   const stats: CompileStats = { shapes: 0, images: 0, fonts: 0, sounds: 0, buttons: 0, texts: 0, frames: 0, sprites: 0, stopFrames: 0, assetBytes: 0, ms: 0 };
 
   // --- shapes ---
-  for (const { id, tag } of collectShapes(bytes).shapes) {
+  for (const tag of movie.tags) {
+    if (tag.type !== swf.TagType.DefineShape) continue;
     try {
       const svg = defineShapeToSvg(tag).svg;
-      put(`shapes/${id}.svg`, "image/svg+xml", svg);
-      assets[String(id)] = { id, kind: "shape", src: `generated/${scene}/shapes/${id}.svg`, origin: svgOrigin(svg) };
+      put(`shapes/${tag.id}.svg`, "image/svg+xml", svg);
+      assets[String(tag.id)] = { id: tag.id, kind: "shape", src: `generated/${scene}/shapes/${tag.id}.svg`, origin: svgOrigin(svg) };
       stats.shapes++;
     } catch { /* skip a bad shape */ }
   }

@@ -33,17 +33,28 @@ function ensureWorker(): Worker | null {
   return worker;
 }
 
-/** Compile a SWF off the main thread (worker), or in-thread if no Worker. */
-export async function compileSceneAsync(bytes: Uint8Array, scene: string): Promise<CompiledScene> {
-  const w = ensureWorker();
-  if (!w) {
-    const { compileScene } = await import("./compileScene.ts");
-    return compileScene(bytes, scene);
-  }
-  const id = nextId++;
-  return new Promise<CompiledScene>((resolve, reject) => {
-    pending.set(id, { resolve, reject });
-    // copy the input so the caller can still use `bytes` (e.g. to save the SWF blob)
-    w.postMessage({ id, bytes: bytes.slice(), scene });
-  });
+// Serialize work to the single worker: running many compiles "concurrently" just
+// interleaves them on the worker's one thread, so each takes far longer
+// wall-clock (segment5 went 15s → 140s+). A queue gives each compile the full
+// thread, one at a time.
+let chain: Promise<unknown> = Promise.resolve();
+
+/** Compile a SWF off the main thread (worker, serialized), or in-thread if no Worker. */
+export function compileSceneAsync(bytes: Uint8Array, scene: string): Promise<CompiledScene> {
+  const run = async (): Promise<CompiledScene> => {
+    const w = ensureWorker();
+    if (!w) {
+      const { compileScene } = await import("./compileScene.ts");
+      return compileScene(bytes, scene);
+    }
+    const id = nextId++;
+    return new Promise<CompiledScene>((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      // copy the input so the caller can still use `bytes` (e.g. to save the SWF blob)
+      w.postMessage({ id, bytes: bytes.slice(), scene });
+    });
+  };
+  const result = chain.then(run, run);
+  chain = result.catch(() => {}); // keep the queue going past failures
+  return result;
 }

@@ -11,7 +11,7 @@ import { createTourPlayer, type TourPlayer } from "../index.ts";
 // the source later (createTourPlayer does this internally) clears registered
 // scenes, which would wipe the bundle we just compiled.
 setAssetSource("pack");
-import { saveConvert, listConverts, getConvert, deleteConvert, setThumb, clearHistory, type ConvertRecord } from "./historyDb.ts";
+import { saveConvert, listConverts, getConvert, deleteConvert, clearHistory, type ConvertRecord } from "./historyDb.ts";
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
 const drop = $("#drop"), fileInput = $<HTMLInputElement>("#file"), cards = $("#cards"), hist = $("#hist");
@@ -81,13 +81,26 @@ async function convertFile(name: string, bytes: Uint8Array) {
 /** Scene key a loadMovie("intro.swf") resolves to — basename, so cross-loads find it. */
 const canonical = (name: string) => name.replace(/\.swf$/i, "").replace(/[^\w.-]+/g, "-");
 const compiledScenes = new Map<string, CompiledScene>();
+const inFlight = new Map<string, Promise<CompiledScene>>();
 
+/** Compile a scene once. Dropping a batch AND each scene's cross-deps both ask
+ *  for the same scenes — dedup by scene key (return the cached result or share
+ *  the in-flight compile) so nothing is converted twice. */
 async function compile(bytes: Uint8Array, name: string): Promise<CompiledScene> {
   const scene = canonical(name);
-  const compiled = await compileSceneAsync(bytes, scene); // off the main thread → UI stays responsive
-  registerPackedScene(scene, compiled.files, compiled.timeline);
-  compiledScenes.set(scene, compiled);
-  return compiled;
+  const done = compiledScenes.get(scene);
+  if (done) return done;
+  const running = inFlight.get(scene);
+  if (running) return running;
+  const promise = (async () => {
+    const compiled = await compileSceneAsync(bytes, scene); // off the main thread → UI stays responsive
+    registerPackedScene(scene, compiled.files, compiled.timeline);
+    compiledScenes.set(scene, compiled);
+    inFlight.delete(scene);
+    return compiled;
+  })();
+  inFlight.set(scene, promise);
+  return promise;
 }
 
 type DepStatus = "pending" | "compiling" | "done" | "missing";
@@ -150,13 +163,13 @@ function renderCard(card: HTMLElement, name: string, c: CompiledScene, bytes: Ui
     `<div class="meta">${(s.assetBytes / 1024 / 1024).toFixed(2)} MB assets · compiled in ${s.ms} ms</div>` +
     depPlaceholder +
     `<button class="play">▶ Play</button>`;
-  (card.querySelector(".play") as HTMLButtonElement).onclick = () => play(c.scene, c, bytes, name);
+  (card.querySelector(".play") as HTMLButtonElement).onclick = () => play(c.scene, c, name);
 }
 
 const stat = (n: number, label: string) => `<div><b>${n}</b><span>${label}</span></div>`;
 
 // --- player ---
-async function play(scene: string, c: CompiledScene, bytes: Uint8Array, name: string) {
+async function play(scene: string, c: CompiledScene, name: string) {
   closePlayer();
   registerPackedScene(scene, c.files, c.timeline); // ensure registered (after a prior close)
   playerWrap.classList.add("on");
@@ -207,7 +220,7 @@ function historyRow(rec: ConvertRecord): HTMLElement {
     if (!full) return;
     const bytes = new Uint8Array(await full.swf.arrayBuffer());
     const compiled = await compile(bytes, full.name);
-    await play(compiled.scene, compiled, bytes, full.name);
+    await play(compiled.scene, compiled, full.name);
   };
   (row.querySelector(".dl") as HTMLButtonElement).onclick = async () => { await deleteConvert(rec.id!); renderHistory(); };
   return row;
