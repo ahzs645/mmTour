@@ -35,8 +35,11 @@
       .player-bar { display: flex; gap: 10px; align-items: center; padding: 8px 12px; background: var(--panel); border-top: 1px solid var(--line); }
       .player-bar button { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 5px 12px; cursor: pointer; }
       .player-bar .title { color: var(--accent-2); font-size: 13px; margin-right: auto; }
-      .cards { margin-top: 18px; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
-      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+      .cards { margin-top: 18px; display: flex; flex-direction: column; gap: 10px; }
+      .node { display: flex; flex-direction: column; gap: 10px; }
+      .children { margin-left: 18px; padding-left: 16px; border-left: 2px solid var(--line); display: flex; flex-direction: column; gap: 10px; position: relative; }
+      .children::before { content: "loads ↳"; position: absolute; left: -2px; top: -16px; font-size: 10px; color: var(--muted); }
+      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; max-width: 460px; }
       .card h3 { margin: 0 0 8px; font-size: 14px; display: flex; align-items: center; gap: 8px; }
       .card h3 .dim { color: var(--muted); font-weight: 400; font-size: 12px; }
       .statgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 8px 0; }

@@ -53,28 +53,41 @@ $("#clear-hist").onclick = async () => { await clearHistory(); renderHistory(); 
 
 renderHistory();
 
-// --- convert + card ---
+// --- convert + cards (laid out as a tree of linked scenes) ---
+const cardEls = new Map<string, HTMLElement>();
+const cardMeta = new Map<string, { name: string; compiled: CompiledScene }>();
+
+/** Get (or create) the card element for a scene; a fresh one shows "converting…". */
+function ensureCard(key: string, name: string): HTMLElement {
+  let card = cardEls.get(key);
+  if (!card) {
+    card = document.createElement("div");
+    card.className = "card busy";
+    card.innerHTML = `<h3>${escapeHtml(name)}</h3><div class="meta">converting…</div>`;
+    cardEls.set(key, card);
+    layoutTree();
+  }
+  return card;
+}
+
 async function convertFile(name: string, bytes: Uint8Array) {
-  const card = document.createElement("div");
-  card.className = "card busy";
-  card.innerHTML = `<h3>${escapeHtml(name)}</h3><div class="meta">converting…</div>`;
-  cards.prepend(card);
+  const key = canonical(name);
   try {
     const compiled = await compile(bytes, name);
-    renderCard(card, name, compiled, bytes); // stats + Play immediately (main scene is playable now)
     await saveConvert({
       name, swf: new Blob([bytes.slice().buffer], { type: "application/x-shockwave-flash" }),
       stats: compiled.stats, width: compiled.width, height: compiled.height, createdAt: Date.now(),
     });
     renderHistory();
     if (compiled.dependencies.length) {
+      const card = cardEls.get(key)!;
       const state = new Map<string, DepStatus>(compiled.dependencies.map((d) => [d.swf, "pending"]));
       renderDeps(card, compiled, state);
       await resolveDependencies(compiled, (swf, status) => { state.set(swf, status); renderDeps(card, compiled, state); });
     }
   } catch (e) {
-    card.classList.remove("busy");
-    card.innerHTML = `<h3>${escapeHtml(name)}</h3><div class="meta" style="color:#ff8a8a">convert failed: ${escapeHtml((e as Error).message)}</div>`;
+    const card = cardEls.get(key);
+    if (card) { card.classList.remove("busy"); card.innerHTML = `<h3>${escapeHtml(name)}</h3><div class="meta" style="color:#ff8a8a">convert failed: ${escapeHtml((e as Error).message)}</div>`; }
   }
 }
 
@@ -83,24 +96,58 @@ const canonical = (name: string) => name.replace(/\.swf$/i, "").replace(/[^\w.-]
 const compiledScenes = new Map<string, CompiledScene>();
 const inFlight = new Map<string, Promise<CompiledScene>>();
 
-/** Compile a scene once. Dropping a batch AND each scene's cross-deps both ask
- *  for the same scenes — dedup by scene key (return the cached result or share
- *  the in-flight compile) so nothing is converted twice. */
+/** Compile a scene once (dedup by key — a batch drop AND cross-deps ask for the
+ *  same scenes). Every compiled scene — dropped or auto-resolved dep — gets a
+ *  card, so the tree shows the whole link graph. */
 async function compile(bytes: Uint8Array, name: string): Promise<CompiledScene> {
   const scene = canonical(name);
   const done = compiledScenes.get(scene);
   if (done) return done;
   const running = inFlight.get(scene);
   if (running) return running;
+  ensureCard(scene, name); // placeholder card shows immediately
   const promise = (async () => {
     const compiled = await compileSceneAsync(bytes, scene); // off the main thread → UI stays responsive
     registerPackedScene(scene, compiled.files, compiled.timeline);
     compiledScenes.set(scene, compiled);
+    cardMeta.set(scene, { name, compiled });
     inFlight.delete(scene);
+    renderCard(cardEls.get(scene)!, name, compiled);
+    layoutTree();
     return compiled;
   })();
   inFlight.set(scene, promise);
   return promise;
+}
+
+/** Arrange the scene cards into a tree: roots (not loaded by anything — the
+ *  A-tour shell) at top, each scene's loaded SWFs nested beneath it. Each scene
+ *  shown once (deduped, cycle-safe). Card elements are reused across re-layout so
+ *  in-progress state is preserved. */
+function layoutTree() {
+  const childOf = new Set<string>();
+  for (const meta of cardMeta.values()) {
+    for (const dep of meta.compiled.dependencies) { const ck = canonical(dep.swf); if (cardEls.has(ck)) childOf.add(ck); }
+  }
+  const roots = [...cardEls.keys()].filter((k) => !childOf.has(k));
+  cards.innerHTML = "";
+  const placed = new Set<string>();
+  const renderNode = (key: string, container: HTMLElement) => {
+    if (placed.has(key)) return;
+    placed.add(key);
+    const node = el("div", "node");
+    node.appendChild(cardEls.get(key)!);
+    const childKeys = (cardMeta.get(key)?.compiled.dependencies ?? [])
+      .map((d) => canonical(d.swf)).filter((ck) => cardEls.has(ck) && !placed.has(ck));
+    if (childKeys.length) {
+      const kids = el("div", "children");
+      for (const ck of childKeys) renderNode(ck, kids);
+      if (kids.children.length) node.appendChild(kids);
+    }
+    container.appendChild(node);
+  };
+  for (const r of roots) renderNode(r, cards);
+  for (const k of cardEls.keys()) renderNode(k, cards); // leftovers (pure cycles)
 }
 
 type DepStatus = "pending" | "compiling" | "done" | "missing";
@@ -149,7 +196,7 @@ function renderDeps(card: HTMLElement, c: CompiledScene, state: Map<string, DepS
   el.innerHTML = head + pills + tail;
 }
 
-function renderCard(card: HTMLElement, name: string, c: CompiledScene, bytes: Uint8Array) {
+function renderCard(card: HTMLElement, name: string, c: CompiledScene) {
   const s = c.stats;
   card.classList.remove("busy");
   const depPlaceholder = c.dependencies.length ? `<div class="meta dep">⟳ linking ${c.dependencies.length} SWFs…</div>` : "";
@@ -174,15 +221,24 @@ async function play(scene: string, c: CompiledScene, name: string) {
   registerPackedScene(scene, c.files, c.timeline); // ensure registered (after a prior close)
   playerWrap.classList.add("on");
   playerTitle.textContent = name;
-  // size the stage to fit, preserving aspect
+  // size the stage to fit, preserving aspect; use the scene's own backdrop, not black
   const maxW = Math.min(760, playerWrap.clientWidth || 760);
   const scale = Math.min(1, maxW / c.width);
   playerEl.style.width = `${c.width}px`;
   playerEl.style.height = `${c.height}px`;
   playerEl.style.transform = `scale(${scale})`;
   playerEl.style.transformOrigin = "top left";
+  playerEl.style.background = c.timeline.backgroundColor || "#ffffff";
   playerWrap.style.height = `${Math.ceil(c.height * scale) + 48}px`;
   playerWrap.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+  // A shell loads other SWFs into levels at startup — wait for those to compile +
+  // register first, else the levels load nothing and the stage looks empty.
+  const startupSwfs: string[] = (c.timeline.control?.frameActions ?? [])
+    .flatMap((f: any) => f.actions ?? []).filter((a: any) => a.swf).map((a: any) => canonical(a.swf));
+  const waits = startupSwfs.map((s) => (compiledScenes.has(s) ? null : inFlight.get(s))).filter(Boolean) as Promise<unknown>[];
+  if (waits.length) { playerTitle.textContent = `${name} — preparing ${waits.length} level${waits.length > 1 ? "s" : ""}…`; await Promise.all(waits); playerTitle.textContent = name; }
+
   try {
     activePlayer = await createTourPlayer(playerEl, { assetSource: "pack", scene, autoplay: true });
   } catch (e) {
@@ -227,6 +283,11 @@ function historyRow(rec: ConvertRecord): HTMLElement {
 }
 
 // --- helpers ---
+function el(tag: string, cls: string): HTMLElement {
+  const node = document.createElement(tag);
+  node.className = cls;
+  return node;
+}
 function toast(msg: string) {
   const t = $("#toast"); t.textContent = msg; t.classList.add("on");
   setTimeout(() => t.classList.remove("on"), 2200);
