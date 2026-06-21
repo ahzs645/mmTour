@@ -307,6 +307,7 @@ async function play(scene: string, c: CompiledScene, name: string) {
   playerEl.style.height = `${c.height}px`;
   playerEl.style.transform = `scale(${scale})`;
   playerEl.style.transformOrigin = "top left";
+  playerEl.style.marginBottom = `${stageH - c.height}px`;
   playerEl.style.background = c.timeline.backgroundColor || "#ffffff";
   playerWrap.style.width = `${stageW}px`;
   playerWrap.style.height = `${stageH + 48}px`;
@@ -331,6 +332,7 @@ function closePlayer() {
   activePlayer = null;
   playerEl.innerHTML = "";
   playerEl.style.transform = "";
+  playerEl.style.marginBottom = "";
   playerWrap.style.width = "";
   playerWrap.style.height = "";
   playerWrap.classList.remove("on");

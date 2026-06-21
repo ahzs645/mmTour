@@ -26,7 +26,7 @@ export class SoundController {
         else this.playVoice(action.soundSrc);
         break;
       case "playVO":
-        if (action.soundSrc) this.playVoice(action.soundSrc);
+        if (action.soundSrc) this.playVoice(action.soundSrc, action.soundDurationMs);
         break;
       case "stopSound":
         this.stopVoice();
@@ -47,14 +47,14 @@ export class SoundController {
     this.musicSrc = src;
   }
 
-  private playVoice(src: string) {
+  private playVoice(src: string, durationMs?: number) {
     this.stopVoice();
     const audio = new Audio(assetUrl(src));
     audio.volume = 1;
     this.voiceStartedAt = performance.now();
-    this.voiceDurationMs = 0;
+    this.voiceDurationMs = durationMs && Number.isFinite(durationMs) ? durationMs : 0;
     audio.addEventListener("loadedmetadata", () => {
-      if (Number.isFinite(audio.duration)) this.voiceDurationMs = audio.duration * 1000;
+      if (!this.voiceDurationMs && Number.isFinite(audio.duration)) this.voiceDurationMs = audio.duration * 1000;
     });
     void audio.play().catch(() => undefined);
     this.voice = audio;

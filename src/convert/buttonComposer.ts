@@ -10,6 +10,7 @@
 // buttons/DefineButton2_<id>/{1_up,2_over,3_down,4_hittest}.svg.
 
 import { swf } from "swf-parser";
+import type { Matrix } from "../data/timelineTypes";
 import { shapeInner } from "./svgEmit.ts";
 
 const STATES = [
@@ -26,6 +27,17 @@ const num = (v: number) => {
 const sfixed = (v: any) => (v && typeof v === "object" && "epsilons" in v ? v.epsilons / 65536 : Number(v) || 0);
 const term256 = (v: any) => (v && typeof v === "object" && "epsilons" in v ? v.epsilons / 256 : Number(v) ?? 1);
 const addVal = (v: any) => (v && typeof v === "object" && "epsilons" in v ? Math.round(v.epsilons) : Number(v) || 0);
+
+export function matrixFromButtonRecord(m: any): Matrix {
+  return {
+    a: sfixed(m?.scaleX ?? 1) || 1,
+    b: sfixed(m?.rotateSkew0),
+    c: sfixed(m?.rotateSkew1),
+    d: sfixed(m?.scaleY ?? 1) || 1,
+    tx: (m?.translateX ?? 0) / 20,
+    ty: (m?.translateY ?? 0) / 20,
+  };
+}
 
 /** A record's RGB colour transform → an feComponentTransfer filter (alpha is via
  *  element opacity, matching the runtime). Returns null for an identity transform. */
@@ -82,13 +94,7 @@ export function composeButton(button: any, getShape: (id: number) => any): Compo
       unsupported.push(...inner.unsupported.map((u) => `char ${rec.characterId}: ${u}`));
       if (!inner.body) return;
 
-      const m = rec.matrix ?? {};
-      const a = sfixed(m.scaleX ?? 1) || 1;
-      const b = sfixed(m.rotateSkew0);
-      const c = sfixed(m.rotateSkew1);
-      const d = sfixed(m.scaleY ?? 1) || 1;
-      const e = (m.translateX ?? 0) / 20;
-      const f = (m.translateY ?? 0) / 20;
+      const { a, b, c, d, tx: e, ty: f } = matrixFromButtonRecord(rec.matrix);
 
       const alpha = rec.colorTransform?.alphaMult !== undefined ? term256(rec.colorTransform.alphaMult) : 1;
       const opacity = alpha < 1 ? ` opacity="${num(alpha)}"` : "";

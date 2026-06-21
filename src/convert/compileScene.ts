@@ -5,6 +5,7 @@
 // scene-relative paths the player's pack source expects.
 
 import { parseSwf, swf } from "swf-parser";
+import type { Matrix, Origin } from "../data/timelineTypes";
 // @ts-ignore — pure-JS fs-free builders, reused verbatim from the Node pipeline
 import { ffdecModelFromMovie } from "../../scripts/lib/swfParserAdapter.mjs";
 // @ts-ignore
@@ -17,7 +18,8 @@ import {
   collectButtons, composeButton,
   fontsById, reconstructText,
 } from "./index.ts";
-import { extractControl, detectDependencies, type SwfDependency } from "./avm1Control.ts";
+import { matrixFromButtonRecord } from "./buttonComposer.ts";
+import { extractControl, detectDependencies, type ExtractedControl, type SwfDependency } from "./avm1Control.ts";
 import { parseProgram } from "./avm1/parse.ts";
 import { runInit } from "./avm1/interp.ts";
 
@@ -61,6 +63,8 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
 
   const assets: Record<string, any> = {};
   const stats: CompileStats = { shapes: 0, images: 0, fonts: 0, sounds: 0, buttons: 0, texts: 0, frames: 0, sprites: 0, stopFrames: 0, assetBytes: 0, ms: 0 };
+  const soundNames = soundExportNames(movie);
+  const soundLibrary: Record<string, { id: number; name: string; src: string; durationMs?: number }> = {};
 
   // --- shapes ---
   for (const tag of movie.tags) {
@@ -101,12 +105,20 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
       const s = extractSound(tag);
       const path = `sounds/${tag.id}.${s.ext}`;
       put(path, s.mime, s.bytes);
-      assets[`sound:${tag.id}`] = { id: tag.id, kind: "sound", src: `generated/${scene}/${path}`, origin: zero() };
+      const src = `generated/${scene}/${path}`;
+      assets[`sound:${tag.id}`] = { id: tag.id, kind: "sound", src, origin: zero() };
+      const name = soundNames.get(Number(tag.id));
+      if (name) {
+        const entry = { id: tag.id, name, src, durationMs: soundDurationMs(tag) };
+        soundLibrary[name] = entry;
+        soundLibrary[name.toLowerCase()] = entry;
+      }
       stats.sounds++;
     } catch { /* skip */ }
   }
 
   // --- buttons ---
+  const dynamicTexts = dynamicTextInfo(movie);
   const shapesById = new Map<number, any>();
   for (const t of movie.tags) if (t.type === swf.TagType.DefineShape) shapesById.set(t.id, t);
   for (const button of collectButtons(movie)) {
@@ -120,8 +132,18 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
         const stateName = stateFile.replace(/^\d+_/, "").replace("hittest", "hit");
         states[stateName] = { src: `generated/${scene}/${path}`, origin: svgOrigin(svgStr) };
       }
-      if (Object.keys(states).length) {
-        assets[`button:${button.id}`] = { id: button.id, kind: "button", origin: states.up?.origin ?? Object.values(states)[0].origin, states, src: states.up?.src };
+      const textFields = buttonTextFields(button, dynamicTexts);
+      if (Object.keys(states).length || textFields.length) {
+        const firstState = Object.values(states)[0] as any | undefined;
+        const origin = states.up?.origin ?? firstState?.origin ?? buttonTextOrigin(textFields, dynamicTexts) ?? zero();
+        assets[`button:${button.id}`] = {
+          id: button.id,
+          kind: "button",
+          origin,
+          states,
+          src: states.up?.src,
+          ...(textFields.length ? { textFields } : {}),
+        };
         stats.buttons++;
       }
     } catch { /* skip */ }
@@ -151,17 +173,30 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
 
   // --- timeline (display list) ---
   const frames = buildFrames(tags);
-  // sprite assets so attachSpriteTimelines can attach nested timelines
+  const control = extractControl(movie);
+  const controlledSprites = controlledSpriteIds(control);
+  const spriteTimelines = new Map<string, any[]>();
+
+  // Sprite assets so the runtime can instantiate nested MovieClips. Some SWFs
+  // use script-only sprites as timers/controllers: they have ShowFrame/DoAction
+  // tags but no visual PlaceObject tags, so preserve their empty timelines too.
   for (const t of tags) {
-    if (t.type === "DefineSpriteTag" && asArray(t.subTags?.item).some((s: any) => s?.type === "PlaceObject2Tag")) {
-      assets[String(t.spriteId)] ??= { id: t.spriteId, kind: "sprite", origin: zero() };
-    }
+    if (t.type !== "DefineSpriteTag" || !t.spriteId) continue;
+    const id = String(t.spriteId);
+    const spriteFrames = buildFrames(asArray(t.subTags?.item));
+    const hasDisplayList = spriteFrames.some((frame: any) => frame.instances?.length);
+    if (!hasDisplayList && !controlledSprites.has(id)) continue;
+    assets[id] ??= { id: Number(t.spriteId), kind: "sprite", origin: zero() };
+    if (spriteFrames.length) spriteTimelines.set(id, spriteTimelineFrames(spriteFrames));
   }
   attachSpriteTimelines(assets, tags);
+  for (const [id, spriteTimeline] of spriteTimelines) {
+    const asset = assets[id];
+    if (asset?.kind === "sprite" && !asset.timeline?.length) asset.timeline = spriteTimeline;
+  }
   stats.sprites = Object.values(assets).filter((a: any) => a.kind === "sprite").length;
 
   const labels = Object.fromEntries(frames.filter((f: any) => f.label).map((f: any) => [f.label, f.index]));
-  const control = extractControl(movie);
   stats.frames = frames.length;
   stats.stopFrames = control.stopFrames.length;
 
@@ -238,6 +273,7 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
       frameActions,
       definedFunctions: control.definedFunctions,
       buttonActions: control.buttonActions,
+      soundLibrary,
       globalDefaults,
     },
     frameSvgs: [],
@@ -254,6 +290,11 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
 
 // --- helpers ---
 const zero = () => ({ x: 0, y: 0, width: 0, height: 0 });
+
+type DynamicTextInfo = {
+  origin: Origin;
+  normalizedVariableName?: string;
+};
 
 /** The first root DoAction (frame 1's init script), where a shell defines its
  *  functions and kicks off its startup loads. */
@@ -306,8 +347,104 @@ function editTextStyle(t: any, scene: string) {
     html: !!t.html,
     text: t.text ? String(t.text) : undefined,
     variableName: t.variableName || undefined,
+    normalizedVariableName: t.variableName ? normalizeBindingName(t.variableName) : undefined,
   };
   return { id: t.id, kind: "text", src: `generated/${scene}/texts/${t.id}.txt`, origin: { x: text.x, y: text.y, width: w, height: h }, text };
+}
+
+function dynamicTextInfo(movie: any): Map<number, DynamicTextInfo> {
+  const out = new Map<number, DynamicTextInfo>();
+  for (const t of movie.tags) {
+    if (t.type !== swf.TagType.DefineDynamicText || !t.id) continue;
+    const b = t.bounds;
+    out.set(Number(t.id), {
+      origin: b
+        ? { x: b.xMin / 20, y: b.yMin / 20, width: (b.xMax - b.xMin) / 20, height: (b.yMax - b.yMin) / 20 }
+        : zero(),
+      normalizedVariableName: t.variableName ? normalizeBindingName(t.variableName) : undefined,
+    });
+  }
+  return out;
+}
+
+function soundExportNames(movie: any): Map<number, string> {
+  const out = new Map<number, string>();
+  const exportAssets = (swf.TagType as any).ExportAssets ?? 35;
+  for (const tag of movie.tags) {
+    if (tag.type !== exportAssets) continue;
+    for (const asset of tag.assets ?? []) {
+      if (typeof asset.id !== "number" || !asset.name) continue;
+      out.set(asset.id, String(asset.name));
+    }
+  }
+  return out;
+}
+
+function soundDurationMs(tag: any): number | undefined {
+  const samples = Number(tag.sampleCount);
+  const rate = swfSoundRate(tag.soundRate);
+  return Number.isFinite(samples) && samples > 0 && rate > 0 ? (samples / rate) * 1000 : undefined;
+}
+
+function swfSoundRate(soundRate: number): number {
+  const rates = [5512, 11025, 22050, 44100];
+  return soundRate <= 3 ? rates[soundRate] : Number(soundRate) || 0;
+}
+
+function buttonTextFields(button: any, dynamicTexts: Map<number, DynamicTextInfo>): { id: number; matrix: Matrix }[] {
+  const fields: { id: number; matrix: Matrix }[] = [];
+  const seen = new Set<string>();
+  for (const rec of button.records ?? []) {
+    if (!rec.stateUp) continue;
+    const id = Number(rec.characterId);
+    const info = dynamicTexts.get(id);
+    if (!info?.normalizedVariableName) continue;
+    const matrix = matrixFromButtonRecord(rec.matrix);
+    const key = `${id}:${matrix.a},${matrix.b},${matrix.c},${matrix.d},${matrix.tx},${matrix.ty}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    fields.push({ id, matrix });
+  }
+  return fields;
+}
+
+function buttonTextOrigin(fields: { id: number; matrix: Matrix }[], dynamicTexts: Map<number, DynamicTextInfo>): Origin | undefined {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const field of fields) {
+    const origin = dynamicTexts.get(field.id)?.origin;
+    if (!origin) continue;
+    const { x, y, width, height } = origin;
+    for (const [px, py] of [[x, y], [x + width, y], [x, y + height], [x + width, y + height]]) {
+      const bx = field.matrix.a * px + field.matrix.c * py + field.matrix.tx;
+      const by = field.matrix.b * px + field.matrix.d * py + field.matrix.ty;
+      minX = Math.min(minX, bx); minY = Math.min(minY, by);
+      maxX = Math.max(maxX, bx); maxY = Math.max(maxY, by);
+    }
+  }
+  return Number.isFinite(minX) ? { x: -minX, y: -minY, width: maxX - minX, height: maxY - minY } : undefined;
+}
+
+function normalizeBindingName(name: string): string {
+  return String(name).replace(/^_root\./, "").split(".").pop() ?? String(name);
+}
+
+function controlledSpriteIds(control: ExtractedControl): Set<string> {
+  const ids = new Set<string>(Object.keys(control.spriteStopFrames ?? {}));
+  for (const record of control.spriteActions ?? []) {
+    if (typeof record.spriteId === "number") ids.add(String(record.spriteId));
+  }
+  for (const def of Object.values(control.definedFunctions ?? {})) {
+    if (def.scope === "sprite" && def.spriteId !== undefined) ids.add(String(def.spriteId));
+  }
+  return ids;
+}
+
+function spriteTimelineFrames(frames: any[]): any[] {
+  return frames.map((frame) => ({
+    index: frame.index,
+    ...(frame.label ? { label: frame.label } : {}),
+    instances: frame.instances ?? [],
+  }));
 }
 
 function backgroundColor(movie: any): string {

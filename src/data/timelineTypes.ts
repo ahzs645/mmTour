@@ -159,6 +159,7 @@ export type ControlAction = {
   /** Sound action fields (attachSound/playVO/stopSound). */
   sound?: string;
   soundSrc?: string;
+  soundDurationMs?: number;
   soundRole?: "music" | "vo" | string;
 };
 

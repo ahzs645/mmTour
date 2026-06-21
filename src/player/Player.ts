@@ -30,6 +30,8 @@ type FunctionDef = {
 
 /** Local parameter bindings for the currently-executing function call. */
 type Locals = Record<string, VarValue | undefined>;
+type SoundBinding = { sound: string; soundSrc?: string; soundDurationMs?: number };
+type SoundLibraryEntry = { name?: string; src?: string; durationMs?: number };
 
 /** Timeline commands that, with a target, are clip controls (vs function calls). */
 const TIMELINE_COMMANDS = new Set(["gotoAndPlay", "gotoAndStop", "play", "stop", "nextFrame", "prevFrame"]);
@@ -104,6 +106,10 @@ export class Player {
   private readonly pendingClipCommands = new Map<string, { command: string; frame: VarValue }>();
   /** A playVO fired and the next 1-frame hold-loop should wait for it (sndDonePlaying). */
   private voWaiting = false;
+  /** AVM1 Sound objects discovered from `x = new Sound()` assignments. */
+  private readonly soundObjectTargets = new Set<string>();
+  /** Last linkage attached to each AVM1 Sound object target, played when `.start()` runs. */
+  private readonly soundBindings = new Map<string, SoundBinding>();
 
   private root: ClipInstance;
   private clipByPath = new Map<string, ClipInstance>();
@@ -396,7 +402,7 @@ export class Player {
       if (!actionFire[i]) return;
       const calls = action.functionCalls ?? [];
       if (action.command === "callFunctions" && calls.length > 0 && calls.every((c) => bodyCalls.has(c.functionName))) return;
-      this.runFunctionAction(action);
+      this.runFunctionAction(action, locals);
     });
     // Decide every body guard against the store as it is on ENTRY — AVM1 checks an `if` once
     // when control reaches it, so a CONDITIONAL mutation inside a block (LoadInitialInteractive's
@@ -530,6 +536,7 @@ export class Player {
   private runBodyStatement(statement: BodyStatement, locals: Locals) {
     if (statement.kind === "assign") {
       const value = this.resolveExpr(statement.rawValue, locals);
+      this.trackSoundObject(statement.target, statement.rawValue);
       if (this.store && value !== undefined) this.store.set(statement.target, value);
       return;
     }
@@ -540,6 +547,7 @@ export class Player {
   private runBodyCall(call: Extract<BodyStatement, { kind: "call" }>, locals: Locals) {
     const fn = call.functionName;
     const target = call.target;
+    if (this.runSoundMethod(target, fn, call.arguments, locals)) return;
     if (WAITER_FUNCTIONS.has(fn)) {
       this.options.onWaiter?.(fn, this.parseArgs(call.arguments, locals));
       return;
@@ -558,6 +566,71 @@ export class Player {
       const clip = this.resolveTarget(this.root, target) ?? this.findClipByName(this.root, target);
       if (clip) this.callClipFunction(clip, fn);
     }
+  }
+
+  private runSoundMethod(target: string | undefined, fn: string, argsRaw: string | undefined, locals?: Locals): boolean {
+    if (!target) return false;
+    const key = this.soundTargetKey(target);
+    if (fn === "attachSound") {
+      const sound = this.parseArgs(argsRaw, locals)[0];
+      const soundName = sound === undefined ? "" : String(sound);
+      if (!soundName) return true;
+      const soundEntry = this.resolveSound(soundName);
+      this.soundObjectTargets.add(key);
+      this.soundBindings.set(key, { sound: soundName, soundSrc: soundEntry?.src, soundDurationMs: soundEntry?.durationMs });
+      return true;
+    }
+
+    if (!this.isSoundTarget(target)) return false;
+
+    if (fn === "start") {
+      const binding = this.soundBindings.get(key);
+      if (!binding) return true;
+      const args = this.parseArgs(argsRaw, locals);
+      const loops = Number(args[1] ?? 0);
+      const role = loops > 1 || /music/i.test(key) ? "music" : "vo";
+      const command = role === "music" ? "attachSound" : "playVO";
+      if (role === "vo") this.voWaiting = true;
+      this.options.onSound?.({
+        command,
+        target,
+        sound: binding.sound,
+        soundSrc: binding.soundSrc,
+        soundDurationMs: binding.soundDurationMs,
+        soundRole: role,
+        executionContext: "function",
+      });
+      return true;
+    }
+
+    if (fn === "stop") {
+      this.options.onSound?.({ command: "stopSound", target, executionContext: "function" });
+      return true;
+    }
+
+    // Volume is already represented by the target Sound object; the current SoundController
+    // owns output volume, so consume AVM1 setVolume/getVolume calls instead of treating them as
+    // missing clip functions.
+    return fn === "setVolume" || fn === "getVolume";
+  }
+
+  private soundTargetKey(target: string): string {
+    return normalizeVarName(target);
+  }
+
+  private trackSoundObject(target: string | undefined, rawValue: string | undefined) {
+    if (!target || !rawValue || !/\bnew\s+Sound\s*\(/.test(rawValue)) return;
+    this.soundObjectTargets.add(this.soundTargetKey(target));
+  }
+
+  private isSoundTarget(target: string): boolean {
+    return this.soundObjectTargets.has(this.soundTargetKey(target)) || this.soundBindings.has(this.soundTargetKey(target));
+  }
+
+  private resolveSound(sound: string): SoundLibraryEntry | undefined {
+    const library = this.timeline.control?.soundLibrary as Record<string, SoundLibraryEntry | string> | undefined;
+    const entry = library?.[sound] ?? library?.[sound.toLowerCase()];
+    return typeof entry === "string" ? { src: entry } : entry;
   }
 
   /** Run a timeline command on a clip resolved by name/path (e.g. `yellowPro.gotoAndPlay("over")`). */
@@ -591,7 +664,7 @@ export class Player {
     return Number.isFinite(n) ? Math.max(0, n - 1) : -1;
   }
 
-  private runFunctionAction(action: ControlAction) {
+  private runFunctionAction(action: ControlAction, locals?: Locals) {
     switch (action.command) {
       case "stop":
         if (isSelfTimelineTarget(action.target)) this.root.playing = false;
@@ -634,6 +707,7 @@ export class Player {
         // Mirror runScript's setVariable: write to the root's scope, and if the var backs a
         // dynamic text field, update the display cache so the bound field re-renders.
         const value = this.resolveExpr(action.rawValue ?? String(action.value ?? ""));
+        this.trackSoundObject(action.target, action.rawValue);
         if (this.store && action.target && value !== undefined) {
           this.scopeSet(this.root, action.target, value);
           const norm = normalizeVarName(action.target);
@@ -642,21 +716,23 @@ export class Player {
         break;
       }
       case "callFunctions":
-        this.runCallFunctions(action);
+        this.runCallFunctions(action, this.root, locals);
         break;
       default:
         break;
     }
   }
 
-  private runCallFunctions(action: ControlAction, clip: ClipInstance = this.root) {
+  private runCallFunctions(action: ControlAction, clip: ClipInstance = this.root, locals?: Locals) {
     for (const call of action.functionCalls ?? []) {
       const target = call.target ?? "self";
       const fn = call.functionName;
-      if (WAITER_FUNCTIONS.has(fn)) {
-        this.options.onWaiter?.(fn, this.parseArgs(call.arguments));
+      if (this.runSoundMethod(target, fn, call.arguments, locals)) {
+        continue;
+      } else if (WAITER_FUNCTIONS.has(fn)) {
+        this.options.onWaiter?.(fn, this.parseArgs(call.arguments, locals));
       } else if (TIMELINE_COMMANDS.has(fn) && target !== "self" && target !== "this" && target !== "_root") {
-        const frame = this.parseArgs(call.arguments)[0] ?? 0;
+        const frame = this.parseArgs(call.arguments, locals)[0] ?? 0;
         if (/^_level\d+/i.test(target)) this.options.onClipCommand?.(target, fn, frame);
         else this.runNamedClipCommand(clip, target, fn, frame);
       } else if (target === "self" || target === "this" || target === "_root") {
@@ -670,7 +746,7 @@ export class Player {
       } else if (/^_level\d+/i.test(target)) {
         // Absolute level targets (`_level6`, `_level0.x`) are routed to the
         // controller, which maps the level back to its Player.
-        this.options.onCallFunction?.(target, fn, this.resolveArgsString(call.arguments));
+        this.options.onCallFunction?.(target, fn, this.resolveArgsString(call.arguments, locals));
       } else {
         // A named nested clip (from `tellTarget("clip")`): resolve it locally and
         // run the clip's own sprite-scoped function (e.g. doFade → gotoAndPlay).
@@ -736,6 +812,7 @@ export class Player {
       case "setVariable": {
         // A clip-function assignment (hideMe's `labelHidden = 1`) — into the clip's scope.
         const value = this.resolveExpr(action.rawValue ?? String(action.value ?? ""));
+        this.trackSoundObject(action.target, action.rawValue);
         if (action.target && value !== undefined) this.scopeSet(clip, action.target, value);
         break;
       }
@@ -929,6 +1006,7 @@ export class Player {
           // timeline var (a toolbar button's `btnDown`/`labelHidden`) stays local to it, while
           // a dotted flag (`nav.bln_CoreNavLoaded = 1`) the orchestration polls goes to the store.
           const value = this.resolveExpr(action.rawValue ?? String(action.value ?? ""));
+          this.trackSoundObject(action.target, action.rawValue);
           if (this.store && action.target && value !== undefined) {
             this.scopeSet(clip, action.target, value);
             // If the assigned variable backs a dynamic text field, mirror it into the display
