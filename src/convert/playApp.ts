@@ -79,12 +79,7 @@ async function convertFile(name: string, bytes: Uint8Array) {
       stats: compiled.stats, width: compiled.width, height: compiled.height, createdAt: Date.now(),
     });
     renderHistory();
-    if (compiled.dependencies.length) {
-      const card = cardEls.get(key)!;
-      const state = new Map<string, DepStatus>(compiled.dependencies.map((d) => [d.swf, "pending"]));
-      renderDeps(card, compiled, state);
-      await resolveDependencies(compiled, (swf, status) => { state.set(swf, status); renderDeps(card, compiled, state); });
-    }
+    await resolveDependencies(compiled); // recursively compile the whole linked tour
   } catch (e) {
     const card = cardEls.get(key);
     if (card) { card.classList.remove("busy"); card.innerHTML = `<h3>${escapeHtml(name)}</h3><div class="meta" style="color:#ff8a8a">convert failed: ${escapeHtml((e as Error).message)}</div>`; }
@@ -152,26 +147,42 @@ function layoutTree() {
 
 type DepStatus = "pending" | "compiling" | "done" | "missing";
 
-/** A shell (A-tour) loadMovie's the other SWFs into levels — compile + register
- *  each so the cross-loads resolve. Pull from already-converted scenes first,
- *  else fetch a bundled SWF of that name. Reports each step so the card shows
- *  live progress (one dep compiled at a time in the worker). */
-async function resolveDependencies(c: CompiledScene, onStep: (swf: string, status: DepStatus) => void): Promise<void> {
-  // Compile the deps the scene loads AT STARTUP (intro/nav for A-tour) first, so
-  // the shell becomes playable quickly; the heavier on-click segments follow.
+/** Recursively compile the whole linked tour. A shell (A-tour) loadMovie's other
+ *  SWFs into levels, and those load yet others (nav→segments, segment1→2→3→5…) —
+ *  so loading A-tour readies EVERY reachable scene, building out the tree. Each
+ *  scene compiles once (dedup); its own card shows live per-link progress. */
+async function resolveDependencies(c: CompiledScene, visited = new Set<string>()): Promise<void> {
+  if (!c.dependencies.length) return;
+  const card = cardEls.get(c.scene);
+  const state = new Map<string, DepStatus>(c.dependencies.map((d) => [d.swf, "pending"]));
+  if (card) renderDeps(card, c, state);
+
+  // Compile the scenes loaded AT STARTUP (intro/nav for A-tour) first, so the
+  // shell is playable quickly; heavier on-click segments follow.
   const startup = new Set(
     (c.timeline?.control?.frameActions ?? []).flatMap((f: any) => f.actions ?? []).filter((a: any) => a.swf).map((a: any) => String(a.swf).toLowerCase()),
   );
   const ordered = [...c.dependencies].sort((a, b) => (startup.has(b.swf.toLowerCase()) ? 1 : 0) - (startup.has(a.swf.toLowerCase()) ? 1 : 0));
+
   for (const dep of ordered) {
-    if (compiledScenes.has(canonical(dep.swf))) { onStep(dep.swf, "done"); continue; }
-    onStep(dep.swf, "compiling");
-    try {
-      const r = await fetch(`${import.meta.env.BASE_URL}${dep.swf}`);
-      if (!r.ok) throw new Error("not found");
-      await compile(new Uint8Array(await r.arrayBuffer()), dep.swf);
-      onStep(dep.swf, "done");
-    } catch { onStep(dep.swf, "missing"); }
+    const dk = canonical(dep.swf);
+    if (!compiledScenes.has(dk)) {
+      state.set(dep.swf, "compiling");
+      if (card) renderDeps(card, c, state);
+      try {
+        const r = await fetch(`${import.meta.env.BASE_URL}${dep.swf}`);
+        if (!r.ok) throw new Error("not found");
+        await compile(new Uint8Array(await r.arrayBuffer()), dep.swf);
+      } catch { state.set(dep.swf, "missing"); if (card) renderDeps(card, c, state); continue; }
+    }
+    state.set(dep.swf, "done");
+    if (card) renderDeps(card, c, state);
+    // recurse into the dep's own links (cycle-safe via `visited`)
+    if (!visited.has(dk)) {
+      visited.add(dk);
+      const depScene = compiledScenes.get(dk);
+      if (depScene) await resolveDependencies(depScene, visited);
+    }
   }
 }
 
@@ -221,15 +232,19 @@ async function play(scene: string, c: CompiledScene, name: string) {
   registerPackedScene(scene, c.files, c.timeline); // ensure registered (after a prior close)
   playerWrap.classList.add("on");
   playerTitle.textContent = name;
-  // size the stage to fit, preserving aspect; use the scene's own backdrop, not black
-  const maxW = Math.min(760, playerWrap.clientWidth || 760);
-  const scale = Math.min(1, maxW / c.width);
+  // Fit the stage to a target width and size the WRAP to the scaled stage, so the
+  // wrap's backdrop never shows as a black band beside a 640px stage.
+  const targetW = Math.max(560, Math.min(820, (playerWrap.parentElement?.clientWidth ?? 760)));
+  const scale = targetW / c.width;
+  const stageW = Math.round(c.width * scale);
+  const stageH = Math.round(c.height * scale);
   playerEl.style.width = `${c.width}px`;
   playerEl.style.height = `${c.height}px`;
   playerEl.style.transform = `scale(${scale})`;
   playerEl.style.transformOrigin = "top left";
   playerEl.style.background = c.timeline.backgroundColor || "#ffffff";
-  playerWrap.style.height = `${Math.ceil(c.height * scale) + 48}px`;
+  playerWrap.style.width = `${stageW}px`;
+  playerWrap.style.height = `${stageH + 48}px`;
   playerWrap.scrollIntoView({ behavior: "smooth", block: "nearest" });
 
   // A shell loads other SWFs into levels at startup — wait for those to compile +
