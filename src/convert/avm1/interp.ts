@@ -15,9 +15,16 @@ export interface RecordedLoad {
   target?: string;
 }
 
+export interface RecordedCall {
+  target: string;
+  name: string;
+  args?: string;
+}
+
 export interface InterpResult {
   globals: Record<string, any>; // dotted name → value (e.g. "bkgd.OSVersion")
   loads: RecordedLoad[];
+  calls: RecordedCall[];
 }
 
 interface Avm1Fn {
@@ -32,27 +39,32 @@ const UNDEF = undefined;
 export function runInit(program: Avm1Action[], opts: { osVersion?: string; budget?: number } = {}): InterpResult {
   const root: Record<string, any> = {};
   const loads: RecordedLoad[] = [];
+  const calls: RecordedCall[] = [];
   // Seed a couple of globals the tour gates on; OSVersion defaults to Pro.
   setPath(root, "bkgd", {});
   if (opts.osVersion) setPath(root, "bkgd.OSVersion", opts.osVersion);
 
-  const vm = new Vm(root, loads, opts.budget ?? 200_000);
+  const vm = new Vm(root, loads, calls, opts.budget ?? 200_000);
   try {
     vm.exec(program, { thisObj: root, registers: [], locals: root });
   } catch { /* stop at first failure — we keep whatever was recorded */ }
 
-  return { globals: flatten(root), loads };
+  return { globals: flatten(root), loads, calls };
 }
 
 class Vm {
   private steps = 0;
   private root: Record<string, any>;
   private loads: RecordedLoad[];
+  private calls: RecordedCall[];
   private budget: number;
-  constructor(root: Record<string, any>, loads: RecordedLoad[], budget: number) {
+  private paths = new WeakMap<object, string>();
+  constructor(root: Record<string, any>, loads: RecordedLoad[], calls: RecordedCall[], budget: number) {
     this.root = root;
     this.loads = loads;
+    this.calls = calls;
     this.budget = budget;
+    this.track(root, "_level0");
   }
 
   exec(actions: Avm1Action[], frame: { thisObj: any; registers: any[]; locals: any }): any {
@@ -128,12 +140,15 @@ class Vm {
       fn.params.forEach((p: any, i: number) => { if (p.register) registers[p.register] = args[i]; else locals[p.name] = args[i]; });
       return this.exec(fn.body, { thisObj, registers, locals });
     }
+    this.recordDottedCall(name, args);
     // builtin by name
     return this.builtin(name, thisObj, args);
   }
 
   private callMethod(obj: any, key: string | undefined, args: any[]): any {
     if (obj && key && obj[key] && obj[key].__avm1fn) return this.call(obj[key], args, obj);
+    const target = this.pathFor(obj);
+    if (target && key && /^_level\d+(?:\.|$)/i.test(target) && !isBuiltin(key)) this.recordCall(target, key, args);
     return this.builtin(key, obj, args);
   }
 
@@ -156,16 +171,38 @@ class Vm {
     else this.loads.push({ swf: url.replace(/^.*\//, ""), level, target: t || undefined });
   }
 
+  private recordDottedCall(name: string | undefined, args: any[]) {
+    if (!name) return;
+    const match = /^(_level\d+(?:\.[\w$]+)*)\.([\w$]+)$/.exec(name);
+    if (!match || isBuiltin(match[2])) return;
+    this.recordCall(match[1], match[2], args);
+  }
+
+  private recordCall(target: string, name: string, args: any[]) {
+    const serialized = serializeArgs(args);
+    const duplicate = this.calls.some((c) => c.target === target && c.name === name && (c.args ?? "") === serialized);
+    if (!duplicate) this.calls.push({ target, name, args: serialized });
+  }
+
   private getVar(frame: any, name: string): any {
     if (name === "this") return frame.thisObj;
     if (name === "_root" || name === "_level0") return this.root;
-    if (/^_level\d+$/.test(name)) return (this.root[name] ??= {});
+    if (/^_level\d+$/.test(name)) return this.track((this.root[name] ??= {}), name);
     if (name in frame.locals) return frame.locals[name];
     return resolvePath(this.root, name);
   }
   private setVar(frame: any, name: string, val: any) {
     if (name in frame.locals && frame.locals !== this.root) { frame.locals[name] = val; return; }
     setPath(this.root, name, val);
+  }
+
+  private track<T>(value: T, path: string): T {
+    if (value && typeof value === "object") this.paths.set(value as object, path);
+    return value;
+  }
+
+  private pathFor(value: any): string | undefined {
+    return value && typeof value === "object" ? this.paths.get(value) : undefined;
   }
 }
 
@@ -178,6 +215,17 @@ function popArgs(stack: any[]): any[] {
 }
 function truthy(v: any): boolean { return !(v === undefined || v === null || v === false || v === 0 || v === "" || (typeof v === "number" && isNaN(v))); }
 function typeofAvm(v: any): string { return v === undefined ? "undefined" : v === null ? "null" : typeof v === "function" || v?.__avm1fn ? "function" : Array.isArray(v) ? "object" : typeof v; }
+function isBuiltin(name: string | undefined): boolean { return name === "loadMovieNum" || name === "loadMovie" || name === "loadVariables"; }
+
+function serializeArgs(args: any[]): string {
+  return args.map((arg) => {
+    if (arg === undefined) return "";
+    if (typeof arg === "string") return JSON.stringify(arg);
+    if (typeof arg === "number" || typeof arg === "boolean") return String(arg);
+    if (arg === null) return "null";
+    return "";
+  }).join(",");
+}
 
 function setPath(root: any, dotted: string, val: any) {
   const parts = dotted.replace(/^_level0\.|^_root\./, "").split(".");

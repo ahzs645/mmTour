@@ -118,6 +118,8 @@ export type DefinedFunction = {
   spriteId?: number;
   assignments?: { target: string; value?: unknown; rawValue?: string }[];
   body?: BodyStatement[];
+  /** Browser bytecode extraction can recover executable command actions directly from the function body. */
+  actions?: ControlAction[];
   /** Inner clip/function calls (e.g. a sprite's over()/out() → self gotoAndPlay frames). */
   calls?: FunctionCall[];
   source?: string;

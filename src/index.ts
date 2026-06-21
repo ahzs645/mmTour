@@ -17,8 +17,8 @@
  */
 import "./player.css";
 import { PlayerController } from "./app/PlayerController";
-import { loadTimeline } from "./data/TimelineLoader";
-import { setArchiveUrl, setAssetsBaseUrl, setAssetSource, type AssetSource } from "./data/packedAssets";
+import { clearTimelineCache, loadTimeline } from "./data/TimelineLoader";
+import { setArchiveUrl, setAssetsBaseUrl, setAssetSource, type AssetSource } from "./data/packedAssets.ts";
 
 export interface TourPlayerOptions {
   /** Where the converted `generated/` (and `generated-packed/`) assets are served. Default "" (origin root). */
@@ -80,6 +80,7 @@ export async function createTourPlayer(
   if (assetSource === "archive") {
     setArchiveUrl(archiveUrl ?? `${assetsBaseUrl.replace(/\/+$/, "")}/xp-tour.pack`);
   }
+  clearTimelineCache();
 
   const timeline = await loadTimeline(scene);
   if (!timeline) {
@@ -113,8 +114,8 @@ export async function createTourPlayer(
 // createTourPlayer offers (custom level handling, asset source switching, etc.).
 export { PlayerController } from "./app/PlayerController";
 export type { PlayerControllerOptions } from "./app/PlayerController";
-export { setAssetsBaseUrl, getAssetsBaseUrl, setAssetSource, getAssetSource, setArchiveUrl } from "./data/packedAssets";
-export type { AssetSource } from "./data/packedAssets";
+export { setAssetsBaseUrl, getAssetsBaseUrl, setAssetSource, getAssetSource, setArchiveUrl } from "./data/packedAssets.ts";
+export type { AssetSource } from "./data/packedAssets.ts";
 export { loadTimeline } from "./data/TimelineLoader";
 export { scenes, sceneNameFromSwf } from "./data/scenes";
 export type { TourScene } from "./data/scenes";

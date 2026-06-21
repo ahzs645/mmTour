@@ -8,44 +8,71 @@
 import { swf } from "swf-parser";
 // @ts-ignore — pure-JS AVM1 disassembler reused from the Node pipeline
 import { disassembleAvm1 } from "../../scripts/lib/avm1Disasm.mjs";
+import type { ButtonActionRecord, ControlAction, DefinedFunction, FrameActionRecord } from "../data/timelineTypes.ts";
+import { parseProgram } from "./avm1/parse.ts";
+import { combineButtonActions, summarizeProgram } from "./avm1/summarize.ts";
 
 export interface ExtractedControl {
   stopFrames: number[];
   spriteStopFrames: Record<string, number[]>;
   /** Root frame → goto target (0-based frame or label), for simple gotoAndStop/Play. */
   frameGotos: { frame: number; target: number | string; play: boolean }[];
+  frameActions: FrameActionRecord[];
+  spriteActions: Array<{ spriteId: number; frame: number; actions: ControlAction[] }>;
+  definedFunctions: Record<string, DefinedFunction>;
+  buttonActions: Record<string, ButtonActionRecord>;
 }
 
 /** Walk a frame-ordered tag list, returning the 0-based frame index of every
  *  frame whose DoAction stops, plus simple goto targets. */
-function scanFrames(tags: any[]): { stops: number[]; gotos: { frame: number; target: number | string; play: boolean }[] } {
+function scanFrames(
+  tags: any[],
+  scope: "root" | "sprite",
+  spriteId?: number,
+): {
+  stops: number[];
+  gotos: { frame: number; target: number | string; play: boolean }[];
+  frameActions: Array<{ frame: number; actions: ControlAction[] }>;
+  definedFunctions: DefinedFunction[];
+} {
   const stops: number[] = [];
   const gotos: { frame: number; target: number | string; play: boolean }[] = [];
+  const frameActions: Array<{ frame: number; actions: ControlAction[] }> = [];
+  const definedFunctions: DefinedFunction[] = [];
   let frame = 0;
   for (const tag of tags) {
     if (tag.type === swf.TagType.DoAction) {
-      const ops = safeDisassemble(tag.actions);
-      let lastPush: any;
-      for (const op of ops) {
-        if (op.op === "Stop") stops.push(frame);
-        else if (op.op === "Push") lastPush = op.values?.[op.values.length - 1];
-        else if (op.op === "GotoFrame") gotos.push({ frame, target: op.frame, play: false });
-        else if (op.op === "GoToLabel") gotos.push({ frame, target: op.label, play: false });
-        else if (op.op === "GotoFrame2") {
-          const t = lastPush?.value;
-          if (t !== undefined) gotos.push({ frame, target: typeof t === "number" ? t : String(t), play: !!op.play });
-        }
+      const summary = summarizeProgram(safeParse(tag.actions), { scope, spriteId });
+      definedFunctions.push(...summary.definedFunctions);
+      const actions = summary.actions.map((action) => ({ ...action }));
+      if (actions.length) frameActions.push({ frame, actions });
+      if (actions.some((action) => action.command === "stop")) stops.push(frame);
+      for (const action of actions) {
+        if (action.command !== "gotoAndPlay" && action.command !== "gotoAndStop") continue;
+        gotos.push({
+          frame,
+          target: action.label ?? action.frame ?? action.frameExpression ?? "",
+          play: action.command === "gotoAndPlay",
+        });
       }
     } else if (tag.type === swf.TagType.ShowFrame) {
       frame += 1;
     }
   }
-  return { stops, gotos };
+  return { stops, gotos, frameActions, definedFunctions };
 }
 
 function safeDisassemble(actions: Uint8Array): any[] {
   try {
     return disassembleAvm1(actions);
+  } catch {
+    return [];
+  }
+}
+
+function safeParse(actions: Uint8Array): ReturnType<typeof parseProgram> {
+  try {
+    return parseProgram(actions);
   } catch {
     return [];
   }
@@ -83,17 +110,83 @@ export function detectDependencies(movie: any): SwfDependency[] {
 }
 
 export function extractControl(movie: any): ExtractedControl {
-  const root = scanFrames(movie.tags);
+  const root = scanFrames(movie.tags, "root");
   const spriteStopFrames: Record<string, number[]> = {};
+  const spriteActions: Array<{ spriteId: number; frame: number; actions: ControlAction[] }> = [];
+  const definedFunctions: DefinedFunction[] = [...root.definedFunctions];
   for (const tag of movie.tags) {
     if (tag.type === swf.TagType.DefineSprite) {
-      const { stops } = scanFrames(tag.tags);
+      const { stops, frameActions, definedFunctions: defs } = scanFrames(tag.tags, "sprite", tag.id);
       if (stops.length) spriteStopFrames[String(tag.id)] = [...new Set(stops)].sort((a, b) => a - b);
+      for (const entry of frameActions) spriteActions.push({ spriteId: tag.id, ...entry });
+      definedFunctions.push(...defs);
     }
   }
   return {
     stopFrames: [...new Set(root.stops)].sort((a, b) => a - b),
     spriteStopFrames,
     frameGotos: root.gotos,
+    frameActions: root.frameActions,
+    spriteActions,
+    definedFunctions: indexDefinedFunctions(definedFunctions),
+    buttonActions: extractButtonActions(movie),
   };
+}
+
+function indexDefinedFunctions(defs: DefinedFunction[]): Record<string, DefinedFunction> {
+  const out: Record<string, DefinedFunction> = {};
+  for (const def of defs) {
+    const key = `${def.scope ?? "root"}:${def.spriteId ?? "root"}:${def.functionName}`;
+    out[key] = def;
+  }
+  return out;
+}
+
+function extractButtonActions(movie: any): Record<string, ButtonActionRecord> {
+  const out: Record<string, ButtonActionRecord> = {};
+  const visit = (tags: any[]) => {
+    for (const tag of tags) {
+      if (tag.type === swf.TagType.DefineSprite) {
+        visit(tag.tags ?? []);
+        continue;
+      }
+      if (tag.type !== swf.TagType.DefineButton) continue;
+      const record: ButtonActionRecord = {};
+      for (const action of tag.actions ?? []) {
+        const events = buttonEventsFromConditions(action.conditions ?? {});
+        const summary = summarizeProgram(safeParse(action.actions), { scope: "root" });
+        const combined = combineButtonActions(summary.actions);
+        if (!combined) continue;
+        for (const event of events) {
+          if (event === "release") record.release = mergeButtonAction(record.release, combined);
+          else if (event === "press") record.press = mergeButtonAction(record.press, combined);
+          else if (event === "rollOver") record.rollOver = mergeButtonAction(record.rollOver, combined);
+          else if (event === "rollOut") record.rollOut = mergeButtonAction(record.rollOut, combined);
+        }
+      }
+      if (Object.keys(record).length) out[String(tag.id)] = record;
+    }
+  };
+  visit(movie.tags);
+  return out;
+}
+
+function mergeButtonAction(existing: ControlAction | undefined, next: ControlAction): ControlAction {
+  if (!existing) return { ...next };
+  return {
+    ...existing,
+    assignments: [...(existing.assignments ?? []), ...(next.assignments ?? [])],
+    functionCalls: [...(existing.functionCalls ?? []), ...(next.functionCalls ?? [])],
+    loads: [...(existing.loads ?? []), ...(next.loads ?? [])],
+  };
+}
+
+function buttonEventsFromConditions(conditions: Record<string, unknown>): string[] {
+  const events: string[] = [];
+  if (conditions.overDownToOverUp) events.push("release");
+  if (conditions.idleToOverDown || conditions.overUpToOverDown) events.push("press");
+  if (conditions.idleToOverUp || conditions.outDownToOverDown) events.push("rollOver");
+  if (conditions.overUpToIdle || conditions.overDownToOutDown || conditions.outDownToIdle || conditions.overDownToIdle) events.push("rollOut");
+  if (conditions.keyPress) events.push(`keyPress:${conditions.keyPress}`);
+  return events.filter((event) => event === "release" || event === "press" || event === "rollOver" || event === "rollOut");
 }

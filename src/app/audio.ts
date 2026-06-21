@@ -2,7 +2,7 @@
 
 import { state as appState } from "./state";
 import type { ControlAction } from "./frameModeTypes";
-import { assetUrl } from "../data/packedAssets";
+import { assetUrl } from "../data/packedAssets.ts";
 
 export async function playVoiceover(action: ControlAction) {
   if (!action.soundSrc) return;

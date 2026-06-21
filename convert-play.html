@@ -8,15 +8,37 @@
       :root {
         --bg: #0b0e16; --panel: #141925; --panel-2: #1b2233; --line: #28324a;
         --ink: #e7ecf6; --muted: #8a97b2; --accent: #5bc8ff; --accent-2: #7df0c0; --warn: #ffd166;
+        --page-bg: radial-gradient(1200px 600px at 75% -10%, #16203a 0%, var(--bg) 55%);
+        --stage-shell: #000;
+        color-scheme: dark;
+      }
+      body[data-theme="light"] {
+        --bg: #f6f8fb; --panel: #ffffff; --panel-2: #eef3f8; --line: #cfd8e3;
+        --ink: #182235; --muted: #5d6b82; --accent: #0969da; --accent-2: #13795b; --warn: #8a6500;
+        --page-bg: radial-gradient(1200px 600px at 75% -10%, #dcecff 0%, var(--bg) 55%);
+        --stage-shell: #111;
+        color-scheme: light;
       }
       * { box-sizing: border-box; }
       body { margin: 0; font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-        background: radial-gradient(1200px 600px at 75% -10%, #16203a 0%, var(--bg) 55%); color: var(--ink); min-height: 100vh; }
+        background: var(--page-bg); color: var(--ink); min-height: 100vh; }
       a { color: var(--accent); }
       .wrap { width: 100%; max-width: 1200px; margin: 0 auto; padding: 28px; }
+      header .topbar { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
       header h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: -0.01em; }
       header h1 .x { color: var(--accent); }
       header p { margin: 0; color: var(--muted); }
+      .theme-toggle { width: 52px; height: 30px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel);
+        color: var(--muted); cursor: pointer; position: relative; flex: none; transition: border-color .15s, background .15s; }
+      .theme-toggle:hover { border-color: var(--accent); }
+      .theme-toggle::after { content: ""; position: absolute; width: 22px; height: 22px; left: 4px; top: 3px; border-radius: 50%;
+        background: var(--accent); transition: transform .18s ease; }
+      .theme-toggle span { position: absolute; top: 5px; font-size: 12px; line-height: 1; z-index: 1; }
+      .theme-toggle .sun { left: 8px; color: #fff; }
+      .theme-toggle .moon { right: 8px; }
+      body[data-theme="light"] .theme-toggle::after { transform: translateX(20px); }
+      body[data-theme="light"] .theme-toggle .sun { color: var(--muted); }
+      body[data-theme="light"] .theme-toggle .moon { color: #fff; }
       .layout { display: grid; grid-template-columns: 1fr 360px; gap: 22px; margin-top: 22px; align-items: start; }
       @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
       main, aside { min-width: 0; }
@@ -29,7 +51,7 @@
       .samples button, .ghost { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 999px;
         padding: 4px 11px; margin: 0 4px 6px 0; cursor: pointer; font-size: 12px; }
       .samples button:hover, .ghost:hover { border-color: var(--accent); color: var(--accent); }
-      #player-wrap { margin-top: 18px; max-width: 100%; background: #000; border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+      #player-wrap { margin-top: 18px; max-width: 100%; background: var(--stage-shell); border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
         display: none; position: relative; }
       #player-wrap.on { display: block; }
       #player { position: relative; margin: 0 auto; }
@@ -80,6 +102,7 @@
       code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; color: var(--accent-2); }
       @media (max-width: 520px) {
         .wrap { padding: 20px; }
+        header .topbar { align-items: center; }
         #drop { padding: 20px; }
         .children { margin-left: 10px; padding-left: 10px; }
         .player-bar button { flex: 1 1 auto; }
@@ -89,8 +112,16 @@
   <body>
     <div class="wrap">
       <header>
-        <h1>SWF Studio <span class="x">·</span> convert &amp; play</h1>
-        <p>Drop Flash <code>.swf</code> files — they convert entirely in your browser (no Java, no server) and play in the GSAP runtime. Every convert is saved to your local history (IndexedDB).</p>
+        <div class="topbar">
+          <div>
+            <h1>SWF Studio <span class="x">·</span> convert &amp; play</h1>
+            <p>Drop Flash <code>.swf</code> files — they convert entirely in your browser (no Java, no server) and play in the GSAP runtime. Every convert is saved to your local history (IndexedDB).</p>
+          </div>
+          <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch color theme" title="Switch color theme">
+            <span class="sun">☼</span>
+            <span class="moon">☾</span>
+          </button>
+        </div>
       </header>
       <div class="layout">
         <main>

@@ -15,6 +15,9 @@ export interface Avm1Action {
   branchOffset?: number; // If / Jump (byte delta)
   jumpTo?: number; // resolved index into the action list
   play?: boolean; // GotoFrame2
+  loadVariablesFlag?: boolean; // GetUrl2
+  loadTargetFlag?: boolean; // GetUrl2
+  sendVarsMethod?: number; // GetUrl2
   name?: string; // DefineFunction(2)
   params?: { register?: number; name: string }[];
   registerCount?: number;
@@ -53,21 +56,25 @@ function decodePush(body: Uint8Array, pool: string[]): any[] {
 }
 
 const NAMES: Record<number, string> = {
-  0x04: "NextFrame", 0x05: "PrevFrame", 0x06: "Play", 0x07: "Stop", 0x0b: "Subtract", 0x0c: "Multiply",
+  0x04: "NextFrame", 0x05: "PrevFrame", 0x06: "Play", 0x07: "Stop", 0x0a: "Add", 0x0b: "Subtract", 0x0c: "Multiply",
   0x0d: "Divide", 0x0e: "Equals", 0x0f: "Less", 0x10: "And", 0x11: "Or", 0x12: "Not", 0x13: "StringEquals",
   0x17: "Pop", 0x18: "ToInteger", 0x1c: "GetVariable", 0x1d: "SetVariable", 0x20: "SetTarget2",
   0x21: "StringAdd", 0x22: "GetProperty", 0x23: "SetProperty", 0x24: "CloneSprite", 0x25: "RemoveSprite",
-  0x26: "Trace", 0x3a: "Delete", 0x3b: "Delete2", 0x3c: "DefineLocal", 0x3d: "CallFunction",
+  0x26: "Trace", 0x34: "GetTime", 0x3a: "Delete", 0x3b: "Delete2", 0x3c: "DefineLocal", 0x3d: "CallFunction",
   0x3e: "Return", 0x3f: "Modulo", 0x40: "NewObject", 0x41: "DefineLocal2", 0x42: "InitArray",
   0x43: "InitObject", 0x44: "TypeOf", 0x47: "Add2", 0x48: "Less2", 0x49: "Equals2", 0x4c: "PushDuplicate",
-  0x4e: "GetMember", 0x4f: "SetMember", 0x50: "Increment", 0x51: "Decrement", 0x52: "CallMethod",
+  0x4d: "StackSwap", 0x4e: "GetMember", 0x4f: "SetMember", 0x50: "Increment", 0x51: "Decrement", 0x52: "CallMethod",
   0x53: "NewMethod", 0x67: "Greater", 0x9a: "GetUrl2", 0x9e: "Call",
 };
 
 /** Parse an AVM1 bytecode block into actions, nesting DefineFunction bodies and
  *  resolving If/Jump offsets to action indices. */
 export function parseProgram(bytes: Uint8Array<ArrayBufferLike>): Avm1Action[] {
-  const pool: string[] = [];
+  return parseProgramWithPool(bytes, []);
+}
+
+function parseProgramWithPool(bytes: Uint8Array<ArrayBufferLike>, inheritedPool: string[]): Avm1Action[] {
+  const pool: string[] = inheritedPool.slice();
   // first pass: linear decode with byte offsets so we can resolve branch targets
   const raw: { offset: number; end: number; action: Avm1Action }[] = [];
   let o = 0;
@@ -85,7 +92,7 @@ export function parseProgram(bytes: Uint8Array<ArrayBufferLike>): Avm1Action[] {
     const a = raw[raw.length - 1].action;
     if (a.op === "DefineFunction" || a.op === "DefineFunction2") {
       const size = (a as any)._codeSize ?? 0;
-      a.body = parseProgram(bytes.subarray(o, o + size));
+      a.body = parseProgramWithPool(bytes.subarray(o, o + size), pool);
       o += size;
       raw[raw.length - 1].end = o;
       delete (a as any)._codeSize;
@@ -98,7 +105,8 @@ export function parseProgram(bytes: Uint8Array<ArrayBufferLike>): Avm1Action[] {
     const a = r.action;
     if ((a.op === "If" || a.op === "Jump") && a.branchOffset !== undefined) {
       const targetOffset = r.end + a.branchOffset;
-      a.jumpTo = offsetToIndex.get(targetOffset) ?? raw.findIndex((x) => x.offset >= targetOffset);
+      const fallback = targetOffset >= bytes.length ? raw.length : raw.findIndex((x) => x.offset >= targetOffset);
+      a.jumpTo = offsetToIndex.get(targetOffset) ?? fallback;
     }
   });
   return raw.map((r) => r.action);
@@ -119,6 +127,14 @@ function decode(code: number, body: Uint8Array, _all: Uint8Array, _after: number
     case 0x87: return { op: "StoreRegister", code, register: body[0] };
     case 0x99: return { op: "Jump", code, branchOffset: s16(body, 0) };
     case 0x9d: return { op: "If", code, branchOffset: s16(body, 0) };
+    case 0x9a: return {
+      op: "GetUrl2",
+      code,
+      // JPEXS reads these as the high bits: loadVariables, loadTarget, reserved, sendVars.
+      loadVariablesFlag: (body[0] & 0x80) !== 0,
+      loadTargetFlag: (body[0] & 0x40) !== 0,
+      sendVarsMethod: body[0] & 0x03,
+    };
     case 0x9f: return { op: "GotoFrame2", code, play: (body[0] & 1) !== 0 };
     case 0x83: { const u = readCStr(body, 0); const t = readCStr(body, u.next); return { op: "GetUrl", code, url: u.str, target: t.str }; }
     case 0x9b: { // DefineFunction

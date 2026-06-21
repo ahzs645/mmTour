@@ -17,7 +17,7 @@ import {
 import { shouldStopAtFrame } from "./app/runtimeActions";
 import { loadScene } from "./app/sceneLoader";
 import { goToFrame, renderFrame, syncAssetStageScale } from "./app/frameMode";
-import { setAssetSource, type AssetSource } from "./data/packedAssets";
+import { setAssetSource, type AssetSource } from "./data/packedAssets.ts";
 
 declare global {
   interface Window {

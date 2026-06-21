@@ -38,6 +38,7 @@ type SceneData = {
 };
 
 let assetSource: AssetSource = "files";
+let assetRevision = 0;
 const packedScenes = new Map<string, PackedScene>();
 const bundleScenes = new Map<string, BundleScene>();
 const sceneData = new Map<string, SceneData>();
@@ -72,6 +73,7 @@ export function getAssetSource(): AssetSource {
 export function setAssetSource(source: AssetSource) {
   if (source === assetSource) return;
   assetSource = source;
+  assetRevision += 1;
   clearPackedScenes();
   clearBundleScenes();
   clearSceneData();
@@ -212,6 +214,7 @@ export function registerPackedScene(
   const existing = packedScenes.get(scene);
   if (existing) for (const f of existing.files.values()) if (f.url) URL.revokeObjectURL(f.url);
   packedScenes.set(scene, { scene, files: new Map(files), timeline });
+  assetRevision += 1;
 }
 
 export function clearPackedScenes() {
@@ -221,10 +224,21 @@ export function clearPackedScenes() {
     }
   }
   packedScenes.clear();
+  assetRevision += 1;
+}
+
+export function unregisterPackedScene(scene: string) {
+  const existing = packedScenes.get(scene);
+  if (!existing) return;
+  for (const file of existing.files.values()) {
+    if (file.url) URL.revokeObjectURL(file.url);
+  }
+  packedScenes.delete(scene);
+  assetRevision += 1;
 }
 
 export function cacheKeyForSource(key: string): string {
-  return `${assetSource}:${key}`;
+  return `${assetSource}:${assetRevision}:${key}`;
 }
 
 export async function loadTimelineFromSource(scene: string): Promise<AssetTimeline | null> {

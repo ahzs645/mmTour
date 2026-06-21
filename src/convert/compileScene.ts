@@ -166,28 +166,54 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
   stats.stopFrames = control.stopFrames.length;
 
   // Execute the frame-1 init (function defs + startup calls) to discover what a
-  // shell brings on stage at startup — the level loads (intro→4, nav→6) and the
-  // seeded variable store. This is what lets A-tour self-drive its initial state.
+  // shell brings on stage at startup — level loads, queued cross-level calls,
+  // and the seeded variable store. This is what lets A-tour self-drive its
+  // initial state without scene-specific startup code.
   const initBytes = firstFrameDoAction(movie);
   let initLoads: { swf: string; level?: number }[] = [];
+  let initCalls: { target: string; name: string; args?: string }[] = [];
   let globalDefaults: Record<string, any> = {};
   if (initBytes) {
     try {
       const r = runInit(parseProgram(initBytes), { osVersion: "Pro" });
       globalDefaults = r.globals;
       initLoads = r.loads.filter((l) => l.level !== undefined);
+      initCalls = r.calls;
     } catch { /* init scan is best-effort */ }
   }
-  // Fire the startup loads on the first PLAYBACK tick (frame after entry), not at
-  // frame 0 — frame 0's scripts run during the player's construction (buildRoot),
-  // before the level system + playback are ready, so a load there races. Defer to
-  // the next frame the root actually enters (capped before the first stop).
+  // Fire startup loads/calls on the first PLAYBACK tick (frame after entry), not
+  // at frame 0 — frame 0's scripts run during the player's construction
+  // (buildRoot), before the level system + playback are ready, so a load there
+  // races. Defer to the next frame the root actually enters (capped before the
+  // first stop).
   const entry = discoverEntryFrame(labels);
   const firstStop = control.stopFrames.find((f: number) => f > entry);
   const loadFrame = frames.length > 1 ? Math.min(entry + 1, firstStop ?? frames.length - 1) : 0;
-  const frameActions = initLoads.length
-    ? [{ frame: loadFrame, actions: initLoads.map((l) => ({ command: "loadMovieNum", swf: l.swf, level: l.level, executionContext: "timeline" })) }]
+  const startupActions = [
+    ...initLoads.map((l) => ({ command: "loadMovieNum", swf: l.swf, level: l.level, executionContext: "timeline" })),
+    ...(initCalls.length
+      ? [{
+          command: "callFunctions",
+          functionCalls: initCalls.map((c) => ({ target: c.target, functionName: c.name, arguments: c.args ?? "" })),
+          executionContext: "timeline",
+        }]
+      : []),
+  ];
+  const deferredStartupActions = startupActions.length
+    ? [{ frame: loadFrame, actions: startupActions }]
     : [];
+  const extractedFrameActions = control.frameActions
+    .map((record) => ({
+      ...record,
+      actions: (record.actions ?? []).filter((action: any) =>
+        // Root frame-1 navigation can run during Player construction before the
+        // controller has finished registering the level. Keep those startup
+        // loads on the deferred runInit path above; later navigation stays data-driven.
+        !(record.frame === 0 && (action.command === "loadMovie" || action.command === "loadMovieNum")),
+      ),
+    }))
+    .filter((record) => record.actions.length);
+  const frameActions = [...extractedFrameActions, ...deferredStartupActions];
 
   const fr = movie.header.frameSize;
   const width = Math.round((fr.xMax - fr.xMin) / 20);
@@ -208,7 +234,10 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
     control: {
       stopFrames: control.stopFrames,
       spriteStopFrames: control.spriteStopFrames,
+      spriteActions: control.spriteActions,
       frameActions,
+      definedFunctions: control.definedFunctions,
+      buttonActions: control.buttonActions,
       globalDefaults,
     },
     frameSvgs: [],

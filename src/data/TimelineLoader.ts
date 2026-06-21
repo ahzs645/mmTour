@@ -1,8 +1,12 @@
 import type { AssetTimeline } from "./timelineTypes";
 import { sceneNameFromSwf } from "./scenes";
-import { assetUrl as resolveAssetUrl, cacheKeyForSource, loadTimelineFromSource } from "./packedAssets";
+import { assetUrl as resolveAssetUrl, cacheKeyForSource, loadTimelineFromSource } from "./packedAssets.ts";
 
 const cache = new Map<string, AssetTimeline>();
+
+export function clearTimelineCache() {
+  cache.clear();
+}
 
 /**
  * Fetch and cache a scene's decompiled timeline.json. Fills in default

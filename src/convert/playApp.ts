@@ -4,23 +4,40 @@
 
 import type { CompiledScene } from "./compileScene.ts";
 import { compileSceneAsync } from "./compileClient.ts";
-import { registerPackedScene, setAssetSource } from "../data/packedAssets.ts";
+import { clearPackedScenes, registerPackedScene, setAssetSource, unregisterPackedScene } from "../data/packedAssets.ts";
+import { clearTimelineCache } from "../data/TimelineLoader";
 import { createTourPlayer, type TourPlayer } from "../index.ts";
 
 // Serve assets from the in-memory pack source. Set it ONCE up front: switching
 // the source later (createTourPlayer does this internally) clears registered
 // scenes, which would wipe the bundle we just compiled.
 setAssetSource("pack");
-import { saveConvert, listConverts, getConvert, deleteConvert, clearHistory, type ConvertRecord } from "./historyDb.ts";
+import {
+  saveConvert,
+  listConverts,
+  getConvert,
+  deleteConvert,
+  clearHistory,
+  type ConvertRecord,
+  type StoredCompiledScene,
+} from "./historyDb.ts";
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
 const drop = $("#drop"), fileInput = $<HTMLInputElement>("#file"), cards = $("#cards"), hist = $("#hist");
 const playerWrap = $("#player-wrap"), playerEl = $("#player"), playerTitle = $("#player-title");
+const themeToggle = $<HTMLButtonElement>("#theme-toggle");
 const SAMPLES = ["A-tour", "intro", "nav", "segment1", "segment4", "segment5"];
 
 let activePlayer: TourPlayer | null = null;
 
 // --- bootstrap UI ---
+const THEME_KEY = "mmtour-theme";
+const initialTheme = localStorage.getItem(THEME_KEY) === "light" || localStorage.getItem(THEME_KEY) === "dark"
+  ? localStorage.getItem(THEME_KEY)!
+  : window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
+applyTheme(initialTheme);
+themeToggle.onclick = () => applyTheme(document.body.dataset.theme === "light" ? "dark" : "light");
+
 const samplesEl = $("#samples");
 for (const name of SAMPLES) {
   const b = document.createElement("button");
@@ -49,14 +66,27 @@ fileInput.onchange = async () => {
 $("#btn-play").onclick = () => activePlayer?.toggle();
 $("#btn-restart").onclick = () => activePlayer?.restart();
 $("#btn-close").onclick = () => closePlayer();
-$("#clear-hist").onclick = async () => { await clearHistory(); renderHistory(); toast("History cleared"); };
-
-renderHistory();
+$("#clear-hist").onclick = async () => {
+  await clearHistory();
+  closePlayer();
+  clearPackedScenes();
+  clearTimelineCache();
+  cardEls.clear();
+  cardMeta.clear();
+  compiledScenes.clear();
+  inFlight.clear();
+  dependencyLoads.clear();
+  cards.innerHTML = "";
+  renderHistory();
+  toast("History cleared");
+};
 
 // --- convert + cards (laid out as a tree of linked scenes) ---
 const cardEls = new Map<string, HTMLElement>();
 const cardMeta = new Map<string, { name: string; compiled: CompiledScene }>();
 const dependencyLoads = new Map<string, Promise<void>>();
+
+void restoreHistory();
 
 /** Get (or create) the card element for a scene; a fresh one shows "converting…". */
 function ensureCard(key: string, name: string): HTMLElement {
@@ -75,11 +105,7 @@ async function convertFile(name: string, bytes: Uint8Array) {
   const key = canonical(name);
   try {
     const compiled = await compile(bytes, name);
-    await saveConvert({
-      name, swf: new Blob([bytes.slice().buffer], { type: "application/x-shockwave-flash" }),
-      stats: compiled.stats, width: compiled.width, height: compiled.height, createdAt: Date.now(),
-    });
-    renderHistory();
+    await persistCompiled(name, bytes, compiled);
     await ensureDependencies(compiled); // recursively compile the whole linked tour
   } catch (e) {
     const card = cardEls.get(key);
@@ -104,16 +130,22 @@ async function compile(bytes: Uint8Array, name: string): Promise<CompiledScene> 
   ensureCard(scene, name); // placeholder card shows immediately
   const promise = (async () => {
     const compiled = await compileSceneAsync(bytes, scene); // off the main thread → UI stays responsive
-    registerPackedScene(scene, compiled.files, compiled.timeline);
-    compiledScenes.set(scene, compiled);
-    cardMeta.set(scene, { name, compiled });
+    acceptCompiled(name, compiled);
     inFlight.delete(scene);
-    renderCard(cardEls.get(scene)!, name, compiled);
-    layoutTree();
     return compiled;
   })();
   inFlight.set(scene, promise);
   return promise;
+}
+
+function acceptCompiled(name: string, compiled: CompiledScene) {
+  registerPackedScene(compiled.scene, compiled.files, compiled.timeline);
+  clearTimelineCache();
+  compiledScenes.set(compiled.scene, compiled);
+  cardMeta.set(compiled.scene, { name, compiled });
+  ensureCard(compiled.scene, name);
+  renderCard(cardEls.get(compiled.scene)!, name, compiled);
+  layoutTree();
 }
 
 /** Arrange the scene cards into a tree: roots (not loaded by anything — the
@@ -192,7 +224,9 @@ async function resolveDependencies(c: CompiledScene, visited = new Set<string>()
       try {
         const r = await fetch(`${import.meta.env.BASE_URL}${dep.swf}`);
         if (!r.ok) throw new Error("not found");
-        await compile(new Uint8Array(await r.arrayBuffer()), dep.swf);
+        const bytes = new Uint8Array(await r.arrayBuffer());
+        const compiled = await compile(bytes, dep.swf);
+        await persistCompiled(dep.swf, bytes, compiled);
       } catch { state.set(dep.swf, "missing"); if (card) renderDeps(card, c, state); continue; }
     }
     // recurse into the dep's own links (cycle-safe via `visited`)
@@ -322,13 +356,90 @@ function historyRow(rec: ConvertRecord): HTMLElement {
   (row.querySelector(".rp") as HTMLButtonElement).onclick = async () => {
     const full = await getConvert(rec.id!);
     if (!full) return;
-    const bytes = new Uint8Array(await full.swf.arrayBuffer());
-    const compiled = await compile(bytes, full.name);
+    let compiled = full.compiled ? reviveCompiled(full.compiled) : compiledScenes.get(full.scene ?? canonical(full.name));
+    if (compiled) {
+      acceptCompiled(full.name, compiled);
+    } else {
+      const bytes = new Uint8Array(await full.swf.arrayBuffer());
+      compiled = await compile(bytes, full.name);
+      await persistCompiled(full.name, bytes, compiled);
+    }
     void ensureDependencies(compiled);
     await play(compiled.scene, compiled, full.name);
   };
-  (row.querySelector(".dl") as HTMLButtonElement).onclick = async () => { await deleteConvert(rec.id!); renderHistory(); };
+  (row.querySelector(".dl") as HTMLButtonElement).onclick = async () => {
+    await deleteConvert(rec.id!);
+    removeScene(rec.scene ?? canonical(rec.name));
+    renderHistory();
+  };
   return row;
+}
+
+async function restoreHistory() {
+  const items = await listConverts();
+  for (const rec of [...items].reverse()) {
+    if (!rec.compiled) continue;
+    acceptCompiled(rec.name, reviveCompiled(rec.compiled));
+  }
+  renderHistory();
+}
+
+async function persistCompiled(name: string, bytes: Uint8Array, compiled: CompiledScene) {
+  try {
+    await saveConvert({
+      scene: compiled.scene,
+      name,
+      swf: new Blob([bytes.slice().buffer], { type: "application/x-shockwave-flash" }),
+      stats: compiled.stats,
+      width: compiled.width,
+      height: compiled.height,
+      compiled: storeCompiled(compiled),
+      createdAt: Date.now(),
+    });
+    renderHistory();
+  } catch (e) {
+    toast(`Converted ${name}, but couldn't save it: ${(e as Error).message}`);
+  }
+}
+
+function storeCompiled(c: CompiledScene): StoredCompiledScene {
+  return {
+    scene: c.scene,
+    timeline: c.timeline,
+    files: [...c.files.entries()].map(([path, file]) => ({
+      path,
+      type: file.type,
+      bytes: file.bytes.slice(),
+    })),
+    stats: c.stats,
+    width: c.width,
+    height: c.height,
+    dependencies: c.dependencies.map((dep) => ({ ...dep })),
+  };
+}
+
+function reviveCompiled(stored: StoredCompiledScene): CompiledScene {
+  const files = new Map<string, { type: string; bytes: Uint8Array }>();
+  for (const file of stored.files) files.set(file.path, { type: file.type, bytes: file.bytes });
+  return {
+    scene: stored.scene,
+    timeline: stored.timeline,
+    files,
+    stats: stored.stats,
+    width: stored.width,
+    height: stored.height,
+    dependencies: stored.dependencies ?? [],
+  };
+}
+
+function removeScene(scene: string) {
+  unregisterPackedScene(scene);
+  clearTimelineCache();
+  compiledScenes.delete(scene);
+  cardMeta.delete(scene);
+  cardEls.get(scene)?.remove();
+  cardEls.delete(scene);
+  layoutTree();
 }
 
 // --- helpers ---
@@ -340,6 +451,14 @@ function el(tag: string, cls: string): HTMLElement {
 function toast(msg: string) {
   const t = $("#toast"); t.textContent = msg; t.classList.add("on");
   setTimeout(() => t.classList.remove("on"), 2200);
+}
+function applyTheme(theme: string) {
+  const next = theme === "light" ? "light" : "dark";
+  document.body.dataset.theme = next;
+  themeToggle.setAttribute("aria-pressed", String(next === "light"));
+  themeToggle.setAttribute("aria-label", `Switch to ${next === "light" ? "dark" : "light"} theme`);
+  themeToggle.title = `Switch to ${next === "light" ? "dark" : "light"} theme`;
+  localStorage.setItem(THEME_KEY, next);
 }
 function escapeHtml(s: string) {
   return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
@@ -366,7 +485,10 @@ async function ensureDependencyCompiled(dep: { swf: string }): Promise<CompiledS
   try {
     const r = await fetch(`${import.meta.env.BASE_URL}${dep.swf}`);
     if (!r.ok) throw new Error("not found");
-    return await compile(new Uint8Array(await r.arrayBuffer()), dep.swf);
+    const bytes = new Uint8Array(await r.arrayBuffer());
+    const compiled = await compile(bytes, dep.swf);
+    await persistCompiled(dep.swf, bytes, compiled);
+    return compiled;
   } catch {
     return null;
   }

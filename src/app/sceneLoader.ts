@@ -21,7 +21,7 @@ import { clearButtonVisualState } from "./buttonOverlays";
 import { stopAwaitingLoop } from "./spriteLoops";
 import { stopCurrentVoiceover } from "./audio";
 import { scenes, type TourScene } from "../data/scenes";
-import { assetUrl, cacheKeyForSource, loadTimelineFromSource } from "../data/packedAssets";
+import { assetUrl, cacheKeyForSource, loadTimelineFromSource } from "../data/packedAssets.ts";
 import type { AssetTimeline, SceneEntryTarget, TimelineAsset } from "./frameModeTypes";
 
 export async function loadScene(scene: TourScene, entryTarget?: SceneEntryTarget, preserveExternalLevels = false) {

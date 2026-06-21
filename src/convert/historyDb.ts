@@ -5,14 +5,32 @@
 import Dexie, { type Table } from "dexie";
 import type { CompileStats } from "./compileScene.ts";
 
+export interface StoredCompiledFile {
+  path: string;
+  type: string;
+  bytes: Uint8Array;
+}
+
+export interface StoredCompiledScene {
+  scene: string;
+  timeline: any;
+  files: StoredCompiledFile[];
+  stats: CompileStats;
+  width: number;
+  height: number;
+  dependencies: { swf: string; level?: number }[];
+}
+
 export interface ConvertRecord {
   id?: number;
+  scene?: string;
   name: string;
   swf: Blob;
   stats: CompileStats;
   width: number;
   height: number;
   thumb?: string; // data URL of the first rendered frame
+  compiled?: StoredCompiledScene;
   createdAt: number;
 }
 
@@ -21,13 +39,25 @@ class ConvertDB extends Dexie {
   constructor() {
     super("mmtour-converts");
     this.version(1).stores({ converts: "++id, name, createdAt" });
+    this.version(2)
+      .stores({ converts: "++id, scene, name, createdAt" })
+      .upgrade((tx) =>
+        tx.table("converts").toCollection().modify((rec: ConvertRecord) => {
+          rec.scene ??= sceneKey(rec.name);
+        }),
+      );
   }
 }
 
 const db = new ConvertDB();
 
 export async function saveConvert(rec: Omit<ConvertRecord, "id">): Promise<number> {
-  return db.converts.add(rec as ConvertRecord);
+  const row: ConvertRecord = { ...rec, scene: rec.scene ?? sceneKey(rec.name) };
+  return db.transaction("rw", db.converts, async () => {
+    const existing = await db.converts.where("scene").equals(row.scene!).primaryKeys();
+    if (existing.length) await db.converts.bulkDelete(existing as number[]);
+    return db.converts.add(row);
+  });
 }
 
 export async function listConverts(): Promise<ConvertRecord[]> {
@@ -48,4 +78,8 @@ export async function setThumb(id: number, thumb: string): Promise<void> {
 
 export async function clearHistory(): Promise<void> {
   await db.converts.clear();
+}
+
+function sceneKey(name: string): string {
+  return name.replace(/\.swf$/i, "").replace(/[^\w.-]+/g, "-");
 }

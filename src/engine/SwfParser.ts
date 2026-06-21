@@ -3,7 +3,7 @@
  * structured data ready for GSAP timeline construction.
  */
 
-import { getAssetsBaseUrl } from "../data/packedAssets";
+import { getAssetsBaseUrl } from "../data/packedAssets.ts";
 
 // ===== Output Types =====
 

@@ -295,6 +295,7 @@ export class Player {
       if (!name) continue;
       const entry = this.functions.get(name) ?? newDef();
       if (def.parameters?.length) entry.parameters = def.parameters;
+      if (def.actions?.length) entry.actions.push(...def.actions);
       if (def.body?.length) entry.body.push(...def.body);
       this.functions.set(name, entry);
     }
@@ -312,6 +313,14 @@ export class Player {
     // guard, so it becomes a branch-gated action; callClipFunction runs it against the clip's scope.
     for (const def of Object.values(control?.definedFunctions ?? {}) as DefinedFunction[]) {
       if (def.scope !== "sprite" || typeof def.spriteId !== "number" || !def.functionName) continue;
+      if (def.actions?.length) {
+        let fns = this.spriteFunctions.get(def.spriteId);
+        if (!fns) this.spriteFunctions.set(def.spriteId, (fns = new Map()));
+        const entry = fns.get(def.functionName) ?? newDef();
+        entry.actions.push(...def.actions);
+        fns.set(def.functionName, entry);
+        continue;
+      }
       const usable = (def.body ?? []).filter((s) =>
         (s.kind === "call" && Boolean(s.functionName?.startsWith("gotoAnd")) && (!s.target || s.target === "self" || s.target === "this"))
         || (s.kind === "assign" && isLocalVar(s.target)));
@@ -585,10 +594,10 @@ export class Player {
   private runFunctionAction(action: ControlAction) {
     switch (action.command) {
       case "stop":
-        this.root.playing = false;
+        if (isSelfTimelineTarget(action.target)) this.root.playing = false;
         break;
       case "play":
-        this.root.playing = true;
+        if (isSelfTimelineTarget(action.target)) this.root.playing = true;
         break;
       case "gotoAndPlay":
       case "gotoAndStop": {
@@ -706,10 +715,10 @@ export class Player {
   private runClipAction(clip: ClipInstance, action: ControlAction) {
     switch (action.command) {
       case "stop":
-        clip.playing = false;
+        if (isSelfTimelineTarget(action.target)) clip.playing = false;
         break;
       case "play":
-        clip.playing = true;
+        if (isSelfTimelineTarget(action.target)) clip.playing = true;
         break;
       case "gotoAndPlay":
       case "gotoAndStop": {
@@ -848,10 +857,10 @@ export class Player {
       const action = actions[idx];
       switch (action.command) {
         case "stop":
-          clip.playing = false;
+          if (isSelfTimelineTarget(action.target)) clip.playing = false;
           break;
         case "play":
-          clip.playing = true;
+          if (isSelfTimelineTarget(action.target)) clip.playing = true;
           break;
         case "gotoAndPlay":
         case "gotoAndStop": {
@@ -1235,4 +1244,8 @@ export class Player {
     }
     if (music) this.options.onSound(music);
   }
+}
+
+function isSelfTimelineTarget(target: string | undefined): boolean {
+  return !target || target === "self" || target === "this" || target === "_root" || target === "_level0" || target === "root";
 }
