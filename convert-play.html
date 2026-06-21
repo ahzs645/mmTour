@@ -13,12 +13,13 @@
       body { margin: 0; font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
         background: radial-gradient(1200px 600px at 75% -10%, #16203a 0%, var(--bg) 55%); color: var(--ink); min-height: 100vh; }
       a { color: var(--accent); }
-      .wrap { max-width: 1200px; margin: 0 auto; padding: 28px; }
+      .wrap { width: 100%; max-width: 1200px; margin: 0 auto; padding: 28px; }
       header h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: -0.01em; }
       header h1 .x { color: var(--accent); }
       header p { margin: 0; color: var(--muted); }
       .layout { display: grid; grid-template-columns: 1fr 360px; gap: 22px; margin-top: 22px; align-items: start; }
       @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+      main, aside { min-width: 0; }
       #drop { border: 1.5px dashed var(--line); border-radius: 14px; background: linear-gradient(180deg, var(--panel) 0%, #10141f 100%);
         padding: 26px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; }
       #drop.drag { border-color: var(--accent); background: var(--panel-2); }
@@ -28,18 +29,21 @@
       .samples button, .ghost { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 999px;
         padding: 4px 11px; margin: 0 4px 6px 0; cursor: pointer; font-size: 12px; }
       .samples button:hover, .ghost:hover { border-color: var(--accent); color: var(--accent); }
-      #player-wrap { margin-top: 18px; background: #000; border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+      #player-wrap { margin-top: 18px; max-width: 100%; background: #000; border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
         display: none; position: relative; }
       #player-wrap.on { display: block; }
       #player { position: relative; margin: 0 auto; }
-      .player-bar { display: flex; gap: 10px; align-items: center; padding: 8px 12px; background: var(--panel); border-top: 1px solid var(--line); }
+      .player-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 8px 12px; background: var(--panel); border-top: 1px solid var(--line); }
       .player-bar button { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 5px 12px; cursor: pointer; }
-      .player-bar .title { color: var(--accent-2); font-size: 13px; margin-right: auto; }
+      .player-bar .title { color: var(--accent-2); font-size: 13px; margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .cards { margin-top: 18px; display: flex; flex-direction: column; gap: 10px; }
-      .node { display: flex; flex-direction: column; gap: 10px; }
-      .children { margin-left: 18px; padding-left: 16px; border-left: 2px solid var(--line); display: flex; flex-direction: column; gap: 10px; position: relative; }
+      .node { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+      .children { margin-left: 18px; padding-left: 16px; max-width: 100%; min-width: 0; border-left: 2px solid var(--line); display: flex; flex-direction: column; gap: 10px; position: relative; }
       .children::before { content: "loads ↳"; position: absolute; left: -2px; top: -16px; font-size: 10px; color: var(--muted); }
-      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; max-width: 460px; }
+      .ref-node { width: min(460px, 100%); color: var(--muted); border: 1px dashed var(--line); border-radius: 9px; padding: 6px 10px; font-size: 12px; }
+      .ref-node span { color: var(--accent); }
+      .ref-node em { margin-left: 6px; font-style: normal; }
+      .card { width: min(460px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
       .card h3 { margin: 0 0 8px; font-size: 14px; display: flex; align-items: center; gap: 8px; }
       .card h3 .dim { color: var(--muted); font-weight: 400; font-size: 12px; }
       .statgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 8px 0; }
@@ -74,6 +78,12 @@
         color: var(--ink); padding: 9px 16px; border-radius: 10px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
       #toast.on { opacity: 1; }
       code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; color: var(--accent-2); }
+      @media (max-width: 520px) {
+        .wrap { padding: 20px; }
+        #drop { padding: 20px; }
+        .children { margin-left: 10px; padding-left: 10px; }
+        .player-bar button { flex: 1 1 auto; }
+      }
     </style>
   </head>
   <body>

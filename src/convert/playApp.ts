@@ -56,6 +56,7 @@ renderHistory();
 // --- convert + cards (laid out as a tree of linked scenes) ---
 const cardEls = new Map<string, HTMLElement>();
 const cardMeta = new Map<string, { name: string; compiled: CompiledScene }>();
+const dependencyLoads = new Map<string, Promise<void>>();
 
 /** Get (or create) the card element for a scene; a fresh one shows "converting…". */
 function ensureCard(key: string, name: string): HTMLElement {
@@ -79,7 +80,7 @@ async function convertFile(name: string, bytes: Uint8Array) {
       stats: compiled.stats, width: compiled.width, height: compiled.height, createdAt: Date.now(),
     });
     renderHistory();
-    await resolveDependencies(compiled); // recursively compile the whole linked tour
+    await ensureDependencies(compiled); // recursively compile the whole linked tour
   } catch (e) {
     const card = cardEls.get(key);
     if (card) { card.classList.remove("busy"); card.innerHTML = `<h3>${escapeHtml(name)}</h3><div class="meta" style="color:#ff8a8a">convert failed: ${escapeHtml((e as Error).message)}</div>`; }
@@ -132,11 +133,14 @@ function layoutTree() {
     placed.add(key);
     const node = el("div", "node");
     node.appendChild(cardEls.get(key)!);
-    const childKeys = (cardMeta.get(key)?.compiled.dependencies ?? [])
-      .map((d) => canonical(d.swf)).filter((ck) => cardEls.has(ck) && !placed.has(ck));
+    const childKeys = unique((cardMeta.get(key)?.compiled.dependencies ?? [])
+      .map((d) => canonical(d.swf)).filter((ck) => cardEls.has(ck)));
     if (childKeys.length) {
       const kids = el("div", "children");
-      for (const ck of childKeys) renderNode(ck, kids);
+      for (const ck of childKeys) {
+        if (placed.has(ck)) renderReference(ck, kids);
+        else renderNode(ck, kids);
+      }
       if (kids.children.length) node.appendChild(kids);
     }
     container.appendChild(node);
@@ -145,12 +149,30 @@ function layoutTree() {
   for (const k of cardEls.keys()) renderNode(k, cards); // leftovers (pure cycles)
 }
 
-type DepStatus = "pending" | "compiling" | "done" | "missing";
+function renderReference(key: string, container: HTMLElement) {
+  const ref = el("div", "ref-node");
+  ref.innerHTML = `<span>↳ ${escapeHtml(sceneLabel(key))}</span><em>shown above</em>`;
+  container.appendChild(ref);
+}
+
+function sceneLabel(key: string): string {
+  return cardMeta.get(key)?.name ?? `${key}.swf`;
+}
+
+type DepStatus = "pending" | "compiling" | "linking" | "done" | "missing";
 
 /** Recursively compile the whole linked tour. A shell (A-tour) loadMovie's other
  *  SWFs into levels, and those load yet others (nav→segments, segment1→2→3→5…) —
  *  so loading A-tour readies EVERY reachable scene, building out the tree. Each
  *  scene compiles once (dedup); its own card shows live per-link progress. */
+function ensureDependencies(c: CompiledScene): Promise<void> {
+  const running = dependencyLoads.get(c.scene);
+  if (running) return running;
+  const load = resolveDependencies(c, new Set([c.scene])).finally(() => dependencyLoads.delete(c.scene));
+  dependencyLoads.set(c.scene, load);
+  return load;
+}
+
 async function resolveDependencies(c: CompiledScene, visited = new Set<string>()): Promise<void> {
   if (!c.dependencies.length) return;
   const card = cardEls.get(c.scene);
@@ -159,9 +181,7 @@ async function resolveDependencies(c: CompiledScene, visited = new Set<string>()
 
   // Compile the scenes loaded AT STARTUP (intro/nav for A-tour) first, so the
   // shell is playable quickly; heavier on-click segments follow.
-  const startup = new Set(
-    (c.timeline?.control?.frameActions ?? []).flatMap((f: any) => f.actions ?? []).filter((a: any) => a.swf).map((a: any) => String(a.swf).toLowerCase()),
-  );
+  const startup = new Set(startupSwfs(c).map((swf) => swf.toLowerCase()));
   const ordered = [...c.dependencies].sort((a, b) => (startup.has(b.swf.toLowerCase()) ? 1 : 0) - (startup.has(a.swf.toLowerCase()) ? 1 : 0));
 
   for (const dep of ordered) {
@@ -175,14 +195,18 @@ async function resolveDependencies(c: CompiledScene, visited = new Set<string>()
         await compile(new Uint8Array(await r.arrayBuffer()), dep.swf);
       } catch { state.set(dep.swf, "missing"); if (card) renderDeps(card, c, state); continue; }
     }
-    state.set(dep.swf, "done");
-    if (card) renderDeps(card, c, state);
     // recurse into the dep's own links (cycle-safe via `visited`)
     if (!visited.has(dk)) {
       visited.add(dk);
       const depScene = compiledScenes.get(dk);
-      if (depScene) await resolveDependencies(depScene, visited);
+      if (depScene?.dependencies.length) {
+        state.set(dep.swf, "linking");
+        if (card) renderDeps(card, c, state);
+        await resolveDependencies(depScene, visited);
+      }
     }
+    state.set(dep.swf, "done");
+    if (card) renderDeps(card, c, state);
   }
 }
 
@@ -192,13 +216,18 @@ function renderDeps(card: HTMLElement, c: CompiledScene, state: Map<string, DepS
   if (!el) return;
   const total = c.dependencies.length;
   const finished = c.dependencies.filter((d) => { const s = state.get(d.swf); return s === "done" || s === "missing"; }).length;
-  const compiling = c.dependencies.find((d) => state.get(d.swf) === "compiling");
+  const active = c.dependencies.find((d) => {
+    const s = state.get(d.swf);
+    return s === "compiling" || s === "linking";
+  });
+  const activeState = active ? state.get(active.swf) : undefined;
+  const activeLabel = activeState === "linking" ? `resolving ${escapeHtml(active!.swf)} links…` : active ? `compiling ${escapeHtml(active.swf)}…` : "";
   const head = finished < total
-    ? `⟳ linking ${finished}/${total}${compiling ? ` · compiling ${escapeHtml(compiling.swf)}…` : "…"} `
+    ? `⟳ linking ${finished}/${total}${activeLabel ? ` · ${activeLabel}` : "…"} `
     : `links ${total} SWF${total > 1 ? "s" : ""}: `;
   const pills = c.dependencies.map((d) => {
     const s = state.get(d.swf) ?? "pending";
-    const cls = s === "done" ? "ok" : s === "missing" ? "miss" : s === "compiling" ? "go" : "pend";
+    const cls = s === "done" ? "ok" : s === "missing" ? "miss" : s === "compiling" || s === "linking" ? "go" : "pend";
     return `<span class="pill ${cls}">${escapeHtml(d.swf)}</span>`;
   }).join(" ");
   const tail = finished < total ? ""
@@ -229,12 +258,14 @@ const stat = (n: number, label: string) => `<div><b>${n}</b><span>${label}</span
 // --- player ---
 async function play(scene: string, c: CompiledScene, name: string) {
   closePlayer();
+  const dependencyLoad = ensureDependencies(c);
   registerPackedScene(scene, c.files, c.timeline); // ensure registered (after a prior close)
   playerWrap.classList.add("on");
   playerTitle.textContent = name;
   // Fit the stage to a target width and size the WRAP to the scaled stage, so the
   // wrap's backdrop never shows as a black band beside a 640px stage.
-  const targetW = Math.max(560, Math.min(820, (playerWrap.parentElement?.clientWidth ?? 760)));
+  const availableW = Math.max(1, playerWrap.parentElement?.clientWidth ?? c.width);
+  const targetW = Math.min(820, availableW);
   const scale = targetW / c.width;
   const stageW = Math.round(c.width * scale);
   const stageH = Math.round(c.height * scale);
@@ -249,10 +280,10 @@ async function play(scene: string, c: CompiledScene, name: string) {
 
   // A shell loads other SWFs into levels at startup — wait for those to compile +
   // register first, else the levels load nothing and the stage looks empty.
-  const startupSwfs: string[] = (c.timeline.control?.frameActions ?? [])
-    .flatMap((f: any) => f.actions ?? []).filter((a: any) => a.swf).map((a: any) => canonical(a.swf));
-  const waits = startupSwfs.map((s) => (compiledScenes.has(s) ? null : inFlight.get(s))).filter(Boolean) as Promise<unknown>[];
-  if (waits.length) { playerTitle.textContent = `${name} — preparing ${waits.length} level${waits.length > 1 ? "s" : ""}…`; await Promise.all(waits); playerTitle.textContent = name; }
+  const startupDeps = startupDependencies(c).filter((dep) => !compiledScenes.has(canonical(dep.swf)));
+  const waits = startupDeps.map((dep) => ensureDependencyCompiled(dep));
+  if (waits.length) { playerTitle.textContent = `${name} — preparing ${waits.length} startup level${waits.length > 1 ? "s" : ""}…`; await Promise.all(waits); playerTitle.textContent = name; }
+  void dependencyLoad;
 
   try {
     activePlayer = await createTourPlayer(playerEl, { assetSource: "pack", scene, autoplay: true });
@@ -266,6 +297,8 @@ function closePlayer() {
   activePlayer = null;
   playerEl.innerHTML = "";
   playerEl.style.transform = "";
+  playerWrap.style.width = "";
+  playerWrap.style.height = "";
   playerWrap.classList.remove("on");
 }
 
@@ -291,6 +324,7 @@ function historyRow(rec: ConvertRecord): HTMLElement {
     if (!full) return;
     const bytes = new Uint8Array(await full.swf.arrayBuffer());
     const compiled = await compile(bytes, full.name);
+    void ensureDependencies(compiled);
     await play(compiled.scene, compiled, full.name);
   };
   (row.querySelector(".dl") as HTMLButtonElement).onclick = async () => { await deleteConvert(rec.id!); renderHistory(); };
@@ -309,6 +343,33 @@ function toast(msg: string) {
 }
 function escapeHtml(s: string) {
   return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
+}
+function unique<T>(items: T[]): T[] {
+  return [...new Set(items)];
+}
+function startupSwfs(c: CompiledScene): string[] {
+  return unique((c.timeline.control?.frameActions ?? [])
+    .flatMap((f: any) => f.actions ?? [])
+    .filter((a: any) => a.swf && !a.functionName)
+    .map((a: any) => String(a.swf)));
+}
+function startupDependencies(c: CompiledScene) {
+  const startupKeys = new Set(startupSwfs(c).map((swf) => canonical(swf)));
+  return c.dependencies.filter((dep) => startupKeys.has(canonical(dep.swf)));
+}
+async function ensureDependencyCompiled(dep: { swf: string }): Promise<CompiledScene | null> {
+  const key = canonical(dep.swf);
+  const done = compiledScenes.get(key);
+  if (done) return done;
+  const running = inFlight.get(key);
+  if (running) return running;
+  try {
+    const r = await fetch(`${import.meta.env.BASE_URL}${dep.swf}`);
+    if (!r.ok) throw new Error("not found");
+    return await compile(new Uint8Array(await r.arrayBuffer()), dep.swf);
+  } catch {
+    return null;
+  }
 }
 function transparentPixel() {
   return "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
