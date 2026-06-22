@@ -486,11 +486,29 @@ aside h2 {
 }
 
 .hrow .info b {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 13px;
+}
+
+.hrow .info b span {
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.hrow .info b em {
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1;
+  padding: 2px 4px;
+  text-transform: uppercase;
 }
 
 .hrow .info span {

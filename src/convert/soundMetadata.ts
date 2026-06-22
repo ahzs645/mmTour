@@ -1,4 +1,5 @@
 import type { ButtonActionRecord, ControlAction, DefinedFunction, FunctionCall } from "../data/timelineTypes.ts";
+import { collectExplicitSoundTimings, type SoundTimingTable } from "../data/soundTimings.ts";
 
 type SoundEntry = {
   name?: string;
@@ -16,9 +17,12 @@ export function enrichSoundMetadata(control: {
   spriteActions?: Array<{ actions?: ControlAction[] }>;
   definedFunctions?: Record<string, DefinedFunction>;
   buttonActions?: Record<string, ButtonActionRecord>;
+  soundTimings?: SoundTimingTable;
 }, soundLibrary: SoundLibrary) {
+  const explicitTimings = collectExplicitSoundTimings(control);
+  if (Object.keys(explicitTimings).length) control.soundTimings = explicitTimings;
   const soundTargets = collectSoundTargets(control);
-  const segmentTimings = collectSegmentTimings(control, soundLibrary);
+  const segmentTimings = collectSegmentTimings(control, soundLibrary, explicitTimings);
   for (const record of control.frameActions ?? []) enrichActions(record.actions, soundLibrary, soundTargets, segmentTimings);
   for (const record of control.spriteActions ?? []) enrichActions(record.actions, soundLibrary, soundTargets, segmentTimings);
   for (const definition of Object.values(control.definedFunctions ?? {})) enrichActions(definition.actions, soundLibrary, soundTargets, segmentTimings);
@@ -71,7 +75,7 @@ function collectSegmentTimings(control: {
   spriteActions?: Array<{ actions?: ControlAction[] }>;
   definedFunctions?: Record<string, DefinedFunction>;
   buttonActions?: Record<string, ButtonActionRecord>;
-}, soundLibrary: SoundLibrary): Map<string, SegmentTiming> {
+}, soundLibrary: SoundLibrary, explicitTimings: SoundTimingTable): Map<string, SegmentTiming> {
   const groups = new Map<string, Set<string>>();
   const add = (segment: string | undefined) => {
     const normalized = segment?.trim();
@@ -111,8 +115,9 @@ function collectSegmentTimings(control: {
   const timings = new Map<string, SegmentTiming>();
   for (const [base, segments] of groups) {
     const resolved = resolveSound(soundLibrary, base);
-    const durationMs = resolved?.durationMs && segments.size > 0 ? resolved.durationMs / segments.size : undefined;
+    const fallbackDurationMs = resolved?.durationMs && segments.size > 0 ? resolved.durationMs / segments.size : undefined;
     for (const segment of segments) {
+      const durationMs = explicitTimings[segment]?.durationMs ?? fallbackDurationMs;
       timings.set(segment, { baseSound: resolved?.name ?? base, soundSrc: resolved?.src, durationMs });
     }
   }
@@ -128,7 +133,9 @@ function enrichAction(action: ControlAction | undefined, soundLibrary: SoundLibr
   if (action.command === "playVO" || action.command === "attachSound") {
     const resolved = resolveSound(soundLibrary, action.sound);
     if (resolved?.src && !action.soundSrc) action.soundSrc = resolved.src;
-    if (resolved?.durationMs !== undefined && action.soundDurationMs === undefined) action.soundDurationMs = resolved.durationMs;
+    const segmentDurationMs = action.command === "playVO" && action.segment ? segmentTimings.get(action.segment)?.durationMs : undefined;
+    const durationMs = segmentDurationMs ?? resolved?.durationMs;
+    if (durationMs !== undefined && action.soundDurationMs === undefined) action.soundDurationMs = durationMs;
   }
   if (action.command === "markSndSegment") enrichSegmentAction(action, segmentTimings);
   if (!action.soundAction && action.command === "stop" && isSoundTarget(action.target, soundTargets)) {
@@ -159,16 +166,18 @@ function firstSoundAction(calls: FunctionCall[] | undefined, soundLibrary: Sound
     }
     if (call.functionName === "playVO") {
       const sound = stringLiteral(args[0]);
+      const segment = stringLiteral(args[2]);
       const resolved = resolveSound(soundLibrary, sound);
+      const timing = segment ? segmentTimings.get(segment) : undefined;
       return {
         command: "playVO",
         target: call.target,
         sound,
         ramp: args[1]?.trim(),
-        segment: stringLiteral(args[2]),
+        segment,
         soundRole: "vo",
-        soundSrc: resolved?.src,
-        soundDurationMs: resolved?.durationMs,
+        soundSrc: resolved?.src ?? timing?.soundSrc,
+        soundDurationMs: timing?.durationMs ?? resolved?.durationMs,
         resolvedSound: resolved?.name && resolved.name !== sound ? resolved.name : undefined,
       };
     }

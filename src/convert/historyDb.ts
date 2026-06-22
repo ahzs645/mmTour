@@ -1,11 +1,11 @@
-// IndexedDB-backed history of converts (via Dexie). Stores the original SWF
-// bytes (so a scene can be re-compiled and replayed) plus the extraction stats
-// and a thumbnail, keyed by an auto id.
+// IndexedDB-backed history of converts (via Dexie). Stores the original source
+// bytes (SWF converts, or imported mmTour packs) plus the extraction stats and
+// a thumbnail, keyed by an auto id.
 
 import Dexie, { type Table } from "dexie";
 import type { CompileStats } from "./compileScene.ts";
 
-export const COMPILED_CACHE_VERSION = 4;
+export const COMPILED_CACHE_VERSION = 5;
 
 export interface StoredCompiledFile {
   path: string;
@@ -28,6 +28,7 @@ export interface ConvertRecord {
   id?: number;
   scene?: string;
   name: string;
+  sourceType?: "swf" | "pack";
   swf: Blob;
   stats: CompileStats;
   width: number;
@@ -65,6 +66,10 @@ export async function listConverts(): Promise<ConvertRecord[]> {
 
 export async function getConvert(id: number): Promise<ConvertRecord | undefined> {
   return db.converts.get(id);
+}
+
+export async function updateConvert(id: number, changes: Partial<Omit<ConvertRecord, "id">>): Promise<void> {
+  await db.converts.update(id, changes);
 }
 
 export async function deleteConvert(id: number): Promise<void> {

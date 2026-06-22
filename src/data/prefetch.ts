@@ -14,6 +14,7 @@ export function collectReferencedSwfs(timeline: AssetTimeline): string[] {
   const add = (action?: ControlAction) => {
     if (!action) return;
     if (action.swf && SWF.test(action.swf)) swfs.add(action.swf);
+    if (action.exitNavigation?.swf && SWF.test(action.exitNavigation.swf)) swfs.add(action.exitNavigation.swf);
     for (const load of action.loads ?? []) if (SWF.test(load.swf)) swfs.add(load.swf);
   };
   for (const record of Object.values(timeline.control?.buttonActions ?? {})) {

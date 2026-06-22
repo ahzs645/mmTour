@@ -1,4 +1,5 @@
 import { assetUrl } from "../data/TimelineLoader";
+import type { SoundTimingTable } from "../data/soundTimings";
 import type { ControlAction } from "../data/timelineTypes";
 
 /**
@@ -14,6 +15,7 @@ export class SoundController {
   private voiceStartedAt = 0;
   private voiceDurationMs = 0;
   private pendingVoiceSegmentDurationMs = 0;
+  private readonly timings = new Map<string, number>();
   private muted = false;
   /** Used when a VO's metadata hasn't loaded yet (or audio is autoplay-blocked). */
   private static readonly FALLBACK_VO_MS = 5000;
@@ -26,13 +28,13 @@ export class SoundController {
       case "attachSound":
         if (!action.soundSrc) break;
         if (action.soundRole === "music") this.playMusic(action.soundSrc);
-        else this.playVoice(action.soundSrc);
+        else this.playVoice(action.soundSrc, this.durationFor(action));
         break;
       case "playVO":
-        if (action.soundSrc) this.playVoice(action.soundSrc, action.soundDurationMs);
+        if (action.soundSrc) this.playVoice(action.soundSrc, this.durationFor(action));
         break;
       case "markSndSegment":
-        this.markVoiceSegment(action.soundDurationMs);
+        this.markVoiceSegment(this.durationFor(action));
         break;
       case "stopSound":
         this.pendingVoiceSegmentDurationMs = 0;
@@ -41,6 +43,18 @@ export class SoundController {
       default:
         break;
     }
+  }
+
+  registerTimings(timings: SoundTimingTable | undefined) {
+    for (const [name, timing] of Object.entries(timings ?? {})) {
+      const durationMs = Number(timing.durationMs);
+      if (name && Number.isFinite(durationMs) && durationMs > 0) this.timings.set(name, durationMs);
+    }
+  }
+
+  private durationFor(action: ControlAction): number | undefined {
+    const key = action.segment ?? action.sound;
+    return (key ? this.timings.get(key) : undefined) ?? action.soundDurationMs;
   }
 
   private playMusic(src: string) {
@@ -119,5 +133,6 @@ export class SoundController {
   destroy() {
     this.stopMusic();
     this.stopVoice();
+    this.timings.clear();
   }
 }

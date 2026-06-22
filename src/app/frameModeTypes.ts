@@ -68,6 +68,7 @@ export type ControlAction = {
     swf: string;
     exitLabel?: string;
     exitFrame: number;
+    level?: number;
   };
   functionCalls?: Array<{
     target: string;

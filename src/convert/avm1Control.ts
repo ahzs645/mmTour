@@ -136,7 +136,9 @@ export function extractControl(movie: any): ExtractedControl {
 function indexDefinedFunctions(defs: DefinedFunction[]): Record<string, DefinedFunction> {
   const out: Record<string, DefinedFunction> = {};
   for (const def of defs) {
-    const key = `${def.scope ?? "root"}:${def.spriteId ?? "root"}:${def.functionName}`;
+    const baseKey = `${def.scope ?? "root"}:${def.spriteId ?? "root"}:${def.functionName}`;
+    let key = baseKey;
+    for (let duplicate = 2; out[key]; duplicate += 1) key = `${baseKey}#${duplicate}`;
     out[key] = def;
   }
   return out;

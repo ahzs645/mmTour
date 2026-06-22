@@ -6,6 +6,7 @@ import type {
   TimelineAsset,
   TimelineFrame,
 } from "../data/timelineTypes";
+import { collectExplicitSoundTimings } from "../data/soundTimings";
 import type { DomRenderer } from "../render/DomRenderer";
 import { isLocalVar, localizeCondition, splitTopLevelArgs } from "./avm1";
 import { buttonNode, findChildByName, isClipAsset, spriteNode, visualSrc, type ButtonVisualState } from "./renderNodes";
@@ -760,6 +761,11 @@ export class Player {
   }
 
   private buildSoundSegmentDurations() {
+    const explicitTimings = collectExplicitSoundTimings(this.timeline.control);
+    for (const [segment, timing] of Object.entries(explicitTimings)) {
+      this.soundSegmentDurations.set(segment, { baseSound: segment, durationMs: timing.durationMs });
+    }
+
     const groups = new Map<string, Set<string>>();
     const add = (segment: string | undefined) => {
       const normalized = segment?.trim();
@@ -797,8 +803,9 @@ export class Player {
 
     for (const [base, segments] of groups) {
       const sound = this.resolveSound(base);
-      const durationMs = sound?.durationMs && segments.size > 0 ? sound.durationMs / segments.size : undefined;
+      const fallbackDurationMs = sound?.durationMs && segments.size > 0 ? sound.durationMs / segments.size : undefined;
       for (const segment of segments) {
+        const durationMs = explicitTimings[segment]?.durationMs ?? fallbackDurationMs;
         this.soundSegmentDurations.set(segment, { baseSound: sound?.name ?? base, soundSrc: sound?.src, durationMs });
       }
     }
@@ -1627,7 +1634,10 @@ export class Player {
     // A field bound to a loadVariables() variable shows that value (these fields
     // are baked empty in their sprite frames).
     const varName = merged.normalizedVariableName;
-    if (varName && this.textVars.has(varName)) return { ...merged, text: this.textVars.get(varName) };
+    if (varName && this.textVars.has(varName)) {
+      const text = this.textVars.get(varName) ?? "";
+      return { ...merged, text, align: loadedTextAlign(text, merged.align, Boolean(merged.html)) };
+    }
     return merged;
   }
 
@@ -1651,6 +1661,14 @@ function isSelfTimelineTarget(target: string | undefined): boolean {
 
 function isEmptyNonRootLevelAssignment(target: string, value: VarValue): boolean {
   return value === "" && NON_ROOT_LEVEL_TARGET.test(target);
+}
+
+function loadedTextAlign(text: string, fallback: string | undefined, html: boolean): string | undefined {
+  if (!html) return fallback;
+  const declared = text.match(/<p\b[^>]*\balign\s*=\s*["']?(left|center|right|justify)\b/i)
+    ?? text.match(/\btext-align\s*:\s*(left|center|right|justify)\b/i);
+  if (declared?.[1]) return declared[1].toLowerCase();
+  return "left";
 }
 
 function isPrefixInstanceName(candidate: string, target: string): boolean {

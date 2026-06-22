@@ -5,7 +5,7 @@
 // scene-relative paths the player's pack source expects.
 
 import { parseSwf, swf } from "swf-parser";
-import type { Matrix, Origin } from "../data/timelineTypes";
+import type { ControlAction, FrameActionRecord, Matrix, Origin } from "../data/timelineTypes";
 // @ts-ignore — pure-JS fs-free builders, reused verbatim from the Node pipeline
 import { ffdecModelFromMovie } from "../../scripts/lib/swfParserAdapter.mjs";
 // @ts-ignore
@@ -24,6 +24,7 @@ import { extractControl, detectDependencies, type ExtractedControl, type SwfDepe
 import { parseProgram } from "./avm1/parse.ts";
 import { runInit } from "./avm1/interp.ts";
 import { enrichSoundMetadata } from "./soundMetadata.ts";
+import { enrichControlWithTimelineData } from "./controlEnrichment.ts";
 
 export interface CompileStats {
   shapes: number;
@@ -254,17 +255,17 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
   const entry = discoverEntryFrame(labels);
   const firstStop = control.stopFrames.find((f: number) => f > entry);
   const loadFrame = frames.length > 1 ? Math.min(entry + 1, firstStop ?? frames.length - 1) : 0;
-  const startupActions = [
-    ...initLoads.map((l) => ({ command: "loadMovieNum", swf: l.swf, level: l.level, executionContext: "timeline" })),
+  const startupActions: ControlAction[] = [
+    ...initLoads.map((l): ControlAction => ({ command: "loadMovieNum", swf: l.swf, level: l.level, executionContext: "timeline" })),
     ...(initCalls.length
       ? [{
           command: "callFunctions",
           functionCalls: initCalls.map((c) => ({ target: c.target, functionName: c.name, arguments: c.args ?? "" })),
           executionContext: "timeline",
-        }]
+        } satisfies ControlAction]
       : []),
   ];
-  const deferredStartupActions = startupActions.length
+  const deferredStartupActions: FrameActionRecord[] = startupActions.length
     ? [{ frame: loadFrame, actions: startupActions }]
     : [];
   const extractedFrameActions = control.frameActions
@@ -278,12 +279,25 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
       ),
     }))
     .filter((record) => record.actions.length);
-  const frameActions = [...extractedFrameActions, ...deferredStartupActions];
+  const frameActions: FrameActionRecord[] = [...extractedFrameActions, ...deferredStartupActions];
 
   const fr = movie.header.frameSize;
   const width = Math.round((fr.xMax - fr.xMin) / 20);
   const height = Math.round((fr.yMax - fr.yMin) / 20);
   const fps = movie.header.frameRate?.epsilons ? movie.header.frameRate.epsilons / 256 : Number(movie.header.frameRate) || 15;
+
+  const timelineControl = enrichControlWithTimelineData({
+    stopFrames: control.stopFrames,
+    spriteStopFrames: control.spriteStopFrames,
+    spriteActions: control.spriteActions,
+    frameActions,
+    definedFunctions: control.definedFunctions,
+    buttonActions: control.buttonActions,
+    soundLibrary,
+    spriteLocalDefaults: inferSpriteLocalDefaults(control.spriteActions),
+    dynamicTexts: controlDynamicTexts,
+    globalDefaults,
+  }, assets, labels);
 
   const timeline = {
     scene,
@@ -296,18 +310,7 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
     duration: frames.length / fps,
     labels,
     entryFrame: discoverEntryFrame(labels),
-    control: {
-      stopFrames: control.stopFrames,
-      spriteStopFrames: control.spriteStopFrames,
-      spriteActions: control.spriteActions,
-      frameActions,
-      definedFunctions: control.definedFunctions,
-      buttonActions: control.buttonActions,
-      soundLibrary,
-      spriteLocalDefaults: inferSpriteLocalDefaults(control.spriteActions),
-      dynamicTexts: controlDynamicTexts,
-      globalDefaults,
-    },
+    control: timelineControl,
     frameSvgs: [],
     assets,
     frames,

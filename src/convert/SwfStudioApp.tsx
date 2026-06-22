@@ -18,6 +18,7 @@ import {
   getConvert,
   listConverts,
   saveConvert,
+  updateConvert,
   type ConvertRecord,
   type StoredCompiledScene,
 } from "./historyDb.ts";
@@ -158,18 +159,20 @@ export function SwfStudioApp() {
     return promise;
   }, [acceptCompiled]);
 
-  const persistCompiled = useCallback(async (name: string, bytes: Uint8Array, compiled: CompiledScene) => {
+  const persistCompiled = useCallback(async (name: string, bytes: Uint8Array, compiled: CompiledScene, options: { replaceId?: number } = {}) => {
+    const row = {
+      scene: compiled.scene,
+      name,
+      sourceType: "swf" as const,
+      swf: new Blob([bytes.slice().buffer], { type: "application/x-shockwave-flash" }),
+      stats: compiled.stats,
+      width: compiled.width,
+      height: compiled.height,
+      compiled: storeCompiled(compiled),
+    };
     try {
-      await saveConvert({
-        scene: compiled.scene,
-        name,
-        swf: new Blob([bytes.slice().buffer], { type: "application/x-shockwave-flash" }),
-        stats: compiled.stats,
-        width: compiled.width,
-        height: compiled.height,
-        compiled: storeCompiled(compiled),
-        createdAt: Date.now(),
-      });
+      if (options.replaceId) await updateConvert(options.replaceId, row);
+      else await saveConvert({ ...row, createdAt: Date.now() });
       await refreshHistory();
     } catch (error) {
       showToast(`Converted ${name}, but could not save it: ${(error as Error).message}`);
@@ -290,7 +293,7 @@ export function SwfStudioApp() {
     void dependencyLoad;
 
     try {
-      activePlayer.current = await createTourPlayer(stage, { assetSource: "pack", scene, autoplay: true });
+      activePlayer.current = await createTourPlayer(stage, { assetsBaseUrl: import.meta.env.BASE_URL, assetSource: "pack", scene, autoplay: true });
     } catch (error) {
       showToast(`Play failed: ${(error as Error).message}`);
     }
@@ -309,13 +312,15 @@ export function SwfStudioApp() {
       const imported = await importArchiveScenes(bytes);
       if (!imported.length) throw new Error("No scenes found");
       const createdAt = Date.now();
+      const source = new Blob([bytes.slice().buffer], { type: "application/octet-stream" });
       for (const [index, compiled] of imported.entries()) {
         const sceneName = compiled.timeline.source ?? `${compiled.scene}.swf`;
         acceptCompiled(sceneName, compiled);
         await saveConvert({
           scene: compiled.scene,
           name: sceneName,
-          swf: new Blob([], { type: "application/octet-stream" }),
+          sourceType: "pack",
+          swf: source,
           stats: compiled.stats,
           width: compiled.width,
           height: compiled.height,
@@ -376,7 +381,9 @@ export function SwfStudioApp() {
   }, [convertFile, showToast]);
 
   const playHistory = useCallback(async (record: ConvertRecord) => {
-    const full = record.id ? await getConvert(record.id) : undefined;
+    const recordId = record.id;
+    if (recordId === undefined) return;
+    const full = await getConvert(recordId);
     if (!full) return;
     let compiled = full.compiled && isCompiledCurrent(full.compiled)
       ? reviveCompiled(full.compiled)
@@ -385,8 +392,25 @@ export function SwfStudioApp() {
       acceptCompiled(full.name, compiled);
     } else if (full.swf.size) {
       const bytes = new Uint8Array(await full.swf.arrayBuffer());
-      compiled = await compile(bytes, full.name);
-      await persistCompiled(full.name, bytes, compiled);
+      if (full.sourceType === "pack" || !isSwfBytes(bytes)) {
+        const imported = await importArchiveScenes(bytes);
+        compiled = imported.find((scene) => scene.scene === (full.scene ?? canonical(full.name))) ?? imported[0];
+        if (!compiled) return;
+        for (const scene of imported) acceptCompiled(scene.timeline.source ?? `${scene.scene}.swf`, scene);
+        await updateConvert(recordId, {
+          scene: compiled.scene,
+          name: compiled.timeline.source ?? full.name,
+          sourceType: "pack",
+          stats: compiled.stats,
+          width: compiled.width,
+          height: compiled.height,
+          compiled: storeCompiled(compiled),
+        });
+        await refreshHistory();
+      } else {
+        compiled = await compile(bytes, full.name);
+        await persistCompiled(full.name, bytes, compiled, { replaceId: recordId });
+      }
     } else if (full.compiled) {
       compiled = reviveCompiled(full.compiled);
       acceptCompiled(full.name, compiled);
@@ -660,11 +684,12 @@ function HistoryRow({
   onDelete: () => void;
 }) {
   const s = record.stats;
+  const sourceType = record.sourceType === "pack" ? "pack" : "swf";
   return (
     <div className="hrow">
       <img src={record.thumb ?? transparentPixel()} alt="" />
       <div className="info">
-        <b>{record.name}</b>
+        <b><span>{record.name}</span><em>{sourceType}</em></b>
         <span>{record.width}x{record.height} - {s.shapes}sh {s.images}img {s.frames}fr - {new Date(record.createdAt).toLocaleString()}</span>
       </div>
       <div className="acts">

@@ -105,6 +105,15 @@ export type FunctionCall = {
   arguments: string;
 };
 
+export type ExitNavigation = {
+  variable: string;
+  value: string;
+  swf: string;
+  exitLabel?: string;
+  exitFrame: number;
+  level?: number;
+};
+
 /** One statement of a parsed AVM1 function body, guarded by its if/else chain. */
 export type BodyStatement =
   | { kind: "assign"; target: string; value?: string | number | boolean; rawValue: string; branchCondition?: string }
@@ -146,6 +155,10 @@ export type ControlAction = {
   /** Simple `flag = value;` assignments in a button handler (e.g. a section icon's `isActive = 1;`),
    *  applied to the owning clip's scope when the event fires. */
   assignments?: { target: string; value?: unknown; rawValue?: string }[];
+  /** Label/frame metadata for button targets that jump to a nested timeline section. */
+  nestedSection?: { label: string; frame: number };
+  /** Summary of a deferred button navigation path: set a variable, play an exit animation, then load a SWF. */
+  exitNavigation?: ExitNavigation;
   /** Name of the AVM1 function this action belongs to (when context is "function"). */
   functionName?: string;
   /** "timeline" actions run on frame entry; "function"/"branch" are conditional. */
@@ -225,10 +238,12 @@ export type TimelineControl = {
   spriteLocalDefaults?: Record<string, Record<string, unknown>>;
   frameActions?: FrameActionRecord[];
   spriteActions?: Array<{ spriteId: number; frame: number; source?: string; actions: ControlAction[] }>;
-  definedFunctions?: Record<string, unknown>;
+  definedFunctions?: Record<string, DefinedFunction>;
   soundLibrary?: Record<string, unknown>;
+  /** Explicit sound/voice timing table recovered from AVM1 arrays such as sndTimeLib.push(["id", ms]). */
+  soundTimings?: Record<string, { durationMs: number }>;
   globalDefaults?: Record<string, unknown>;
-  nestedSectionTargets?: Record<string, unknown>;
+  nestedSectionTargets?: Record<string, { label: string; frame: number }>;
   dynamicTexts?: Record<string, DynamicText>;
   buttonActions?: Record<string, ButtonActionRecord>;
 };

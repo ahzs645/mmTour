@@ -1,6 +1,7 @@
 import type { AssetTimeline, ControlAction } from "../data/timelineTypes";
 import { assetUrl, loadTimeline } from "../data/TimelineLoader";
 import { collectReferencedSwfs, prefetchScene } from "../data/prefetch";
+import { collectExplicitSoundTimings } from "../data/soundTimings";
 import { DomRenderer } from "../render/DomRenderer";
 import { FontRegistry } from "../render/TextRenderer";
 import { Player } from "../player/Player";
@@ -135,6 +136,7 @@ export class PlayerController {
     // (e.g. _level0's bkgd.OSVersion). Existing values win so _level0 stays
     // authoritative for tour globals other levels read.
     this.store.seed((timeline.control as { globalDefaults?: Record<string, unknown> } | undefined)?.globalDefaults);
+    this.sound.registerTimings(collectExplicitSoundTimings(timeline.control));
 
     this.fonts.register(timeline);
     const layer = document.createElement("div");
