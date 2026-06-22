@@ -79,6 +79,11 @@ function compare(a: VarValue | undefined, b: VarValue | undefined, op: string): 
 function resolveValue(token: string, store: VariableStore): VarValue | undefined {
   const t = token.trim();
   if (t === "") return undefined;
+  const evalArg = singleArgCall(t, "eval");
+  if (evalArg !== undefined) {
+    const name = resolveValue(evalArg, store);
+    return name === undefined ? undefined : store.get(String(name));
+  }
   if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
     return t.slice(1, -1);
   }
@@ -86,6 +91,14 @@ function resolveValue(token: string, store: VariableStore): VarValue | undefined
   if (t === "false") return false;
   if (/^-?\d+(\.\d+)?$/.test(t)) return Number(t);
   return store.get(t);
+}
+
+function singleArgCall(token: string, name: string): string | undefined {
+  const prefix = `${name}(`;
+  if (!token.startsWith(prefix) || !token.endsWith(")")) return undefined;
+  const wrappedArgs = token.slice(name.length);
+  if (matchingParen(wrappedArgs) !== wrappedArgs.length - 1) return undefined;
+  return wrappedArgs.slice(1, -1).trim();
 }
 
 function truthy(v: VarValue | undefined): boolean {

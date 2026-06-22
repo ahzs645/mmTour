@@ -471,6 +471,11 @@ export class Player {
     const e = raw.trim();
     if (e === "") return undefined;
     if (e === "getTimer()") return this.getTimer();
+    const evalArg = singleArgCall(e, "eval");
+    if (evalArg !== undefined) {
+      const name = this.resolveExpr(evalArg, locals);
+      return name === undefined ? undefined : this.store?.get(String(name)) ?? this.textVars.get(normalizeVarName(String(name))) ?? undefined;
+    }
     if ((e.startsWith('"') && e.endsWith('"')) || (e.startsWith("'") && e.endsWith("'"))) return e.slice(1, -1);
     if (e === "true") return true;
     if (e === "false") return false;
@@ -1326,4 +1331,25 @@ export class Player {
 
 function isSelfTimelineTarget(target: string | undefined): boolean {
   return !target || target === "self" || target === "this" || target === "_root" || target === "_level0" || target === "root";
+}
+
+function singleArgCall(token: string, name: string): string | undefined {
+  const prefix = `${name}(`;
+  if (!token.startsWith(prefix) || !token.endsWith(")")) return undefined;
+  let depth = 0;
+  let quote = "";
+  for (let i = name.length; i < token.length; i += 1) {
+    const c = token[i];
+    if (quote) {
+      if (c === quote && token[i - 1] !== "\\") quote = "";
+      continue;
+    }
+    if (c === '"' || c === "'") quote = c;
+    else if (c === "(") depth += 1;
+    else if (c === ")") {
+      depth -= 1;
+      if (depth === 0 && i !== token.length - 1) return undefined;
+    }
+  }
+  return depth === 0 ? token.slice(prefix.length, -1).trim() : undefined;
 }

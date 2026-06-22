@@ -21,6 +21,7 @@ type SummaryContext = {
 type SummaryState = {
   stack: Expr[];
   registers: Map<number, Expr>;
+  currentTarget?: string;
   actions: ControlAction[];
   definedFunctions: DefinedFunction[];
 };
@@ -91,6 +92,7 @@ function summarizeBranch(
   const branch: SummaryState = {
     stack: base.stack.slice(),
     registers: new Map(base.registers),
+    currentTarget: base.currentTarget,
     actions: base.actions,
     definedFunctions: base.definedFunctions,
   };
@@ -118,6 +120,12 @@ function processAction(action: Avm1Action, state: SummaryState, context: Summary
     }
     case "StoreRegister":
       if (typeof action.register === "number") state.registers.set(action.register, state.stack[state.stack.length - 1] ?? unknown("register"));
+      return;
+    case "SetTarget":
+      state.currentTarget = action.target || undefined;
+      return;
+    case "SetTarget2":
+      state.currentTarget = pathOf(state.stack.pop() ?? unknown("target")) || undefined;
       return;
     case "GetVariable": {
       const name = state.stack.pop() ?? unknown("var");
@@ -233,9 +241,9 @@ function processAction(action: Avm1Action, state: SummaryState, context: Summary
       const nameExpr = state.stack.pop() ?? unknown("function");
       const count = Number(literalValue(state.stack.pop() ?? literal(0))) || 0;
       const args = popArgs(state, count);
-      const call = actionFromCall(pathOf(nameExpr), undefined, args, false);
+      const call = actionFromCall(pathOf(nameExpr), state.currentTarget, args, false);
       if (call) pushAction(state, { ...call, source: context.source }, guard);
-      state.stack.push({ kind: "call", name: pathOf(nameExpr), args });
+      state.stack.push({ kind: "call", target: state.currentTarget ? { kind: "var", name: state.currentTarget } : undefined, name: pathOf(nameExpr), args });
       return;
     }
     case "CallMethod": {
@@ -264,25 +272,25 @@ function processAction(action: Avm1Action, state: SummaryState, context: Summary
       return;
     }
     case "GotoFrame":
-      pushAction(state, { command: "gotoAndStop", frame: action.frame ?? 0, target: "self", source: context.source }, guard);
+      pushAction(state, { command: "gotoAndStop", frame: action.frame ?? 0, target: activeTarget(state), source: context.source }, guard);
       return;
     case "GoToLabel":
-      pushAction(state, { command: "gotoAndStop", label: action.label, target: "self", source: context.source }, guard);
+      pushAction(state, { command: "gotoAndStop", label: action.label, target: activeTarget(state), source: context.source }, guard);
       return;
     case "GotoFrame2":
-      pushAction(state, makeGoto(action.play ? "gotoAndPlay" : "gotoAndStop", "self", state.stack.pop() ?? unknown("frame"), true, context.source), guard);
+      pushAction(state, makeGoto(action.play ? "gotoAndPlay" : "gotoAndStop", activeTarget(state), state.stack.pop() ?? unknown("frame"), true, context.source), guard);
       return;
     case "NextFrame":
-      pushAction(state, { command: "gotoAndStop", frameExpression: "_currentframe + 1", target: "self", source: context.source }, guard);
+      pushAction(state, { command: "gotoAndStop", frameExpression: "_currentframe + 1", target: activeTarget(state), source: context.source }, guard);
       return;
     case "PrevFrame":
-      pushAction(state, { command: "gotoAndStop", frameExpression: "_currentframe - 1", target: "self", source: context.source }, guard);
+      pushAction(state, { command: "gotoAndStop", frameExpression: "_currentframe - 1", target: activeTarget(state), source: context.source }, guard);
       return;
     case "Play":
-      mergePlayStop(state, "play", guard, context.source);
+      mergePlayStop(state, "play", guard, context.source, activeTarget(state));
       return;
     case "Stop":
-      mergePlayStop(state, "stop", guard, context.source);
+      mergePlayStop(state, "stop", guard, context.source, activeTarget(state));
       return;
     case "DefineFunction":
     case "DefineFunction2":
@@ -352,7 +360,7 @@ function actionFromCall(name: string, target: string | undefined, args: Expr[], 
   if (name === "start" && target) return { command: "callFunctions", functionCalls: [{ target, functionName: name, arguments: args.map(argSource).join(",") }] };
   return {
     command: "callFunctions",
-    functionCalls: [{ target: method ? target ?? "self" : "self", functionName: name, arguments: args.map(argSource).join(",") }],
+    functionCalls: [{ target: target ?? "self", functionName: name, arguments: args.map(argSource).join(",") }],
   };
 }
 
@@ -383,15 +391,15 @@ function makeGoto(command: "gotoAndPlay" | "gotoAndStop", target: string | undef
   return { command, target, frameExpression: raw, source };
 }
 
-function mergePlayStop(state: SummaryState, command: "play" | "stop", guard: string | undefined, source?: string) {
+function mergePlayStop(state: SummaryState, command: "play" | "stop", guard: string | undefined, source?: string, target = "self") {
   const prior = state.actions[state.actions.length - 1];
   const expected = command === "play" ? "gotoAndStop" : "gotoAndPlay";
   const next = command === "play" ? "gotoAndPlay" : "gotoAndStop";
-  if (prior?.command === expected && sameGuard(prior, guard) && prior.target === "self") {
+  if (prior?.command === expected && sameGuard(prior, guard) && prior.target === target) {
     prior.command = next;
     return;
   }
-  pushAction(state, { command, source }, guard);
+  pushAction(state, { command, target, source }, guard);
 }
 
 function pushAction(state: SummaryState, action: ControlAction, guard: string | undefined) {
@@ -419,6 +427,7 @@ function exprFromPush(value: any, state: SummaryState): Expr {
 }
 
 function varExpr(name: Expr): Expr {
+  if (name.kind !== "literal") return { kind: "call", name: "eval", args: [name] };
   const path = pathOf(name);
   return path ? { kind: "var", name: path } : unknown("var");
 }
@@ -538,6 +547,10 @@ function pathOf(value: Expr | undefined): string {
     if (typeof left === "string" && typeof right === "string") return left + right;
   }
   return exprToValueSource(value);
+}
+
+function activeTarget(state: SummaryState): string {
+  return state.currentTarget ?? "self";
 }
 
 function literalValue(value: Expr): string | number | boolean | undefined {
