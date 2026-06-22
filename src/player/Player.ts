@@ -1,7 +1,6 @@
 import type {
   AssetTimeline,
   BodyStatement,
-  ButtonActionRecord,
   ControlAction,
   DefinedFunction,
   TimelineAsset,
@@ -31,12 +30,13 @@ type FunctionDef = {
 /** Local parameter bindings for the currently-executing function call. */
 type Locals = Record<string, VarValue | undefined>;
 type SoundBinding = { sound: string; soundSrc?: string; soundDurationMs?: number };
-type SoundLibraryEntry = { name?: string; src?: string; durationMs?: number };
+type SoundLibraryEntry = { name?: string; src?: string; durationMs?: number; aliases?: string[] };
 
 /** Timeline commands that, with a target, are clip controls (vs function calls). */
 const TIMELINE_COMMANDS = new Set(["gotoAndPlay", "gotoAndStop", "play", "stop", "nextFrame", "prevFrame"]);
 /** AVM1 "wait until condition / timer" helpers handled as a runtime primitive. */
 const WAITER_FUNCTIONS = new Set(["waitForVal", "startTimer"]);
+const NON_ROOT_LEVEL_TARGET = /^_level[1-9]\d*\b/i;
 
 export type PlayerOptions = {
   onFrame?: (rootFrame: number, playing: boolean) => void;
@@ -220,22 +220,18 @@ export class Player {
 
   /** Dispatch a button event from the owning clip (identified by its tree path). */
   handleButtonEvent(ownerPath: string, characterId: number, event: ButtonEvent) {
-    const record = this.timeline.control?.buttonActions?.[String(characterId)] as ButtonActionRecord | undefined;
-    const action = record?.[event];
-    if (!action) return;
     const owner = this.clipByPath.get(ownerPath) ?? this.root;
+    const action = this.buttonActionFor(owner, characterId, event);
+    if (!action) return;
 
-    // Apply the handler's simple state assignments first: clip‑local flags (a section icon's
-    // `isActive = 1;`, `_parent.holdState = 1;`) drive the select/deselect calls below, and the
-    // shared‑global `_level0.bkgd.*` flags drive cross‑movie gating — notably the restart button's
-    // `_level0.bkgd.doAttractLoop = 1`, which keeps the reloaded segment BLANK when returning to the
-    // menu (without it the old segment's content paints over the nav menu). `_level0` is the shared
-    // store, so it reaches the segment's player. Only OTHER levels' player vars (`_level6.nav.*`)
-    // are skipped — those belong to the build's navigation inference, not this dispatch.
+    // Apply the handler's simple state assignments first: clip-local flags drive the
+    // select/deselect calls below, and shared globals drive cross-movie gating. Some
+    // extraction paths also attach an empty higher-level placeholder assignment to a
+    // richer click command; because the VariableStore is flat, do not let that clear
+    // selection state. Non-empty _levelN writes are real AVM1 state and must flow.
     for (const assign of action.assignments ?? []) {
-      if (/^_level[1-9]\d*\b/i.test(assign.target)) continue;
       const value = this.resolveExpr(assign.rawValue ?? String(assign.value ?? ""));
-      if (assign.target && value !== undefined) this.scopeSet(owner, assign.target, value);
+      if (assign.target && value !== undefined && !isEmptyNonRootLevelAssignment(assign.target, value)) this.scopeSet(owner, assign.target, value);
     }
 
     // A section button's on(release) is extracted as BOTH a top-level timeline command
@@ -280,6 +276,42 @@ export class Player {
       }
     }
     this.render();
+  }
+
+  private buttonActionFor(owner: ClipInstance, characterId: number, event: ButtonEvent): ControlAction | undefined {
+    const direct = this.timeline.control?.buttonActions?.[String(characterId)]?.[event];
+    if (direct) return direct;
+
+    // FFDec/browser extraction can split a control into separate transition and settled
+    // button symbols. The transition symbol may carry the same embedded dynamic text but
+    // no event bytecode, while the next/previous settled symbol carries the handler.
+    // Resolve only within the same owning clip and only across buttons with identical
+    // text-field bindings, so the fallback remains data-driven and narrowly scoped.
+    const signature = this.buttonTextFieldSignature(characterId);
+    if (!signature) return undefined;
+
+    const frames = this.framesFor(owner);
+    if (!frames?.length) return undefined;
+
+    let best: { action: ControlAction; distance: number } | undefined;
+    for (let frameIndex = 0; frameIndex < frames.length; frameIndex += 1) {
+      const distance = Math.abs(frameIndex - owner.currentFrame);
+      if (best && distance > best.distance) continue;
+      for (const instance of frames[frameIndex]?.instances ?? []) {
+        if (instance.characterId === characterId) continue;
+        if (this.buttonTextFieldSignature(instance.characterId) !== signature) continue;
+        const action = this.timeline.control?.buttonActions?.[String(instance.characterId)]?.[event];
+        if (!action) continue;
+        if (!best || distance < best.distance) best = { action, distance };
+      }
+    }
+    return best?.action;
+  }
+
+  private buttonTextFieldSignature(characterId: number): string {
+    const asset = this.getAsset(characterId);
+    if (asset?.kind !== "button" || !asset.textFields?.length) return "";
+    return asset.textFields.map((field) => field.id).sort((a, b) => a - b).join("|");
   }
 
   // --- AVM1 function dispatch -------------------------------------------
@@ -397,13 +429,6 @@ export class Player {
     // state, so the nav jumps PAST its entrance cascade. When the body already issues a call, let
     // the body decide it (below) and skip the lossy action duplicate. Non-call actions (sound,
     // loadMovie, assigns) aren't body-executable, so they still run here.
-    const bodyCalls = new Set(def.body.filter((s) => s.kind === "call").map((s) => (s as { functionName?: string }).functionName));
-    def.actions.forEach((action, i) => {
-      if (!actionFire[i]) return;
-      const calls = action.functionCalls ?? [];
-      if (action.command === "callFunctions" && calls.length > 0 && calls.every((c) => bodyCalls.has(c.functionName))) return;
-      this.runFunctionAction(action, locals);
-    });
     // Decide every body guard against the store as it is on ENTRY — AVM1 checks an `if` once
     // when control reaches it, so a CONDITIONAL mutation inside a block (LoadInitialInteractive's
     // `if(!blnDisableSkip){ blnDisableSkip=1; … }`, whose nested arms all re-include the
@@ -418,6 +443,13 @@ export class Player {
       }
     }
     const decisions = def.body.map((statement) => this.branchPasses(statement.branchCondition, guardLocals));
+    const bodyCalls = new Set(def.body.filter((s) => s.kind === "call").map((s) => (s as { functionName?: string }).functionName));
+    def.actions.forEach((action, i) => {
+      if (!actionFire[i]) return;
+      const calls = action.functionCalls ?? [];
+      if (action.command === "callFunctions" && calls.length > 0 && calls.every((c) => bodyCalls.has(c.functionName))) return;
+      this.runFunctionAction(action, locals);
+    });
     def.body.forEach((statement, i) => { if (decisions[i]) this.runBodyStatement(statement, locals); });
     this.render();
     return true;
@@ -569,7 +601,8 @@ export class Player {
       this.options.onCallFunction?.(target, fn, this.resolveArgsString(call.arguments, locals));
     } else {
       const clip = this.resolveTarget(this.root, target) ?? this.findClipByName(this.root, target);
-      if (clip) this.callClipFunction(clip, fn);
+      if (clip === this.root) this.callFunction(fn, call.arguments, locals);
+      else if (clip) this.callClipFunction(clip, fn);
     }
   }
 
@@ -634,14 +667,24 @@ export class Player {
 
   private resolveSound(sound: string): SoundLibraryEntry | undefined {
     const library = this.timeline.control?.soundLibrary as Record<string, SoundLibraryEntry | string> | undefined;
-    const entry = library?.[sound] ?? library?.[sound.toLowerCase()];
+    const entry = library?.[sound] ?? library?.[sound.toLowerCase()] ?? this.findSoundByAlias(library, sound);
     return typeof entry === "string" ? { src: entry } : entry;
+  }
+
+  private findSoundByAlias(library: Record<string, SoundLibraryEntry | string> | undefined, sound: string): SoundLibraryEntry | undefined {
+    if (!library) return undefined;
+    const wanted = sound.toLowerCase();
+    for (const entry of Object.values(library)) {
+      if (typeof entry === "string") continue;
+      if (entry.name?.toLowerCase() === wanted || entry.aliases?.some((alias) => alias.toLowerCase() === wanted)) return entry;
+    }
+    return undefined;
   }
 
   /** Run a timeline command on a clip resolved by name/path (e.g. `yellowPro.gotoAndPlay("over")`). */
   runNamedClipCommand(from: ClipInstance, path: string, command: string, frame: VarValue): boolean {
     const name = path.split(".").filter(Boolean).pop() ?? path;
-    const clip = this.resolveTarget(from, path) ?? this.findClipByName(from, path) ?? this.findClipByName(this.root, path);
+    const clip = this.resolveTarget(from, path) ?? this.findClipByName(from, name) ?? this.findClipByName(this.root, name);
     if (!clip) {
       // The target clip isn't on stage yet — a cross-level call can land mid-transition (a segment's
       // frame-1 `_level6.proToolbar.gotoAndPlay("hideInner")` fires before the nav has reconciled
@@ -754,9 +797,13 @@ export class Player {
         this.options.onCallFunction?.(target, fn, this.resolveArgsString(call.arguments, locals));
       } else {
         // A named nested clip (from `tellTarget("clip")`): resolve it locally and
-        // run the clip's own sprite-scoped function (e.g. doFade → gotoAndPlay).
-        const targetClip = this.resolveTarget(clip, target) ?? this.findClipByName(clip, target);
-        if (targetClip) this.callClipFunction(targetClip, fn);
+        // run the clip's own sprite-scoped function (e.g. doFade -> gotoAndPlay).
+        // A relative target can also resolve back to the root (`_parent._parent.fn`);
+        // in that case call the root function table.
+        const name = target.split(".").filter(Boolean).pop() ?? target;
+        const targetClip = this.resolveTarget(clip, target) ?? this.findClipByName(clip, name);
+        if (targetClip === this.root) this.callFunction(fn, call.arguments, locals);
+        else if (targetClip) this.callClipFunction(targetClip, fn);
       }
     }
   }
@@ -889,24 +936,26 @@ export class Player {
       const asset = this.getAsset(instance.characterId);
       if (!asset || !isClipAsset(asset)) continue;
       live.add(instance.depth);
+      if (instance.name) clip.depthNames.set(instance.depth, instance.name);
+      const instanceName = instance.name || clip.depthNames.get(instance.depth) || "";
       const existing = clip.childClips.get(instance.depth);
       if (!existing || existing.characterId !== instance.characterId) {
-        const child = new ClipInstance(instance.characterId, instance.name, clip);
+        const child = new ClipInstance(instance.characterId, instanceName, clip);
         clip.childClips.set(instance.depth, child);
         this.enterFrame(child, 0, 0);
         // A command that arrived before this clip existed (e.g. the nav's proToolbar hide, issued by
         // a segment on load) is applied now, on creation, instead of being lost.
-        const pending = instance.name ? this.pendingClipCommands.get(instance.name) : undefined;
+        const pending = instanceName ? this.pendingClipCommands.get(instanceName) : undefined;
         if (pending) {
-          this.pendingClipCommands.delete(instance.name!);
+          this.pendingClipCommands.delete(instanceName);
           const f = this.resolveClipFrame(child, pending.frame);
           if (f >= 0) { child.playing = pending.command === "gotoAndPlay"; this.enterFrame(child, f, 0); }
         }
-      } else if (instance.name && existing.name !== instance.name) {
-        // A later PlaceObject named this instance (FFDec emits the name on a frame
-        // after its first placement, e.g. nav's btn_yellow_pro_anim ring) — apply it
-        // so `_parent.<name>` clip commands (the hover-glow) can resolve it.
-        existing.name = instance.name;
+      } else if (instanceName && existing.name !== instanceName) {
+        // A later PlaceObject named this depth, or a later replacement omitted the
+        // already-known name. Keep the live clip addressable so extracted AVM1
+        // paths such as `_parent.<name>.gotoAndPlay(...)` continue to resolve.
+        existing.name = instanceName;
       }
     }
     for (const [depth] of clip.childClips) {
@@ -1032,17 +1081,27 @@ export class Player {
 
   private resolveTarget(clip: ClipInstance, target: string | undefined): ClipInstance | null {
     if (!target || target === "self" || target === "this") return clip;
-    if (target === "_root" || target === "_level0" || target === "root") return this.root;
-    if (target === "_parent") return clip.parent ?? clip;
-
-    // Dotted path like "_root.s1.mc" — walk by instance name.
     const parts = target.split(".").filter(Boolean);
-    let node: ClipInstance | null =
-      parts[0] === "_root" || parts[0] === "_level0" ? this.root : parts[0] === "_parent" ? clip.parent : clip;
-    const rest = parts[0]?.startsWith("_") ? parts.slice(1) : parts;
-    for (const name of rest) {
+    let node: ClipInstance | null = clip;
+    for (let i = 0; i < parts.length; i += 1) {
+      const name = parts[i];
+      if (i === 0 && (name === "_root" || name === "_level0" || name === "root")) {
+        node = this.root;
+        continue;
+      }
+      if (i === 0 && /^_level\d+$/i.test(name)) {
+        node = name.toLowerCase() === "_level0" ? this.root : null;
+        continue;
+      }
+      if (name === "_parent") {
+        node = node?.parent ?? node;
+        continue;
+      }
       if (!node) return null;
-      node = findChildByName(node, name);
+      // PlaceObject names can be introduced on a later nested frame. Stay inside
+      // the current target scope, but fall back to a named descendant so wrapped
+      // controls still receive their extracted sibling/child timeline commands.
+      node = findChildByName(node, name) ?? this.findClipByName(node, name);
     }
     return node;
   }
@@ -1331,6 +1390,10 @@ export class Player {
 
 function isSelfTimelineTarget(target: string | undefined): boolean {
   return !target || target === "self" || target === "this" || target === "_root" || target === "_level0" || target === "root";
+}
+
+function isEmptyNonRootLevelAssignment(target: string, value: VarValue): boolean {
+  return value === "" && NON_ROOT_LEVEL_TARGET.test(target);
 }
 
 function singleArgCall(token: string, name: string): string | undefined {

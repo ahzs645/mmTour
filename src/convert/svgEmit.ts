@@ -37,11 +37,23 @@ export interface ShapeSvgResult {
   unsupported: string[];
 }
 
-export function defineShapeToSvg(tag: any): ShapeSvgResult {
+export interface BitmapFillImage {
+  width: number;
+  height: number;
+  href: string;
+}
+
+export type BitmapFillResolver = (bitmapId: number) => BitmapFillImage | undefined;
+
+export interface ShapeSvgOptions {
+  bitmapFill?: BitmapFillResolver;
+}
+
+export function defineShapeToSvg(tag: any, options: ShapeSvgOptions = {}): ShapeSvgResult {
   const { bounds } = tag;
   const w = (bounds.xMax - bounds.xMin) / 20;
   const h = (bounds.yMax - bounds.yMin) / 20;
-  const inner = shapeInner(tag, "g");
+  const inner = shapeInner(tag, "g", options);
 
   const defsBlock = inner.defs ? `<defs>${inner.defs}</defs>` : "";
   const g = `<g transform="matrix(1.0, 0.0, 0.0, 1.0, ${num(-bounds.xMin / 20)}, ${num(-bounds.yMin / 20)})">${inner.body}</g>`;
@@ -60,7 +72,7 @@ export interface ShapeInner {
 
 /** Build a shape's paint primitives without the outer <svg>/<g origin> — so a
  *  caller (e.g. the button compositor) can place the shape under its own matrix. */
-export function shapeInner(tag: any, idPrefix: string): ShapeInner {
+export function shapeInner(tag: any, idPrefix: string, options: ShapeSvgOptions = {}): ShapeInner {
   const { fills, lines } = rasterizeShape(tag.shape);
   const defs: string[] = [];
   const body: string[] = [];
@@ -84,8 +96,16 @@ export function shapeInner(tag: any, idPrefix: string): ShapeInner {
       body.push(`<path d="${d}" fill="url(#${id})" fill-rule="evenodd" stroke="none"/>`);
     } else if (type === FILL_BITMAP) {
       fillTypes.push("Bitmap");
-      unsupported.push("Bitmap fill");
-      body.push(`<path d="${d}" fill="#808080" fill-opacity="0" fill-rule="evenodd" stroke="none" data-bitmap-fill="${fp.fill.bitmapId}"/>`);
+      const bitmapId = Number(fp.fill.bitmapId);
+      const bitmap = Number.isFinite(bitmapId) ? options.bitmapFill?.(bitmapId) : undefined;
+      if (bitmap && bitmap.width > 0 && bitmap.height > 0) {
+        const id = `${idPrefix}_bitmap${gradId++}`;
+        defs.push(bitmapPatternDef(id, fp.fill, bitmap));
+        body.push(`<path d="${d}" fill="url(#${id})" fill-rule="evenodd" stroke="none"/>`);
+      } else {
+        unsupported.push(`Bitmap fill${Number.isFinite(bitmapId) ? ` ${bitmapId}` : ""}`);
+        body.push(`<path d="${d}" fill="#808080" fill-opacity="0" fill-rule="evenodd" stroke="none" data-bitmap-fill="${bitmapId}"/>`);
+      }
     }
   }
 
@@ -159,6 +179,27 @@ function gradientDef(id: string, fill: any): string {
   }
   // Radial (and focal, approximated as radial for the spike): centered, r = extent.
   return `<radialGradient id="${id}" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="${GRAD_EXTENT}" ${spread} ${transform}>${stops}</radialGradient>`;
+}
+
+function bitmapPatternDef(id: string, fill: any, bitmap: BitmapFillImage): string {
+  const m = fill.matrix;
+  const transform =
+    `patternTransform="matrix(${mnum(fixed(m?.scaleX) / 20)} ${mnum(fixed(m?.rotateSkew0) / 20)} ` +
+    `${mnum(fixed(m?.rotateSkew1) / 20)} ${mnum(fixed(m?.scaleY) / 20)} ${mnum((m?.translateX ?? 0) / 20)} ${mnum((m?.translateY ?? 0) / 20)})"`;
+  return (
+    `<pattern id="${id}" patternUnits="userSpaceOnUse" overflow="visible" ` +
+    `viewBox="0 0 ${num(bitmap.width)} ${num(bitmap.height)}" width="${num(bitmap.width)}" height="${num(bitmap.height)}" ${transform}>` +
+    `<image width="${num(bitmap.width)}" height="${num(bitmap.height)}" style="image-rendering:optimizeQuality" xlink:href="${escapeAttr(bitmap.href)}"/>` +
+    `</pattern>`
+  );
+}
+
+function escapeAttr(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }
 
 function fixed(v: any): number {

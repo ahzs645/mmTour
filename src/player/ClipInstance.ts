@@ -18,6 +18,8 @@ export class ClipInstance {
   enteredFrame = -1;
   /** depth -> child clip (sprite instances only). */
   readonly childClips = new Map<number, ClipInstance>();
+  /** Last non-empty PlaceObject instance name seen at each depth in this clip. */
+  readonly depthNames = new Map<number, string>();
   /** Per-clip timeline variables (AVM1 unqualified vars like `btnDown`/`labelHidden` are local
    *  to the clip they're written on; dotted/global paths stay in the shared VariableStore). */
   readonly locals: Record<string, VarValue | undefined> = {};

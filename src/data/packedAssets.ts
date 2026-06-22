@@ -42,6 +42,7 @@ let assetRevision = 0;
 const packedScenes = new Map<string, PackedScene>();
 const bundleScenes = new Map<string, BundleScene>();
 const sceneData = new Map<string, SceneData>();
+let packNetworkFallback = true;
 
 // Full URL of the single-file archive (assetSource === "archive").
 let archiveUrl = "";
@@ -77,6 +78,15 @@ export function setAssetSource(source: AssetSource) {
   clearPackedScenes();
   clearBundleScenes();
   clearSceneData();
+}
+
+/**
+ * In-memory pack mode is also used by the browser converter. There, a missing
+ * dependency should stay missing instead of falling through to server-hosted
+ * generated-packed assets. The default remains enabled for static packed builds.
+ */
+export function setPackNetworkFallback(enabled: boolean) {
+  packNetworkFallback = enabled;
 }
 
 function clearSceneData() {
@@ -317,6 +327,7 @@ async function loadTimelineFile(scene: string): Promise<AssetTimeline | null> {
 async function loadPackedScene(scene: string): Promise<PackedScene | null> {
   const cached = packedScenes.get(scene);
   if (cached) return cached;
+  if (!packNetworkFallback) return null;
 
   const response = await fetch(`${assetsBaseUrl}/generated-packed/${scene}/${scene}.pack?v=${Date.now()}`);
   if (!response.ok) return null;

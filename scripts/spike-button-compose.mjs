@@ -4,14 +4,15 @@
 //
 //   node scripts/spike-button-compose.mjs [scene] [id ...]
 //
-// Renders mine + golden via Playwright and compares pixels. Buttons whose shapes
-// use bitmap fills inherit the shape converter's known bitmap gap (flagged).
+// Renders mine + golden via Playwright and compares pixels. Bitmap-filled shapes
+// are embedded through the same resolver used by the browser compiler.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseSwf, swf } from "swf-parser";
 import { chromium } from "playwright";
-import { collectButtons, composeButton } from "../src/convert/index.ts";
+import { PNG } from "pngjs";
+import { collectButtons, composeButton, collectBitmaps, isJpegBitmap, mergeJpeg, decodeLossless } from "../src/convert/index.ts";
 
 const root = resolve(new URL("..", import.meta.url).pathname);
 const scene = process.argv[2] ?? "nav";
@@ -24,6 +25,7 @@ if (!existsSync(swfPath)) throw new Error(`SWF not found: ${swfPath}`);
 mkdirSync(outDir, { recursive: true });
 
 const movie = parseSwf(new Uint8Array(readFileSync(swfPath)));
+const bitmapFill = await bitmapFillResolver(movie);
 const shapesById = new Map();
 for (const t of movie.tags) if (t.type === swf.TagType.DefineShape) shapesById.set(t.id, t);
 const buttons = collectButtons(movie);
@@ -37,7 +39,7 @@ const page = await browser.newPage();
 let pass = 0, fail = 0, bitmap = 0, overlay = 0, noGold = 0;
 const rows = [];
 for (const button of targets) {
-  const composed = composeButton(button, (id) => shapesById.get(id));
+  const composed = composeButton(button, (id) => shapesById.get(id), { bitmapFill });
   for (const [stateFile, svg] of Object.entries(composed.states)) {
     const goldPath = join(goldDir, composed.dir, `${stateFile}.svg`);
     if (!existsSync(goldPath)) { noGold++; continue; }
@@ -48,16 +50,16 @@ for (const button of targets) {
 
     // classify: a state with ANY non-shape record (editText/sprite) is drawn by
     // the runtime overlay (the pipeline strips baked button text), so the SVG is
-    // shape-only by design; a bitmap-fill shape inherits the converter's bitmap
-    // gap. Only pure-shape, no-bitmap states are graded strictly against FFDec.
+    // shape-only by design. Only fully-resolved pure-shape states are graded
+    // strictly against FFDec.
     const stateRecords = button.records.filter((r) => r[STATE_KEY[stateFile]]);
     const hasNonShape = stateRecords.some((r) => !shapesById.has(r.characterId));
     const mineBitmap = /data-bitmap-fill/.test(svg);
     let cat, status;
     if (hasNonShape) { cat = "overlay"; overlay++; status = "OVERLAY"; }
-    else if (mineBitmap) { cat = "bitmap"; bitmap++; status = "BITMAP"; }
+    else if (mineBitmap) { cat = "unresolved-bitmap"; bitmap++; status = "UNRESOLVED"; }
     else { cat = "vector"; const ok = res.diffPct <= 2; if (ok) pass++; else fail++; status = ok ? "PASS" : "FAIL"; }
-    rows.push({ key: `${composed.id}/${stateFile}`, status, note: `${res.diffPct.toFixed(2)}% diff ${res.w}x${res.h}${cat !== "vector" ? ` [${cat}: runtime/bitmap gap]` : ""}` });
+    rows.push({ key: `${composed.id}/${stateFile}`, status, note: `${res.diffPct.toFixed(2)}% diff ${res.w}x${res.h}${cat !== "vector" ? ` [${cat}]` : ""}` });
   }
 }
 await browser.close();
@@ -67,10 +69,31 @@ for (const r of rows) console.log(`${r.key.padEnd(12)} ${r.status.padEnd(8)} ${r
 const comparable = pass + fail;
 console.log(
   `\nscene=${scene}  buttons=${targets.length}  vector-states ${pass}/${comparable} PASS` +
-    `  ·  bitmap-shape=${bitmap} (known gap)  ·  editText-overlay=${overlay} (runtime draws)  ·  no-gold=${noGold}` +
+    `  ·  unresolved-bitmap=${bitmap}  ·  editText-overlay=${overlay} (runtime draws)  ·  no-gold=${noGold}` +
     (comparable ? `  → ${((pass / comparable) * 100).toFixed(1)}% vector match vs FFDec` : ""),
 );
 console.log(`outputs in ${outDir}`);
+
+async function bitmapFillResolver(movie) {
+  const { bitmaps, jpegTables } = collectBitmaps(movie);
+  const images = new Map();
+  for (const tag of bitmaps) {
+    if (isJpegBitmap(tag)) {
+      const bytes = mergeJpeg(tag.data, tag.mediaType === "image/x-swf-partial-jpeg" ? jpegTables : undefined);
+      images.set(Number(tag.id), { width: Number(tag.width) || 0, height: Number(tag.height) || 0, href: bytesDataUrl("image/jpeg", bytes) });
+      continue;
+    }
+    const img = await decodeLossless(tag);
+    const png = new PNG({ width: img.width, height: img.height });
+    png.data = Buffer.from(img.rgba);
+    images.set(Number(tag.id), { width: img.width, height: img.height, href: bytesDataUrl("image/png", PNG.sync.write(png)) });
+  }
+  return (id) => images.get(id);
+}
+
+function bytesDataUrl(mime, bytes) {
+  return `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`;
+}
 
 function dataUrl(svg) {
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;

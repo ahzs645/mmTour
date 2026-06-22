@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseSwf, swf } from "swf-parser";
+import { extractControl } from "../src/convert/avm1Control.ts";
 import { compactObject } from "./lib/util.mjs";
 import {
   disassembleAvm1, decodeAvm1Action, decodePushValues, actionName, matrixFromParser,
@@ -38,7 +39,7 @@ for (const target of targets) {
   const timelineControl = timeline?.control ?? {};
   if (existsSync(controlPath)) {
     const existing = JSON.parse(readFileSync(controlPath, "utf8"));
-    const annotated = annotateGeneratedActionSupport(existing, timeline, report);
+    const annotated = mergeBytecodeFallbacks(annotateGeneratedActionSupport(existing, timeline, report), report.bytecodeControl);
     const merged = {
       ...annotated,
       avm: report.avm,
@@ -54,7 +55,7 @@ for (const target of targets) {
       definedFunctions: annotated.definedFunctions ?? timelineControl.definedFunctions ?? [],
       nestedSectionTargets: annotated.nestedSectionTargets ?? timelineControl.nestedSectionTargets ?? {},
       buttonActions: annotated.buttonActions ?? timelineControl.buttonActions ?? {},
-      soundLibrary: annotated.soundLibrary ?? timelineControl.soundLibrary ?? {},
+      soundLibrary: augmentSoundLibraryDurations(annotated.soundLibrary ?? timelineControl.soundLibrary ?? {}, report.soundDurations),
     };
     merged.controlFlowGraphs = buildControlFlowGraphs(merged, timeline, report);
     writeFileSync(controlPath, `${JSON.stringify(merged, null, 2)}\n`);
@@ -62,6 +63,7 @@ for (const target of targets) {
 
   if (timeline) {
     timeline.control ??= {};
+    timeline.control = mergeBytecodeFallbacks(timeline.control, report.bytecodeControl);
     timeline.control.avm = report.avm;
     timeline.control.autoPlayRanges = report.autoPlayRanges;
     timeline.control.buttonDefinitions = report.buttons;
@@ -72,7 +74,7 @@ for (const target of targets) {
     timeline.control.definedFunctions ??= timelineControl.definedFunctions ?? [];
     timeline.control.nestedSectionTargets ??= timelineControl.nestedSectionTargets ?? {};
     timeline.control.buttonActions ??= timelineControl.buttonActions ?? {};
-    timeline.control.soundLibrary ??= timelineControl.soundLibrary ?? {};
+    timeline.control.soundLibrary = augmentSoundLibraryDurations(timeline.control.soundLibrary ?? timelineControl.soundLibrary ?? {}, report.soundDurations);
     const controlForGraph = existsSync(controlPath) ? JSON.parse(readFileSync(controlPath, "utf8")) : timeline.control;
     timeline.control.controlFlowGraphs = controlForGraph.controlFlowGraphs ?? buildControlFlowGraphs(controlForGraph, timeline, report);
     writeFileSync(timelinePath, `${JSON.stringify(timeline)}\n`);
@@ -86,6 +88,62 @@ function resolveSwfPath(target) {
   const file = /\.swf$/i.test(target) ? basename(target) : `${basename(target)}.swf`;
   const candidates = [resolve(root, target), resolve(root, "public", file)];
   return candidates.find((path) => existsSync(path)) ?? candidates[candidates.length - 1];
+}
+
+function mergeBytecodeFallbacks(control = {}, bytecodeControl = {}) {
+  const merged = { ...control };
+  if (!hasItems(merged.stopFrames) && hasItems(bytecodeControl.stopFrames)) {
+    merged.stopFrames = [...new Set(bytecodeControl.stopFrames)].sort((a, b) => a - b);
+  }
+  if (!hasItems(merged.spriteStopFrames) && hasItems(bytecodeControl.spriteStopFrames)) {
+    merged.spriteStopFrames = bytecodeControl.spriteStopFrames;
+  }
+  if (!hasItems(merged.frameActions) && hasItems(bytecodeControl.frameActions)) {
+    merged.frameActions = withBytecodeSources(bytecodeControl.frameActions, "root");
+  }
+  if (!hasItems(merged.spriteActions) && hasItems(bytecodeControl.spriteActions)) {
+    merged.spriteActions = withBytecodeSources(bytecodeControl.spriteActions, "sprite");
+  }
+  if (!hasItems(merged.definedFunctions) && hasItems(bytecodeControl.definedFunctions)) {
+    merged.definedFunctions = bytecodeControl.definedFunctions;
+  }
+  if (!hasItems(merged.buttonActions) && hasItems(bytecodeControl.buttonActions)) {
+    merged.buttonActions = bytecodeControl.buttonActions;
+  }
+  return merged;
+}
+
+function withBytecodeSources(records = [], scope) {
+  return records.map((record) => {
+    const source = record.source ?? (scope === "sprite"
+      ? `bytecode/DefineSprite_${record.spriteId}/frame_${record.frame + 1}/DoAction`
+      : `bytecode/frame_${record.frame + 1}/DoAction`);
+    return {
+      ...record,
+      source,
+      actions: (record.actions ?? []).map((action) => ({ ...action, source: action.source ?? source })),
+    };
+  });
+}
+
+function hasItems(value) {
+  if (Array.isArray(value)) return value.length > 0;
+  return Boolean(value && typeof value === "object" && Object.keys(value).length > 0);
+}
+
+function augmentSoundLibraryDurations(soundLibrary = {}, durations = {}) {
+  return Object.fromEntries(Object.entries(soundLibrary).map(([name, entry]) => {
+    if (!entry || typeof entry !== "object" || entry.durationMs !== undefined) return [name, entry];
+    const id = soundIdFromSrc(entry.src);
+    const durationMs = durations[String(id)];
+    return [name, durationMs === undefined ? entry : { ...entry, durationMs }];
+  }));
+}
+
+function soundIdFromSrc(src) {
+  const file = basename(String(src ?? ""));
+  const match = file.match(/^([+-]?\d+)_/);
+  return match ? Number(match[1]) : undefined;
 }
 
 function annotateGeneratedActionSupport(control, timeline, report) {
@@ -158,10 +216,10 @@ function buildControlFlowGraphs(control, timeline, report) {
     return graph;
   });
 
-  const functions = (control.definedFunctions ?? []).map((definition) => {
+  const functions = Object.values(control.definedFunctions ?? {}).map((definition) => {
     const node = functionNode(definition.functionName);
     const edges = [];
-    for (const call of definition.functionCalls ?? []) {
+    for (const call of definition.functionCalls ?? definition.calls ?? []) {
       edges.push(compactObject({
         from: node,
         to: functionNode(call.functionName),
@@ -173,7 +231,7 @@ function buildControlFlowGraphs(control, timeline, report) {
     for (const assignment of definition.assignments ?? []) {
       edges.push(compactObject({
         from: node,
-        to: variableNode(assignment.variable),
+        to: variableNode(assignment.variable ?? assignment.target),
         type: "assignment",
         value: assignment.value,
       }));
@@ -303,6 +361,8 @@ function hasResolvableSpriteTarget(action, nestedSprite) {
 
 function buildReport(swfPath, scene) {
   const movie = parseSwf(readFileSync(swfPath));
+  const bytecodeControl = extractControl(movie);
+  const soundDurations = soundDurationsFromMovie(movie);
   const tagCounts = countTags(movie.tags);
   const root = inspectTimeline(movie.tags, "root", undefined);
   const sprites = movie.tags
@@ -361,6 +421,8 @@ function buildReport(swfPath, scene) {
     },
     labels: root.labels,
     autoPlayRanges: buildAutoPlayRanges(movie.header.frameCount, root.stopFrames ?? [], root.labels),
+    bytecodeControl,
+    soundDurations,
     rootFrameActions: root.frameActions,
     spriteFrameActions: sprites.flatMap((spriteInfo) =>
       spriteInfo.frameActions.map((action) => ({ spriteId: spriteInfo.spriteId, ...action })),
@@ -369,6 +431,26 @@ function buildReport(swfPath, scene) {
     buttons,
     clickableRegions,
   };
+}
+
+function soundDurationsFromMovie(movie) {
+  return Object.fromEntries(
+    movie.tags
+      .filter((tag) => tag.type === swf.TagType.DefineSound)
+      .map((tag) => [String(Number(tag.id)), soundDurationMs(tag)])
+      .filter(([, duration]) => duration !== undefined),
+  );
+}
+
+function soundDurationMs(tag) {
+  const samples = Number(tag.sampleCount);
+  const rate = swfSoundRate(tag.soundRate);
+  return Number.isFinite(samples) && samples > 0 && rate > 0 ? (samples / rate) * 1000 : undefined;
+}
+
+function swfSoundRate(soundRate) {
+  const rates = [5512, 11025, 22050, 44100];
+  return soundRate <= 3 ? rates[soundRate] : Number(soundRate) || 0;
 }
 
 function inspectTimeline(tags, scope, spriteId, declaredFrameCount) {

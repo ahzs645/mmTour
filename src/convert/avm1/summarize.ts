@@ -612,15 +612,26 @@ export function combineButtonActions(actions: ControlAction[]): ControlAction | 
   const assignments = actions.flatMap((action) => action.assignments ?? (
     action.command === "setVariable" && action.target ? [{ target: action.target, value: action.value, rawValue: action.rawValue }] : []
   ));
-  const functionCalls: FunctionCall[] = actions.flatMap((action) => action.functionCalls ?? []);
+  const primaryIndex = findLastActionIndex(actions, (action) =>
+    Boolean(action.command && action.command !== "setVariable" && action.command !== "callFunctions")
+  );
+  const functionCalls: FunctionCall[] = [];
+  for (let i = 0; i < actions.length; i += 1) {
+    const action = actions[i];
+    if (i !== primaryIndex) {
+      const timelineCall = timelineActionAsCall(action);
+      if (timelineCall) functionCalls.push(timelineCall);
+    }
+    functionCalls.push(...(action.functionCalls ?? []));
+  }
   const loads = actions.flatMap((action) =>
     (action.command === "loadMovie" || action.command === "loadMovieNum") && action.swf
       ? [{ swf: action.swf, level: action.level }]
       : action.loads ?? [],
   );
-  const primary = actions.find((action) => action.command && action.command !== "setVariable" && action.command !== "callFunctions")
-    ?? actions.find((action) => action.command === "callFunctions")
-    ?? actions[0];
+  const primary = primaryIndex >= 0
+    ? actions[primaryIndex]
+    : actions.find((action) => action.command === "callFunctions") ?? actions[0];
   const merged: ControlAction = { ...primary };
   if (assignments.length) merged.assignments = assignments;
   if (functionCalls.length) merged.functionCalls = functionCalls;
@@ -632,4 +643,20 @@ export function combineButtonActions(actions: ControlAction[]): ControlAction | 
     }
   }
   return merged;
+}
+
+function findLastActionIndex(actions: ControlAction[], predicate: (action: ControlAction) => boolean): number {
+  for (let i = actions.length - 1; i >= 0; i -= 1) if (predicate(actions[i])) return i;
+  return -1;
+}
+
+function timelineActionAsCall(action: ControlAction): FunctionCall | undefined {
+  if (!action.command || !TIMELINE_METHODS.has(action.command)) return undefined;
+  const args =
+    action.label !== undefined
+      ? JSON.stringify(action.label)
+      : typeof action.frame === "number"
+        ? String(action.frame + 1)
+        : action.frameExpression ?? "";
+  return { target: action.target ?? "self", functionName: action.command, arguments: args };
 }

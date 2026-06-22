@@ -201,12 +201,43 @@ export class DomRenderer {
   private wireButton(media: HTMLElement, ownerPath: string, characterId: number) {
     const dispatch = this.options.onButtonEvent;
     if (!dispatch) return;
+    media.dataset.buttonOwnerPath = ownerPath;
+    media.dataset.buttonCharacter = String(characterId);
     media.style.pointerEvents = "auto";
     media.style.cursor = "pointer";
     media.addEventListener("pointerenter", () => dispatch(ownerPath, characterId, "rollOver"));
     media.addEventListener("pointerleave", () => dispatch(ownerPath, characterId, "rollOut"));
-    media.addEventListener("pointerdown", () => dispatch(ownerPath, characterId, "press"));
-    media.addEventListener("pointerup", () => dispatch(ownerPath, characterId, "release"));
+    media.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      const rect = media.getBoundingClientRect();
+      const insideOriginalBounds = (x: number, y: number) => x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+      const cleanup = () => {
+        window.removeEventListener("pointerup", release, true);
+        window.removeEventListener("pointercancel", cancel, true);
+      };
+      const release = (upEvent: PointerEvent) => {
+        if (upEvent.pointerId !== event.pointerId) return;
+        cleanup();
+        const hit = document.elementFromPoint(upEvent.clientX, upEvent.clientY)?.closest<HTMLElement>(".player-hit");
+        const sameButton =
+          hit?.dataset.buttonOwnerPath === ownerPath && hit.dataset.buttonCharacter === String(characterId);
+        if (sameButton || insideOriginalBounds(upEvent.clientX, upEvent.clientY)) {
+          dispatch(ownerPath, characterId, "release");
+        }
+      };
+      const cancel = (cancelEvent: PointerEvent) => {
+        if (cancelEvent.pointerId !== event.pointerId) return;
+        cleanup();
+      };
+      window.addEventListener("pointerup", release, true);
+      window.addEventListener("pointercancel", cancel, true);
+      try {
+        media.setPointerCapture(event.pointerId);
+      } catch {
+        // The hit node can be removed by the press animation before capture sticks.
+      }
+      dispatch(ownerPath, characterId, "press");
+    });
   }
 
   private createMedia(node: RenderNode): HTMLElement {

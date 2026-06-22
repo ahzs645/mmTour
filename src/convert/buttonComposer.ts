@@ -11,7 +11,7 @@
 
 import { swf } from "swf-parser";
 import type { Matrix } from "../data/timelineTypes";
-import { shapeInner } from "./svgEmit.ts";
+import { shapeInner, type ShapeSvgOptions } from "./svgEmit.ts";
 
 const STATES = [
   { key: "stateUp", file: "1_up" },
@@ -74,7 +74,7 @@ export function collectButtons(movie: any): any[] {
 
 /** Compose all per-state SVGs for one DefineButton. `getShape(id)` returns the
  *  parsed DefineShape tag for a character id, or undefined for non-shapes. */
-export function composeButton(button: any, getShape: (id: number) => any): ComposedButton {
+export function composeButton(button: any, getShape: (id: number) => any, options: ShapeSvgOptions = {}): ComposedButton {
   const states: Record<string, string> = {};
   const unsupported: string[] = [];
 
@@ -90,7 +90,7 @@ export function composeButton(button: any, getShape: (id: number) => any): Compo
         unsupported.push(`record→char ${rec.characterId} (non-shape)`);
         return;
       }
-      const inner = shapeInner(shape, `b${button.id}_${file}_${i}`);
+      const inner = shapeInner(shape, `b${button.id}_${file}_${i}`, options);
       unsupported.push(...inner.unsupported.map((u) => `char ${rec.characterId}: ${u}`));
       if (!inner.body) return;
 

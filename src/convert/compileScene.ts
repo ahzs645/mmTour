@@ -19,6 +19,7 @@ import {
   fontsById, reconstructText,
 } from "./index.ts";
 import { matrixFromButtonRecord } from "./buttonComposer.ts";
+import type { BitmapFillImage } from "./svgEmit.ts";
 import { extractControl, detectDependencies, type ExtractedControl, type SwfDependency } from "./avm1Control.ts";
 import { parseProgram } from "./avm1/parse.ts";
 import { runInit } from "./avm1/interp.ts";
@@ -64,28 +65,35 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
   const assets: Record<string, any> = {};
   const stats: CompileStats = { shapes: 0, images: 0, fonts: 0, sounds: 0, buttons: 0, texts: 0, frames: 0, sprites: 0, stopFrames: 0, assetBytes: 0, ms: 0 };
   const soundNames = soundExportNames(movie);
-  const soundLibrary: Record<string, { id: number; name: string; src: string; durationMs?: number }> = {};
-
-  // --- shapes ---
-  for (const tag of movie.tags) {
-    if (tag.type !== swf.TagType.DefineShape) continue;
-    try {
-      const svg = defineShapeToSvg(tag).svg;
-      put(`shapes/${tag.id}.svg`, "image/svg+xml", svg);
-      assets[String(tag.id)] = { id: tag.id, kind: "shape", src: `generated/${scene}/shapes/${tag.id}.svg`, origin: svgOrigin(svg) };
-      stats.shapes++;
-    } catch { /* skip a bad shape */ }
-  }
+  const soundLibrary: Record<string, { id: number; name: string; src: string; durationMs?: number; aliases?: string[] }> = {};
+  const { bitmaps, jpegTables } = collectBitmaps(movie);
+  const bitmapFillImages = new Map<number, BitmapFillImage>();
+  const bitmapFill = (id: number) => bitmapFillImages.get(id);
 
   // --- images ---
-  const { bitmaps, jpegTables } = collectBitmaps(movie);
   for (const tag of bitmaps) {
     try {
       const { ext, mime, bytes: imgBytes } = await bitmapBytes(tag, jpegTables);
       put(`images/${tag.id}.${ext}`, mime, imgBytes);
       assets[String(tag.id)] ??= { id: tag.id, kind: "image", src: `generated/${scene}/images/${tag.id}.${ext}`, origin: zero() };
+      bitmapFillImages.set(Number(tag.id), {
+        width: Number(tag.width) || 0,
+        height: Number(tag.height) || 0,
+        href: `data:${mime};base64,${bytesToBase64(imgBytes)}`,
+      });
       stats.images++;
     } catch { /* skip */ }
+  }
+
+  // --- shapes ---
+  for (const tag of movie.tags) {
+    if (tag.type !== swf.TagType.DefineShape) continue;
+    try {
+      const svg = defineShapeToSvg(tag, { bitmapFill }).svg;
+      put(`shapes/${tag.id}.svg`, "image/svg+xml", svg);
+      assets[String(tag.id)] = { id: tag.id, kind: "shape", src: `generated/${scene}/shapes/${tag.id}.svg`, origin: svgOrigin(svg) };
+      stats.shapes++;
+    } catch { /* skip a bad shape */ }
   }
 
   // --- fonts ---
@@ -109,9 +117,15 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
       assets[`sound:${tag.id}`] = { id: tag.id, kind: "sound", src, origin: zero() };
       const name = soundNames.get(Number(tag.id));
       if (name) {
-        const entry = { id: tag.id, name, src, durationMs: soundDurationMs(tag) };
+        const lower = name.toLowerCase();
+        const entry = {
+          id: tag.id,
+          name,
+          src,
+          durationMs: soundDurationMs(tag),
+          ...(lower !== name ? { aliases: [lower] } : {}),
+        };
         soundLibrary[name] = entry;
-        soundLibrary[name.toLowerCase()] = entry;
       }
       stats.sounds++;
     } catch { /* skip */ }
@@ -119,11 +133,12 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
 
   // --- buttons ---
   const dynamicTexts = dynamicTextInfo(movie);
+  const controlDynamicTexts: Record<string, any> = {};
   const shapesById = new Map<number, any>();
   for (const t of movie.tags) if (t.type === swf.TagType.DefineShape) shapesById.set(t.id, t);
   for (const button of collectButtons(movie)) {
     try {
-      const composed = composeButton(button, (cid) => shapesById.get(cid));
+      const composed = composeButton(button, (cid) => shapesById.get(cid), { bitmapFill });
       const states: Record<string, any> = {};
       for (const [stateFile, svgStr] of Object.entries(composed.states)) {
         if (!/<path|<image|<use/.test(svgStr)) continue;
@@ -156,6 +171,7 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
       const text = editTextStyle(t, scene);
       put(`texts/${t.id}.txt`, "text/plain", String(t.text ?? ""));
       assets[String(t.id)] = text;
+      if (text.text.normalizedVariableName) controlDynamicTexts[String(t.id)] = { characterId: t.id, ...text.text };
       stats.texts++;
     } else if (t.type === swf.TagType.DefineText) {
       const content = reconstructText(t, fonts);
@@ -194,6 +210,7 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
     const asset = assets[id];
     if (asset?.kind === "sprite" && !asset.timeline?.length) asset.timeline = spriteTimeline;
   }
+  inferSpriteBoundsAndOverflow(assets);
   stats.sprites = Object.values(assets).filter((a: any) => a.kind === "sprite").length;
 
   const labels = Object.fromEntries(frames.filter((f: any) => f.label).map((f: any) => [f.label, f.index]));
@@ -274,6 +291,8 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
       definedFunctions: control.definedFunctions,
       buttonActions: control.buttonActions,
       soundLibrary,
+      spriteLocalDefaults: inferSpriteLocalDefaults(control.spriteActions),
+      dynamicTexts: controlDynamicTexts,
       globalDefaults,
     },
     frameSvgs: [],
@@ -325,6 +344,18 @@ async function bitmapBytes(tag: any, jpegTables?: Uint8Array): Promise<{ ext: st
   ctx.putImageData(new ImageData(new Uint8ClampedArray(img.rgba), img.width, img.height), 0, 0);
   const blob = await canvas.convertToBlob({ type: "image/png" });
   return { ext: "png", mime: "image/png", bytes: new Uint8Array(await blob.arrayBuffer()) };
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  const nodeBuffer = (globalThis as any).Buffer;
+  if (nodeBuffer) return nodeBuffer.from(bytes).toString("base64");
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
 }
 
 const ALIGN = ["left", "right", "center", "justify"];
@@ -422,6 +453,109 @@ function buttonTextOrigin(fields: { id: number; matrix: Matrix }[], dynamicTexts
     }
   }
   return Number.isFinite(minX) ? { x: -minX, y: -minY, width: maxX - minX, height: maxY - minY } : undefined;
+}
+
+function inferSpriteLocalDefaults(spriteActions: Array<{ spriteId?: number; actions?: any[] }>): Record<string, Record<string, unknown>> {
+  const out: Record<string, Record<string, unknown>> = {};
+  for (const record of spriteActions ?? []) {
+    if (typeof record.spriteId !== "number") continue;
+    const key = String(record.spriteId);
+    for (const action of record.actions ?? []) {
+      if (action.command !== "setVariable" || action.executionContext === "branch") continue;
+      if (!isSimpleLocalName(action.target) || out[key]?.[action.target] !== undefined) continue;
+      const value = action.value ?? literalFromRaw(action.rawValue);
+      if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") continue;
+      out[key] ??= {};
+      out[key][action.target] = value;
+    }
+  }
+  return Object.fromEntries(Object.entries(out).filter(([, values]) => Object.keys(values).length));
+}
+
+function literalFromRaw(raw: unknown): string | number | boolean | undefined {
+  if (typeof raw !== "string") return undefined;
+  const value = raw.trim();
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) return value.slice(1, -1);
+  if (value === "true") return true;
+  if (value === "false") return false;
+  if (/^-?\d+(\.\d+)?$/.test(value)) return Number(value);
+  return undefined;
+}
+
+function isSimpleLocalName(name: unknown): name is string {
+  return typeof name === "string" && /^[A-Za-z_$][\w$]*$/.test(name) && !/^(true|false|null|undefined|this|_root|_global|_parent|_level\d+)$/.test(name);
+}
+
+function inferSpriteBoundsAndOverflow(assets: Record<string, any>) {
+  const visiting = new Set<number>();
+  const boundsForSprite = (asset: any): Origin | undefined => {
+    if (!asset || asset.kind !== "sprite" || !asset.timeline?.length) return asset?.origin;
+    if (asset.__boundsReady) return asset.origin;
+    if (visiting.has(asset.id)) return asset.origin;
+    visiting.add(asset.id);
+    const first = frameBounds(asset.timeline[0], assets, boundsForSprite);
+    const all = framesBounds(asset.timeline, assets, boundsForSprite);
+    visiting.delete(asset.id);
+    if (first) asset.origin = first;
+    if (first && all && !hasClipMask(asset.timeline) && overflows(first, all)) asset.overflowsBounds = true;
+    Object.defineProperty(asset, "__boundsReady", { value: true, enumerable: false, configurable: true });
+    return asset.origin;
+  };
+
+  for (const asset of Object.values(assets)) boundsForSprite(asset);
+  for (const asset of Object.values(assets)) delete asset.__boundsReady;
+}
+
+function framesBounds(frames: any[], assets: Record<string, any>, spriteBounds: (asset: any) => Origin | undefined): Origin | undefined {
+  return unionBounds((frames ?? []).map((frame) => frameBounds(frame, assets, spriteBounds)).filter(Boolean) as Origin[]);
+}
+
+function frameBounds(frame: any, assets: Record<string, any>, spriteBounds: (asset: any) => Origin | undefined): Origin | undefined {
+  const bounds: Origin[] = [];
+  for (const instance of frame?.instances ?? []) {
+    const child = assets[String(instance.characterId)] ?? assets[`button:${instance.characterId}`];
+    const origin = child?.kind === "sprite" ? spriteBounds(child) : child?.origin;
+    if (!origin || (!origin.width && !origin.height)) continue;
+    bounds.push(transformedBounds(origin, instance.matrix ?? { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 }));
+  }
+  return unionBounds(bounds);
+}
+
+function transformedBounds(origin: Origin, matrix: Matrix): Origin {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of [
+    [origin.x, origin.y],
+    [origin.x + origin.width, origin.y],
+    [origin.x, origin.y + origin.height],
+    [origin.x + origin.width, origin.y + origin.height],
+  ]) {
+    const px = matrix.a * x + matrix.c * y + matrix.tx;
+    const py = matrix.b * x + matrix.d * y + matrix.ty;
+    minX = Math.min(minX, px); minY = Math.min(minY, py);
+    maxX = Math.max(maxX, px); maxY = Math.max(maxY, py);
+  }
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+function unionBounds(bounds: Origin[]): Origin | undefined {
+  if (!bounds.length) return undefined;
+  const minX = Math.min(...bounds.map((b) => b.x));
+  const minY = Math.min(...bounds.map((b) => b.y));
+  const maxX = Math.max(...bounds.map((b) => b.x + b.width));
+  const maxY = Math.max(...bounds.map((b) => b.y + b.height));
+  return Number.isFinite(minX) ? { x: minX, y: minY, width: maxX - minX, height: maxY - minY } : undefined;
+}
+
+function hasClipMask(frames: any[]): boolean {
+  return (frames ?? []).some((frame) => (frame.instances ?? []).some((instance: any) => instance.clipDepth));
+}
+
+function overflows(base: Origin, all: Origin): boolean {
+  const tolerance = 20;
+  return all.x < base.x - tolerance
+    || all.y < base.y - tolerance
+    || all.x + all.width > base.x + base.width + tolerance
+    || all.y + all.height > base.y + base.height + tolerance;
 }
 
 function normalizeBindingName(name: string): string {

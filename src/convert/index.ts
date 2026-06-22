@@ -9,7 +9,7 @@ import { defineShapeToSvg, type ShapeSvgResult } from "./svgEmit.ts";
 
 export { rasterizeShape } from "./shapeRasterizer.ts";
 export { defineShapeToSvg } from "./svgEmit.ts";
-export type { ShapeSvgResult } from "./svgEmit.ts";
+export type { ShapeSvgResult, BitmapFillImage, BitmapFillResolver, ShapeSvgOptions } from "./svgEmit.ts";
 export {
   collectBitmaps,
   mergeJpeg,

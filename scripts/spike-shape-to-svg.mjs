@@ -12,7 +12,9 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { collectShapes, defineShapeToSvg } from "../src/convert/index.ts";
+import { parseSwf } from "swf-parser";
+import { PNG } from "pngjs";
+import { collectShapes, defineShapeToSvg, collectBitmaps, isJpegBitmap, mergeJpeg, decodeLossless } from "../src/convert/index.ts";
 
 const root = resolve(new URL("..", import.meta.url).pathname);
 const scene = process.argv[2] ?? "intro";
@@ -24,7 +26,10 @@ const outDir = join(root, "verification/spike", scene);
 if (!existsSync(swfPath)) throw new Error(`SWF not found: ${swfPath}`);
 mkdirSync(outDir, { recursive: true });
 
-const { shapes } = collectShapes(new Uint8Array(readFileSync(swfPath)));
+const swfBytes = new Uint8Array(readFileSync(swfPath));
+const movie = parseSwf(swfBytes);
+const bitmapFill = await bitmapFillResolver(movie);
+const { shapes } = collectShapes(swfBytes);
 const targets = onlyIds.length ? shapes.filter((s) => onlyIds.includes(s.id)) : shapes;
 
 let pass = 0;
@@ -34,7 +39,7 @@ const fillTypeTally = new Map();
 const rows = [];
 
 for (const { id, tag } of targets) {
-  const { svg, fillTypes, unsupported } = defineShapeToSvg(tag);
+  const { svg, fillTypes, unsupported } = defineShapeToSvg(tag, { bitmapFill });
   for (const t of fillTypes) fillTypeTally.set(t, (fillTypeTally.get(t) ?? 0) + 1);
   writeFileSync(join(outDir, `${id}.mine.svg`), svg);
 
@@ -71,6 +76,27 @@ console.log(
     (comparable ? `  (${((pass / comparable) * 100).toFixed(1)}% geometric match vs FFDec)` : ""),
 );
 console.log(`SVGs written to ${outDir}`);
+
+async function bitmapFillResolver(movie) {
+  const { bitmaps, jpegTables } = collectBitmaps(movie);
+  const images = new Map();
+  for (const tag of bitmaps) {
+    if (isJpegBitmap(tag)) {
+      const bytes = mergeJpeg(tag.data, tag.mediaType === "image/x-swf-partial-jpeg" ? jpegTables : undefined);
+      images.set(Number(tag.id), { width: Number(tag.width) || 0, height: Number(tag.height) || 0, href: dataUrl("image/jpeg", bytes) });
+      continue;
+    }
+    const img = await decodeLossless(tag);
+    const png = new PNG({ width: img.width, height: img.height });
+    png.data = Buffer.from(img.rgba);
+    images.set(Number(tag.id), { width: img.width, height: img.height, href: dataUrl("image/png", PNG.sync.write(png)) });
+  }
+  return (id) => images.get(id);
+}
+
+function dataUrl(mime, bytes) {
+  return `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`;
+}
 
 /** Extract coord pairs from all <path d="..."> in an SVG, per subpath, with the
  *  explicit closing vertex (last == first) dropped so a contour started at a

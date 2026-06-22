@@ -36,13 +36,10 @@ for (const scene of scenes) {
 
   const movie = parseSwf(new Uint8Array(readFileSync(swfPath)));
   const counts = { shapes: 0, images: 0, fonts: 0, sounds: 0, buttons: 0, texts: 0 };
+  const bitmapFillImages = new Map();
+  const bitmapFill = (id) => bitmapFillImages.get(id);
 
-  // --- shapes ---
   const dir = (name) => { const d = join(outDir, name); mkdirSync(d, { recursive: true }); return d; };
-  for (const { id, tag } of collectShapes(new Uint8Array(readFileSync(swfPath))).shapes) {
-    writeFileSync(join(dir("shapes"), `${id}.svg`), defineShapeToSvg(tag).svg);
-    counts.shapes++;
-  }
 
   // --- images (native format: lossless→png, jpeg→jpg) ---
   const { bitmaps, jpegTables } = collectBitmaps(movie);
@@ -50,13 +47,22 @@ for (const scene of scenes) {
     if (isJpegBitmap(tag)) {
       const bytes = mergeJpeg(tag.data, tag.mediaType === "image/x-swf-partial-jpeg" ? jpegTables : undefined);
       writeFileSync(join(dir("images"), `${tag.id}.jpg`), bytes);
+      bitmapFillImages.set(Number(tag.id), { width: Number(tag.width) || 0, height: Number(tag.height) || 0, href: dataUrl("image/jpeg", bytes) });
     } else {
       const img = await decodeLossless(tag);
       const png = new PNG({ width: img.width, height: img.height });
       png.data = Buffer.from(img.rgba);
-      writeFileSync(join(dir("images"), `${tag.id}.png`), PNG.sync.write(png));
+      const bytes = PNG.sync.write(png);
+      writeFileSync(join(dir("images"), `${tag.id}.png`), bytes);
+      bitmapFillImages.set(Number(tag.id), { width: img.width, height: img.height, href: dataUrl("image/png", bytes) });
     }
     counts.images++;
+  }
+
+  // --- shapes ---
+  for (const { id, tag } of collectShapes(new Uint8Array(readFileSync(swfPath))).shapes) {
+    writeFileSync(join(dir("shapes"), `${id}.svg`), defineShapeToSvg(tag, { bitmapFill }).svg);
+    counts.shapes++;
   }
 
   // --- fonts ---
@@ -77,7 +83,7 @@ for (const scene of scenes) {
   const shapesById = new Map();
   for (const t of movie.tags) if (t.type === swf.TagType.DefineShape) shapesById.set(t.id, t);
   for (const button of collectButtons(movie)) {
-    const composed = composeButton(button, (cid) => shapesById.get(cid));
+    const composed = composeButton(button, (cid) => shapesById.get(cid), { bitmapFill });
     const bdir = join(dir("buttons"), composed.dir);
     let wrote = false;
     for (const [stateFile, svgStr] of Object.entries(composed.states)) {
@@ -106,4 +112,8 @@ for (const scene of scenes) {
   }
 
   console.log(`${scene}: ` + Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(" "));
+}
+
+function dataUrl(mime, bytes) {
+  return `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`;
 }

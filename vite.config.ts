@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
 
 // For the GitHub Pages deploy (GITHUB_PAGES=1) we build only the self-contained
 // "SWF Studio" pages (they compile + play SWFs in-browser, no server assets) and
@@ -8,6 +9,7 @@ import { defineConfig } from "vite";
 const pages = !!process.env.GITHUB_PAGES;
 
 export default defineConfig({
+  plugins: [react()],
   base: pages ? "/mmTour/" : "/",
   server: {
     fs: {
