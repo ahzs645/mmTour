@@ -13,9 +13,12 @@ export class SoundController {
   private voice: HTMLAudioElement | null = null;
   private voiceStartedAt = 0;
   private voiceDurationMs = 0;
+  private pendingVoiceSegmentDurationMs = 0;
   private muted = false;
   /** Used when a VO's metadata hasn't loaded yet (or audio is autoplay-blocked). */
   private static readonly FALLBACK_VO_MS = 5000;
+  /** Marker-only VO segments do not carry their own media file duration. */
+  private static readonly FALLBACK_SEGMENT_MS = 2500;
 
   handle(action: ControlAction) {
     if (this.muted) return;
@@ -28,7 +31,11 @@ export class SoundController {
       case "playVO":
         if (action.soundSrc) this.playVoice(action.soundSrc, action.soundDurationMs);
         break;
+      case "markSndSegment":
+        this.markVoiceSegment(action.soundDurationMs);
+        break;
       case "stopSound":
+        this.pendingVoiceSegmentDurationMs = 0;
         this.stopVoice();
         break;
       default:
@@ -48,16 +55,29 @@ export class SoundController {
   }
 
   private playVoice(src: string, durationMs?: number) {
+    const pendingSegmentDurationMs = this.pendingVoiceSegmentDurationMs;
+    this.pendingVoiceSegmentDurationMs = 0;
     this.stopVoice();
     const audio = new Audio(assetUrl(src));
     audio.volume = 1;
     this.voiceStartedAt = performance.now();
-    this.voiceDurationMs = durationMs && Number.isFinite(durationMs) ? durationMs : 0;
+    this.voiceDurationMs = pendingSegmentDurationMs || (durationMs && Number.isFinite(durationMs) ? durationMs : 0);
     audio.addEventListener("loadedmetadata", () => {
       if (!this.voiceDurationMs && Number.isFinite(audio.duration)) this.voiceDurationMs = audio.duration * 1000;
     });
     void audio.play().catch(() => undefined);
     this.voice = audio;
+  }
+
+  private markVoiceSegment(durationMs?: number) {
+    const segmentDurationMs =
+      durationMs && Number.isFinite(durationMs) ? durationMs : SoundController.FALLBACK_SEGMENT_MS;
+    if (!this.voice) {
+      this.pendingVoiceSegmentDurationMs = segmentDurationMs;
+      return;
+    }
+    this.voiceStartedAt = performance.now();
+    this.voiceDurationMs = segmentDurationMs;
   }
 
   /**

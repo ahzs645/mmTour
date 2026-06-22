@@ -23,6 +23,7 @@ import type { BitmapFillImage } from "./svgEmit.ts";
 import { extractControl, detectDependencies, type ExtractedControl, type SwfDependency } from "./avm1Control.ts";
 import { parseProgram } from "./avm1/parse.ts";
 import { runInit } from "./avm1/interp.ts";
+import { enrichSoundMetadata } from "./soundMetadata.ts";
 
 export interface CompileStats {
   shapes: number;
@@ -131,6 +132,10 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
     } catch { /* skip */ }
   }
 
+  // --- control ---
+  const control = extractControl(movie);
+  enrichSoundMetadata(control, soundLibrary);
+
   // --- buttons ---
   const dynamicTexts = dynamicTextInfo(movie);
   const controlDynamicTexts: Record<string, any> = {};
@@ -140,17 +145,26 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
     try {
       const composed = composeButton(button, (cid) => shapesById.get(cid), { bitmapFill });
       const states: Record<string, any> = {};
+      const hasButtonControl = Boolean(control.buttonActions?.[String(button.id)]);
       for (const [stateFile, svgStr] of Object.entries(composed.states)) {
-        if (!/<path|<image|<use/.test(svgStr)) continue;
+        const origin = svgOrigin(svgStr);
+        if (!/<path|<image|<use/.test(svgStr) && origin.width <= 0 && origin.height <= 0 && !hasButtonControl) continue;
         const path = `buttons/${composed.dir}/${stateFile}.svg`;
         put(path, "image/svg+xml", svgStr);
-        const stateName = stateFile.replace(/^\d+_/, "").replace("hittest", "hit");
-        states[stateName] = { src: `generated/${scene}/${path}`, origin: svgOrigin(svgStr) };
+        const rawStateName = stateFile.replace(/^\d+_/, "");
+        const stateName = rawStateName === "hittest" ? "hit" : rawStateName;
+        const entry = { src: `generated/${scene}/${path}`, origin };
+        states[stateName] = entry;
+        if (rawStateName === "hittest") states.hittest = entry;
       }
       const textFields = buttonTextFields(button, dynamicTexts);
+      const textOrigin = buttonTextOrigin(textFields, dynamicTexts);
+      if (textOrigin) {
+        ensureButtonStatePlaceholders(scene, composed.dir, states, textOrigin, put);
+      }
       if (Object.keys(states).length || textFields.length) {
         const firstState = Object.values(states)[0] as any | undefined;
-        const origin = states.up?.origin ?? firstState?.origin ?? buttonTextOrigin(textFields, dynamicTexts) ?? zero();
+        const origin = states.up?.origin ?? firstState?.origin ?? textOrigin ?? zero();
         assets[`button:${button.id}`] = {
           id: button.id,
           kind: "button",
@@ -189,7 +203,6 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
 
   // --- timeline (display list) ---
   const frames = buildFrames(tags);
-  const control = extractControl(movie);
   const controlledSprites = controlledSpriteIds(control);
   const spriteTimelines = new Map<string, any[]>();
 
@@ -210,7 +223,7 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
     const asset = assets[id];
     if (asset?.kind === "sprite" && !asset.timeline?.length) asset.timeline = spriteTimeline;
   }
-  inferSpriteBoundsAndOverflow(assets);
+  inferSpriteBoundsAndOverflow(assets, control.spriteStopFrames);
   stats.sprites = Object.values(assets).filter((a: any) => a.kind === "sprite").length;
 
   const labels = Object.fromEntries(frames.filter((f: any) => f.label).map((f: any) => [f.label, f.index]));
@@ -227,7 +240,7 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
   let globalDefaults: Record<string, any> = {};
   if (initBytes) {
     try {
-      const r = runInit(parseProgram(initBytes), { osVersion: "Pro" });
+      const r = runInit(parseProgram(initBytes));
       globalDefaults = r.globals;
       initLoads = r.loads.filter((l) => l.level !== undefined);
       initCalls = r.calls;
@@ -455,6 +468,37 @@ function buttonTextOrigin(fields: { id: number; matrix: Matrix }[], dynamicTexts
   return Number.isFinite(minX) ? { x: -minX, y: -minY, width: maxX - minX, height: maxY - minY } : undefined;
 }
 
+function ensureButtonStatePlaceholders(
+  scene: string,
+  dir: string,
+  states: Record<string, any>,
+  origin: Origin,
+  put: (path: string, type: string, data: Uint8Array | string) => void,
+) {
+  const files = [
+    { file: "1_up", keys: ["up"] },
+    { file: "2_over", keys: ["over"] },
+    { file: "3_down", keys: ["down"] },
+    { file: "4_hittest", keys: ["hit", "hittest"] },
+  ];
+  for (const { file, keys } of files) {
+    if (keys.every((key) => states[key]?.src)) continue;
+    const path = `buttons/${dir}/${file}.svg`;
+    const entry = { src: `generated/${scene}/${path}`, origin };
+    put(path, "image/svg+xml", blankButtonStateSvg(origin));
+    for (const key of keys) states[key] ??= entry;
+  }
+}
+
+function blankButtonStateSvg(origin: Origin): string {
+  return `<svg xmlns:xlink="http://www.w3.org/1999/xlink" height="${svgNum(origin.height)}px" width="${svgNum(origin.width)}px" xmlns="http://www.w3.org/2000/svg"><g transform="matrix(1.0, 0.0, 0.0, 1.0, ${svgNum(origin.x)}, ${svgNum(origin.y)})"/></svg>`;
+}
+
+function svgNum(value: number): string {
+  const rounded = Math.round(value * 100) / 100;
+  return Object.is(rounded, -0) ? "0" : String(rounded);
+}
+
 function inferSpriteLocalDefaults(spriteActions: Array<{ spriteId?: number; actions?: any[] }>): Record<string, Record<string, unknown>> {
   const out: Record<string, Record<string, unknown>> = {};
   for (const record of spriteActions ?? []) {
@@ -486,28 +530,43 @@ function isSimpleLocalName(name: unknown): name is string {
   return typeof name === "string" && /^[A-Za-z_$][\w$]*$/.test(name) && !/^(true|false|null|undefined|this|_root|_global|_parent|_level\d+)$/.test(name);
 }
 
-function inferSpriteBoundsAndOverflow(assets: Record<string, any>) {
+function inferSpriteBoundsAndOverflow(assets: Record<string, any>, spriteStopFrames: Record<string, number[]> = {}) {
   const visiting = new Set<number>();
   const boundsForSprite = (asset: any): Origin | undefined => {
     if (!asset || asset.kind !== "sprite" || !asset.timeline?.length) return asset?.origin;
     if (asset.__boundsReady) return asset.origin;
     if (visiting.has(asset.id)) return asset.origin;
     visiting.add(asset.id);
-    const first = frameBounds(asset.timeline[0], assets, boundsForSprite);
-    const all = framesBounds(asset.timeline, assets, boundsForSprite);
+    const frameBoxes = asset.timeline
+      .map((frame: any) => frameBounds(frame, assets, boundsForSprite))
+      .filter(Boolean) as Origin[];
+    const first = frameBoxes[0];
+    const all = unionBounds(frameBoxes);
     visiting.delete(asset.id);
     if (first) asset.origin = first;
-    if (first && all && !hasClipMask(asset.timeline) && overflows(first, all)) asset.overflowsBounds = true;
+    if (first && all && !hasClipMask(asset.timeline) && (overflows(first, all) || hasSignificantBoundsMotion(frameBoxes))) {
+      asset.overflowsBounds = true;
+    }
     Object.defineProperty(asset, "__boundsReady", { value: true, enumerable: false, configurable: true });
     return asset.origin;
   };
 
   for (const asset of Object.values(assets)) boundsForSprite(asset);
+  propagateOverflowFlags(assets, spriteStopFrames);
   for (const asset of Object.values(assets)) delete asset.__boundsReady;
 }
 
-function framesBounds(frames: any[], assets: Record<string, any>, spriteBounds: (asset: any) => Origin | undefined): Origin | undefined {
-  return unionBounds((frames ?? []).map((frame) => frameBounds(frame, assets, spriteBounds)).filter(Boolean) as Origin[]);
+function propagateOverflowFlags(assets: Record<string, any>, spriteStopFrames: Record<string, number[]>) {
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const asset of Object.values(assets)) {
+      if (asset?.kind !== "sprite" || asset.overflowsBounds || !asset.timeline?.length || hasClipMask(asset.timeline)) continue;
+      if (!hasOverflowingChild(asset, assets) && !hasDeferredHoverTimeline(asset.timeline, spriteStopFrames[String(asset.id)] ?? [])) continue;
+      asset.overflowsBounds = true;
+      changed = true;
+    }
+  }
 }
 
 function frameBounds(frame: any, assets: Record<string, any>, spriteBounds: (asset: any) => Origin | undefined): Origin | undefined {
@@ -550,12 +609,47 @@ function hasClipMask(frames: any[]): boolean {
   return (frames ?? []).some((frame) => (frame.instances ?? []).some((instance: any) => instance.clipDepth));
 }
 
+function hasOverflowingChild(asset: any, assets: Record<string, any>): boolean {
+  return (asset.timeline ?? []).some((frame: any) => (frame.instances ?? []).some((instance: any) => {
+    const child = assets[String(instance.characterId)] ?? assets[`button:${instance.characterId}`];
+    return child?.kind === "sprite" && child.overflowsBounds;
+  }));
+}
+
+function hasDeferredHoverTimeline(frames: any[], stopFrames: number[]): boolean {
+  const overFrame = frames.findIndex((frame) => frame.label === "over");
+  const outFrame = frames.findIndex((frame) => frame.label === "out");
+  return overFrame > 0 && outFrame > overFrame && stopFrames.includes(0) && stopFrames.length >= 3;
+}
+
 function overflows(base: Origin, all: Origin): boolean {
   const tolerance = 20;
   return all.x < base.x - tolerance
     || all.y < base.y - tolerance
     || all.x + all.width > base.x + base.width + tolerance
     || all.y + all.height > base.y + base.height + tolerance;
+}
+
+function hasSignificantBoundsMotion(bounds: Origin[]): boolean {
+  if (bounds.length <= 2) return false;
+  const tolerance = 20;
+  const xs = bounds.map((b) => b.x);
+  const ys = bounds.map((b) => b.y);
+  const rights = bounds.map((b) => b.x + b.width);
+  const bottoms = bounds.map((b) => b.y + b.height);
+  const widths = bounds.map((b) => b.width);
+  const heights = bounds.map((b) => b.height);
+  return span(xs) > tolerance
+    || span(ys) > tolerance
+    || span(rights) > tolerance
+    || span(bottoms) > tolerance
+    || span(widths) > tolerance
+    || span(heights) > tolerance;
+}
+
+function span(values: number[]): number {
+  const finite = values.filter(Number.isFinite);
+  return finite.length ? Math.max(...finite) - Math.min(...finite) : 0;
 }
 
 function normalizeBindingName(name: string): string {

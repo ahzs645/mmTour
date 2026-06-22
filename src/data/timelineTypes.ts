@@ -46,7 +46,7 @@ export type TimelineAsset = {
    */
   timeline?: TimelineFrame[];
   /** Button up/over/down/hit state artwork. */
-  states?: Partial<Record<"up" | "over" | "down" | "hit", ButtonState>>;
+  states?: Partial<Record<"up" | "over" | "down" | "hit" | "hittest", ButtonState>>;
   /** This sprite's animated content slides outside its own bounds, so its baked frames clip
    *  the moving content — render it from the nested timeline (tree) instead of the baked frame. */
   overflowsBounds?: boolean;
@@ -160,9 +160,28 @@ export type ControlAction = {
   rawValue?: string;
   /** Sound action fields (attachSound/playVO/stopSound). */
   sound?: string;
+  /** Marker id for voice-over sub-segments such as TOUR74b. */
+  segment?: string;
   soundSrc?: string;
   soundDurationMs?: number;
   soundRole?: "music" | "vo" | string;
+  /** Resolved base sound when a marker aliases a segment id to its parent sound. */
+  resolvedSound?: string;
+  /** Raw argument string for metadata-only function calls. */
+  arguments?: string;
+  /** Non-executable metadata inferred from a function/sound-object call such as playVO("TOUR21"). */
+  soundAction?: {
+    command: "playVO" | "markSndSegment" | "attachSound" | "stopSound";
+    target?: string;
+    sound?: string;
+    soundSrc?: string;
+    soundDurationMs?: number;
+    soundRole?: "music" | "vo" | string;
+    ramp?: string;
+    segment?: string;
+    resolvedSound?: string;
+    arguments?: string;
+  };
 };
 
 /** One frame's extracted actions. `frame` is a 0-based root frame index. */
@@ -205,7 +224,7 @@ export type TimelineControl = {
   spriteStopFrames?: Record<string, number[]>;
   spriteLocalDefaults?: Record<string, Record<string, unknown>>;
   frameActions?: FrameActionRecord[];
-  spriteActions?: Record<string, Record<string, ControlAction[]>>;
+  spriteActions?: Array<{ spriteId: number; frame: number; source?: string; actions: ControlAction[] }>;
   definedFunctions?: Record<string, unknown>;
   soundLibrary?: Record<string, unknown>;
   globalDefaults?: Record<string, unknown>;

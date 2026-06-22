@@ -52,6 +52,11 @@ function summarizeRange(
   let i = start;
   while (i < end) {
     const action = program[i];
+    const shortCircuitEnd = summarizeShortCircuitAnd(program, i, end, state, context, guard);
+    if (shortCircuitEnd !== undefined) {
+      i = shortCircuitEnd;
+      continue;
+    }
     if (action.op === "If") {
       const cond = state.stack.pop() ?? unknown("condition");
       const target = boundedJump(action.jumpTo, i + 1, end);
@@ -79,6 +84,70 @@ function summarizeRange(
     processAction(action, state, context, guard);
     i += 1;
   }
+}
+
+function summarizeShortCircuitAnd(
+  program: Avm1Action[],
+  start: number,
+  end: number,
+  state: SummaryState,
+  context: SummaryContext,
+  guard: string | undefined,
+): number | undefined {
+  if (program[start]?.op !== "PushDuplicate" || program[start + 1]?.op !== "Not" || program[start + 2]?.op !== "If") return undefined;
+  const lhs = state.stack[state.stack.length - 1];
+  if (!lhs) return undefined;
+
+  const join = boundedJump(program[start + 2].jumpTo, start + 3, end);
+  const finalIf = join + 1;
+  if (join <= start + 3 || finalIf >= end || program[join]?.op !== "Not" || program[finalIf]?.op !== "If") return undefined;
+
+  const rhs = summarizeConditionRhs(program, start + 3, join, state, context);
+  if (!rhs) return undefined;
+
+  // Flash compiles `A && B` as:
+  //   A; dup; not; if join; pop; B; join: not; if after
+  // The final `if` jumps when the composite condition is false. If the RHS
+  // block ends in `Not`, this naturally becomes `A && !B`.
+  state.stack.pop();
+  const composite: Expr = { kind: "binary", op: "&&", left: lhs, right: rhs };
+  const skipCondition = notExpr(composite);
+  const target = boundedJump(program[finalIf].jumpTo, finalIf + 1, end);
+  if (target > finalIf + 1) {
+    const jumpIndex = findForwardJump(program, finalIf + 1, target, end);
+    if (jumpIndex >= 0) {
+      const afterElse = boundedJump(program[jumpIndex].jumpTo, target, end);
+      summarizeBranch(program, finalIf + 1, jumpIndex, state, context, andGuard(guard, invertExpr(skipCondition)));
+      summarizeBranch(program, target, afterElse, state, context, andGuard(guard, condToString(skipCondition)));
+      return afterElse;
+    }
+    summarizeBranch(program, finalIf + 1, target, state, context, andGuard(guard, invertExpr(skipCondition)));
+    return target;
+  }
+
+  return undefined;
+}
+
+function summarizeConditionRhs(
+  program: Avm1Action[],
+  start: number,
+  end: number,
+  base: SummaryState,
+  context: SummaryContext,
+): Expr | undefined {
+  const probe: SummaryState = {
+    stack: base.stack.slice(),
+    registers: new Map(base.registers),
+    currentTarget: base.currentTarget,
+    actions: [],
+    definedFunctions: [],
+  };
+  for (let i = start; i < end; i += 1) {
+    if (program[i].op === "If" || program[i].op === "Jump") return undefined;
+    processAction(program[i], probe, context, undefined);
+    if (probe.actions.length || probe.definedFunctions.length) return undefined;
+  }
+  return probe.stack[probe.stack.length - 1];
 }
 
 function summarizeBranch(
@@ -272,7 +341,7 @@ function processAction(action: Avm1Action, state: SummaryState, context: Summary
       return;
     }
     case "GotoFrame":
-      pushAction(state, { command: "gotoAndStop", frame: action.frame ?? 0, target: activeTarget(state), source: context.source }, guard);
+      pushAction(state, { command: "gotoAndStop", frame: action.frame ?? 0, frameExpression: String((action.frame ?? 0) + 1), target: activeTarget(state), source: context.source }, guard);
       return;
     case "GoToLabel":
       pushAction(state, { command: "gotoAndStop", label: action.label, target: activeTarget(state), source: context.source }, guard);
@@ -386,7 +455,7 @@ function makeGoto(command: "gotoAndPlay" | "gotoAndStop", target: string | undef
   const value = literalValue(frameExpr);
   const rel = relativeFrameExpression(frameExpr);
   if (rel) return { command, target, frameExpression: rel, source };
-  if (typeof value === "number") return { command, target, frame: oneBased ? Math.max(0, value - 1) : value, source };
+  if (typeof value === "number") return { command, target, frame: oneBased ? Math.max(0, value - 1) : value, frameExpression: raw, source };
   if (typeof value === "string" && value !== "") return { command, target, label: value, source };
   return { command, target, frameExpression: raw, source };
 }

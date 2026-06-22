@@ -8,7 +8,7 @@ import type {
 } from "../data/timelineTypes";
 import type { DomRenderer } from "../render/DomRenderer";
 import { isLocalVar, localizeCondition, splitTopLevelArgs } from "./avm1";
-import { buttonNode, findChildByName, isClipAsset, spriteNode, visualSrc } from "./renderNodes";
+import { buttonNode, findChildByName, isClipAsset, spriteNode, visualSrc, type ButtonVisualState } from "./renderNodes";
 import { ClipInstance } from "./ClipInstance";
 import { evalCondition } from "./conditions";
 import { IDENTITY, multiplyMatrix } from "./matrix";
@@ -31,11 +31,14 @@ type FunctionDef = {
 type Locals = Record<string, VarValue | undefined>;
 type SoundBinding = { sound: string; soundSrc?: string; soundDurationMs?: number };
 type SoundLibraryEntry = { name?: string; src?: string; durationMs?: number; aliases?: string[] };
+type SoundActionMetadata = NonNullable<ControlAction["soundAction"]>;
 
 /** Timeline commands that, with a target, are clip controls (vs function calls). */
 const TIMELINE_COMMANDS = new Set(["gotoAndPlay", "gotoAndStop", "play", "stop", "nextFrame", "prevFrame"]);
 /** AVM1 "wait until condition / timer" helpers handled as a runtime primitive. */
 const WAITER_FUNCTIONS = new Set(["waitForVal", "startTimer"]);
+/** Timing-only VO marker helpers. */
+const SOUND_MARKER_FUNCTIONS = new Set(["markSnd", "markSndSegment"]);
 const NON_ROOT_LEVEL_TARGET = /^_level[1-9]\d*\b/i;
 
 export type PlayerOptions = {
@@ -110,6 +113,14 @@ export class Player {
   private readonly soundObjectTargets = new Set<string>();
   /** Last linkage attached to each AVM1 Sound object target, played when `.start()` runs. */
   private readonly soundBindings = new Map<string, SoundBinding>();
+  /** Per-rendered-button SimpleButton visual state (over/down), keyed by RenderNode path. */
+  private readonly buttonVisualStates = new Map<string, ButtonVisualState>();
+  /** Sprite timelines sometimes keep their SimpleButton leaf only in over/down/active frames.
+   *  When stopped on the rest art, expose a transparent proxy hit from that button's own
+   *  extracted self-timeline actions so hover can enter the interactive state. */
+  private readonly latentButtonPlacementsCache = new Map<number, TimelineFrame["instances"]>();
+  /** Estimated VO segment durations, keyed by segment id (`TOUR74b`). */
+  private readonly soundSegmentDurations = new Map<string, { baseSound: string; soundSrc?: string; durationMs?: number }>();
 
   private root: ClipInstance;
   private clipByPath = new Map<string, ClipInstance>();
@@ -152,6 +163,7 @@ export class Player {
 
     this.store = options.store;
     this.buildFunctionTable();
+    this.buildSoundSegmentDurations();
 
     this.ticker = new Ticker(timeline.fps || 20, () => this.onTick());
     this.root = this.buildRoot(this.startFrame);
@@ -203,6 +215,7 @@ export class Player {
   seekRootFrame(frame: number) {
     this.ticker.pause();
     this.voWaiting = false;
+    this.buttonVisualStates.clear();
     this.root = this.buildRoot(clamp(frame, 0, this.frameCount - 1));
     this.render();
     this.options.onFrame?.(this.root.currentFrame, false);
@@ -215,14 +228,20 @@ export class Player {
 
   destroy() {
     this.ticker.destroy();
+    this.buttonVisualStates.clear();
     this.renderer.clear();
   }
 
   /** Dispatch a button event from the owning clip (identified by its tree path). */
-  handleButtonEvent(ownerPath: string, characterId: number, event: ButtonEvent) {
+  handleButtonEvent(ownerPath: string, characterId: number, event: ButtonEvent, buttonKey?: string) {
+    this.setButtonVisualState(buttonKey ?? `${ownerPath}:${characterId}`, event);
     const owner = this.clipByPath.get(ownerPath) ?? this.root;
+    const eventScope = this.buttonEventScope(owner, characterId);
     const action = this.buttonActionFor(owner, characterId, event);
-    if (!action) return;
+    if (!action) {
+      this.render();
+      return;
+    }
 
     // Apply the handler's simple state assignments first: clip-local flags drive the
     // select/deselect calls below, and shared globals drive cross-movie gating. Some
@@ -253,7 +272,7 @@ export class Player {
     };
     const isGoto = action.command === "gotoAndPlay" || action.command === "gotoAndStop";
     const calls = isGoto ? (action.functionCalls ?? []).filter((c) => !duplicatesCommand(c)) : action.functionCalls;
-    if (calls?.length) this.runCallFunctions({ ...action, functionCalls: calls }, owner);
+    if (calls?.length) this.runCallFunctions({ ...action, functionCalls: calls }, owner, undefined, eventScope);
     if (action.command === "loadMovieNum" || action.command === "loadMovie") this.options.onNavigate?.(action);
     // A nav section button is an exit-navigation: it plays the nav's exit animation (the gotoAndPlay
     // below) AND loads the chosen segment into the content level. The SWF load is otherwise lost
@@ -268,7 +287,7 @@ export class Player {
       }
     }
     if (action.command === "gotoAndPlay" || action.command === "gotoAndStop") {
-      const target = this.resolveTarget(owner, action.target);
+      const target = this.resolveTarget(owner, action.target) ?? this.resolveTarget(eventScope, action.target);
       const frame = this.resolveFrame(action, target);
       if (target && frame >= 0) {
         target.playing = action.command === "gotoAndPlay";
@@ -306,6 +325,31 @@ export class Player {
       }
     }
     return best?.action;
+  }
+
+  private buttonEventScope(owner: ClipInstance, characterId: number): ClipInstance {
+    // Button ActionScript sometimes addresses sibling clips through `_parent`,
+    // while other handlers use `_parent._parent` to reach the containing root.
+    // Hit overlays are not ClipInstances, so keep the real owner as primary and
+    // use this transient button scope only as a fallback for sibling resolution.
+    return new ClipInstance(characterId, "", owner);
+  }
+
+  private setButtonVisualState(key: string, event: ButtonEvent) {
+    switch (event) {
+      case "rollOver":
+        if (this.buttonVisualStates.get(key) !== "down") this.buttonVisualStates.set(key, "over");
+        break;
+      case "press":
+        this.buttonVisualStates.set(key, "down");
+        break;
+      case "release":
+        this.buttonVisualStates.set(key, "over");
+        break;
+      case "rollOut":
+        this.buttonVisualStates.delete(key);
+        break;
+    }
   }
 
   private buttonTextFieldSignature(characterId: number): string {
@@ -589,6 +633,11 @@ export class Player {
       this.options.onWaiter?.(fn, this.parseArgs(call.arguments, locals));
       return;
     }
+    if (SOUND_MARKER_FUNCTIONS.has(fn)) {
+      const segment = this.parseArgs(call.arguments, locals)[0];
+      if (segment !== undefined) this.runSoundMarker(target, String(segment), call.arguments);
+      return;
+    }
     if (TIMELINE_COMMANDS.has(fn) && target) {
       const frame = this.parseArgs(call.arguments, locals)[0] ?? 0;
       if (/^_level\d+/i.test(target)) this.options.onClipCommand?.(target, fn, frame);
@@ -604,6 +653,35 @@ export class Player {
       if (clip === this.root) this.callFunction(fn, call.arguments, locals);
       else if (clip) this.callClipFunction(clip, fn);
     }
+  }
+
+  private runSoundMarker(target: string | undefined, segment: string, argsRaw?: string, metadata?: SoundActionMetadata) {
+    if (!segment) return;
+    this.voWaiting = true;
+    this.options.onSound?.(this.soundSegmentAction({
+      command: "markSndSegment",
+      target,
+      sound: metadata?.sound ?? segment,
+      segment,
+      soundSrc: metadata?.soundSrc,
+      soundDurationMs: metadata?.soundDurationMs,
+      soundRole: metadata?.soundRole ?? "vo",
+      executionContext: "function",
+      ...(argsRaw ? { arguments: argsRaw } : {}),
+    } as ControlAction));
+  }
+
+  private soundSegmentAction(action: ControlAction): ControlAction {
+    const segment = action.segment ?? action.sound;
+    const timing = segment ? this.soundSegmentDurations.get(segment) : undefined;
+    return {
+      ...action,
+      ...(segment ? { segment } : {}),
+      soundRole: action.soundRole ?? "vo",
+      soundSrc: action.soundSrc ?? timing?.soundSrc,
+      soundDurationMs: action.soundDurationMs ?? timing?.durationMs,
+      resolvedSound: action.resolvedSound ?? (timing?.baseSound && timing.baseSound !== segment ? timing.baseSound : undefined),
+    };
   }
 
   private runSoundMethod(target: string | undefined, fn: string, argsRaw: string | undefined, locals?: Locals): boolean {
@@ -681,6 +759,58 @@ export class Player {
     return undefined;
   }
 
+  private buildSoundSegmentDurations() {
+    const groups = new Map<string, Set<string>>();
+    const add = (segment: string | undefined) => {
+      const normalized = segment?.trim();
+      if (!normalized) return;
+      const base = this.soundSegmentBase(normalized);
+      if (!base) return;
+      let set = groups.get(base);
+      if (!set) groups.set(base, (set = new Set()));
+      set.add(normalized);
+    };
+    const scanAction = (action: ControlAction | undefined) => {
+      if (!action) return;
+      if (action.command === "markSndSegment") add(action.segment ?? action.sound);
+      const soundAction = action.soundAction;
+      if (soundAction?.command === "markSndSegment") add(soundAction.segment ?? soundAction.sound);
+      if (soundAction?.command === "playVO") add(soundAction.segment);
+      for (const call of action.functionCalls ?? []) {
+        const args = splitTopLevelArgs(call.arguments);
+        if (call.functionName === "markSnd" || call.functionName === "markSndSegment") add(stripQuotes(args[0]));
+        if (call.functionName === "playVO") add(stripQuotes(args[2]));
+      }
+    };
+
+    for (const record of this.timeline.control?.frameActions ?? []) for (const action of record.actions ?? []) scanAction(action);
+    for (const record of this.timeline.control?.spriteActions ?? []) for (const action of record.actions ?? []) scanAction(action);
+    for (const definition of Object.values(this.timeline.control?.definedFunctions ?? {}) as DefinedFunction[]) {
+      for (const action of definition.actions ?? []) scanAction(action);
+    }
+    for (const group of Object.values(this.timeline.control?.buttonActions ?? {})) {
+      scanAction(group.release);
+      scanAction(group.rollOver);
+      scanAction(group.rollOut);
+      scanAction(group.press);
+    }
+
+    for (const [base, segments] of groups) {
+      const sound = this.resolveSound(base);
+      const durationMs = sound?.durationMs && segments.size > 0 ? sound.durationMs / segments.size : undefined;
+      for (const segment of segments) {
+        this.soundSegmentDurations.set(segment, { baseSound: sound?.name ?? base, soundSrc: sound?.src, durationMs });
+      }
+    }
+  }
+
+  private soundSegmentBase(segment: string): string | undefined {
+    const match = segment.match(/^(.+\d)([a-z]+)$/i);
+    if (!match) return undefined;
+    const sound = this.resolveSound(match[1]);
+    return sound?.name ?? match[1];
+  }
+
   /** Run a timeline command on a clip resolved by name/path (e.g. `yellowPro.gotoAndPlay("over")`). */
   runNamedClipCommand(from: ClipInstance, path: string, command: string, frame: VarValue): boolean {
     const name = path.split(".").filter(Boolean).pop() ?? path;
@@ -694,6 +824,7 @@ export class Player {
       return false;
     }
     this.pendingClipCommands.delete(name); // a now-resolvable command supersedes any queued intent
+    if (clip.name) this.pendingClipCommands.delete(clip.name);
     const frameIndex = this.resolveClipFrame(clip, frame);
     if (frameIndex < 0) return false;
     clip.playing = command === "gotoAndPlay";
@@ -737,9 +868,11 @@ export class Player {
       // arms the next hold-loop. (Body-form sound `call`s route elsewhere and no-op, so no double.)
       case "attachSound":
       case "playVO":
+      case "markSndSegment":
       case "stopSound":
         if (action.command === "playVO") this.voWaiting = true;
-        this.options.onSound?.(action);
+        if (action.command === "markSndSegment") this.voWaiting = true;
+        this.options.onSound?.(action.command === "markSndSegment" ? this.soundSegmentAction(action) : action);
         break;
       case "loadMovieNum":
       case "loadMovie":
@@ -771,47 +904,93 @@ export class Player {
     }
   }
 
-  private runCallFunctions(action: ControlAction, clip: ClipInstance = this.root, locals?: Locals) {
+  private runCallFunctions(action: ControlAction, clip: ClipInstance = this.root, locals?: Locals, fallbackClip?: ClipInstance) {
+    let metadataSoundHandled = false;
     for (const call of action.functionCalls ?? []) {
-      const target = call.target ?? "self";
-      const fn = call.functionName;
-      if (this.runSoundMethod(target, fn, call.arguments, locals)) {
-        continue;
-      } else if (WAITER_FUNCTIONS.has(fn)) {
-        this.options.onWaiter?.(fn, this.parseArgs(call.arguments, locals));
-      } else if (TIMELINE_COMMANDS.has(fn) && target !== "self" && target !== "this" && target !== "_root") {
-        const frame = this.parseArgs(call.arguments, locals)[0] ?? 0;
-        if (/^_level\d+/i.test(target)) this.options.onClipCommand?.(target, fn, frame);
-        else this.runNamedClipCommand(clip, target, fn, frame);
-      } else if (target === "self" || target === "this" || target === "_root") {
-        // Prefer a sprite-scoped function on the owning clip (a control's over()/out() label
-        // reveal lives on its own sprite); fall back to a root/global function.
-        if (target !== "_root" && this.spriteFunctions.get(clip.characterId)?.has(fn)) {
-          this.callClipFunction(clip, fn);
-        } else {
-          this.callFunction(fn, call.arguments);
-        }
-      } else if (/^_level\d+/i.test(target)) {
-        // Absolute level targets (`_level6`, `_level0.x`) are routed to the
-        // controller, which maps the level back to its Player.
-        this.options.onCallFunction?.(target, fn, this.resolveArgsString(call.arguments, locals));
-      } else {
-        // A named nested clip (from `tellTarget("clip")`): resolve it locally and
-        // run the clip's own sprite-scoped function (e.g. doFade -> gotoAndPlay).
-        // A relative target can also resolve back to the root (`_parent._parent.fn`);
-        // in that case call the root function table.
-        const name = target.split(".").filter(Boolean).pop() ?? target;
-        const targetClip = this.resolveTarget(clip, target) ?? this.findClipByName(clip, name);
-        if (targetClip === this.root) this.callFunction(fn, call.arguments, locals);
-        else if (targetClip) this.callClipFunction(targetClip, fn);
+      const handled = this.runFunctionCall(call, clip, locals, fallbackClip);
+      if (callMatchesSoundMetadata(call, action.soundAction) && handled) metadataSoundHandled = true;
+    }
+    if (action.soundAction && !metadataSoundHandled) this.runSoundMetadataFallback(action.soundAction);
+  }
+
+  private runFunctionCall(call: NonNullable<ControlAction["functionCalls"]>[number], clip: ClipInstance, locals?: Locals, fallbackClip?: ClipInstance): boolean {
+    const target = call.target ?? "self";
+    const fn = call.functionName;
+    if (this.runSoundMethod(target, fn, call.arguments, locals)) return true;
+    if (WAITER_FUNCTIONS.has(fn)) {
+      this.options.onWaiter?.(fn, this.parseArgs(call.arguments, locals));
+      return true;
+    }
+    if (SOUND_MARKER_FUNCTIONS.has(fn)) {
+      const segment = this.parseArgs(call.arguments, locals)[0];
+      if (segment !== undefined) {
+        this.runSoundMarker(target, String(segment), call.arguments);
+        return true;
       }
     }
+    if (TIMELINE_COMMANDS.has(fn) && target !== "self" && target !== "this" && target !== "_root") {
+      const frame = this.parseArgs(call.arguments, locals)[0] ?? 0;
+      if (/^_level\d+/i.test(target)) {
+        this.options.onClipCommand?.(target, fn, frame);
+        return true;
+      }
+      if (this.runNamedClipCommand(clip, target, fn, frame)) return true;
+      return fallbackClip ? this.runNamedClipCommand(fallbackClip, target, fn, frame) : false;
+    }
+    if (target === "self" || target === "this" || target === "_root") {
+      // Prefer a sprite-scoped function on the owning clip (a control's over()/out() label
+      // reveal lives on its own sprite); fall back to a root/global function.
+      if (target !== "_root" && this.spriteFunctions.get(clip.characterId)?.has(fn)) return this.callClipFunction(clip, fn);
+      return this.callFunction(fn, call.arguments);
+    }
+    if (/^_level\d+/i.test(target)) {
+      // Absolute level targets (`_level6`, `_level0.x`) are routed to the
+      // controller, which maps the level back to its Player. Treat the dispatch as
+      // handled here; the target level may exist already or be queued by the host.
+      this.options.onCallFunction?.(target, fn, this.resolveArgsString(call.arguments, locals));
+      return true;
+    }
+    // A named nested clip (from `tellTarget("clip")`): resolve it locally and
+    // run the clip's own sprite-scoped function (e.g. doFade -> gotoAndPlay).
+    // A relative target can also resolve back to the root (`_parent._parent.fn`);
+    // in that case call the root function table.
+    const name = target.split(".").filter(Boolean).pop() ?? target;
+    const targetClip = this.resolveTarget(clip, target)
+      ?? this.findClipByName(clip, name)
+      ?? (fallbackClip ? (this.resolveTarget(fallbackClip, target) ?? this.findClipByName(fallbackClip, name)) : null);
+    if (targetClip === this.root) return this.callFunction(fn, call.arguments, locals);
+    if (targetClip) return this.callClipFunction(targetClip, fn);
+    return false;
+  }
+
+  private runSoundMetadataFallback(soundAction: SoundActionMetadata) {
+    // Metadata is a last-resort bridge for browser-extracted callFunctions whose
+    // target function/clip could not be resolved. Do not synthesize attachSound or
+    // attachSound here: attachSound alone is only a binding in AVM1. A resolved
+    // playVO is safe because it is the same externally visible effect the missing
+    // function would have had; markSndSegment is timing-only and re-arms VO holds.
+    if (soundAction.command === "markSndSegment") {
+      const segment = soundAction.segment ?? soundAction.sound;
+      if (segment) this.runSoundMarker(soundAction.target, segment, soundAction.arguments, soundAction);
+      return;
+    }
+    if (soundAction.command !== "playVO" || !soundAction.soundSrc) return;
+    this.voWaiting = true;
+    this.options.onSound?.({
+      command: "playVO",
+      target: soundAction.target,
+      sound: soundAction.sound,
+      soundSrc: soundAction.soundSrc,
+      soundDurationMs: soundAction.soundDurationMs,
+      soundRole: soundAction.soundRole ?? "vo",
+      executionContext: "metadata-fallback",
+    });
   }
 
   /** Run a sprite-scoped function (e.g. `doFade`) on a specific nested clip. */
-  private callClipFunction(clip: ClipInstance, name: string) {
+  private callClipFunction(clip: ClipInstance, name: string): boolean {
     const def = this.spriteFunctions.get(clip.characterId)?.get(name);
-    if (!def) return;
+    if (!def) return false;
     // Guards resolve against the CLIP's scope — a toolbar button's hideMe/showMe gate on its own
     // local `btnDown`/`labelHidden`, so hovering one button only hides the others' labels.
     const scope = this.scopeFor(clip);
@@ -838,6 +1017,7 @@ export class Player {
       this.runClipAction(clip, def.actions[i]);
     }
     this.render();
+    return true;
   }
 
   private runClipAction(clip: ClipInstance, action: ControlAction) {
@@ -875,12 +1055,19 @@ export class Player {
 
   /** Depth-first search for a clip by instance name (tellTarget resolves a clip path). */
   private findClipByName(clip: ClipInstance, name: string): ClipInstance | null {
-    for (const child of clip.childClips.values()) {
-      if (child.name === name) return child;
-      const found = this.findClipByName(child, name);
-      if (found) return found;
-    }
-    return null;
+    const prefixMatches: ClipInstance[] = [];
+    const collect = (candidate: ClipInstance): ClipInstance | null => {
+      if (candidate.name === name) return candidate;
+      if (isPrefixInstanceName(candidate.name, name)) prefixMatches.push(candidate);
+      for (const child of candidate.childClips.values()) {
+        const found = collect(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    const exact = collect(clip);
+    if (exact) return exact;
+    return prefixMatches.length === 1 ? prefixMatches[0] : null;
   }
 
   // --- tree construction ------------------------------------------------
@@ -945,9 +1132,10 @@ export class Player {
         this.enterFrame(child, 0, 0);
         // A command that arrived before this clip existed (e.g. the nav's proToolbar hide, issued by
         // a segment on load) is applied now, on creation, instead of being lost.
-        const pending = instanceName ? this.pendingClipCommands.get(instanceName) : undefined;
-        if (pending) {
-          this.pendingClipCommands.delete(instanceName);
+        const pendingKey = instanceName ? this.pendingClipCommandKey(instanceName) : undefined;
+        const pending = pendingKey ? this.pendingClipCommands.get(pendingKey) : undefined;
+        if (pending && pendingKey) {
+          this.pendingClipCommands.delete(pendingKey);
           const f = this.resolveClipFrame(child, pending.frame);
           if (f >= 0) { child.playing = pending.command === "gotoAndPlay"; this.enterFrame(child, f, 0); }
         }
@@ -961,6 +1149,12 @@ export class Player {
     for (const [depth] of clip.childClips) {
       if (!live.has(depth)) clip.childClips.delete(depth);
     }
+  }
+
+  private pendingClipCommandKey(instanceName: string): string | undefined {
+    if (this.pendingClipCommands.has(instanceName)) return instanceName;
+    const aliasMatches = Array.from(this.pendingClipCommands.keys()).filter((targetName) => isPrefixInstanceName(instanceName, targetName));
+    return aliasMatches.length === 1 ? aliasMatches[0] : undefined;
   }
 
   private runScript(clip: ClipInstance, depth: number) {
@@ -1033,13 +1227,15 @@ export class Player {
           if (target !== clip || frame !== clip.currentFrame) this.enterFrame(target, frame, depth + 1);
           break;
         }
-        case "attachSound":
-        case "playVO":
-        case "stopSound":
-          // A new voice-over starts a narrated beat the upcoming hold-loop waits on.
-          if (action.command === "playVO") this.voWaiting = true;
-          this.options.onSound?.(action);
-          break;
+      case "attachSound":
+      case "playVO":
+      case "markSndSegment":
+      case "stopSound":
+        // A new voice-over starts a narrated beat the upcoming hold-loop waits on.
+        if (action.command === "playVO") this.voWaiting = true;
+        if (action.command === "markSndSegment") this.voWaiting = true;
+        this.options.onSound?.(action.command === "markSndSegment" ? this.soundSegmentAction(action) : action);
+        break;
         case "loadMovieNum":
         case "loadMovie":
           this.options.onNavigate?.(action);
@@ -1167,6 +1363,10 @@ export class Player {
     this.clipByPath = new Map();
     this.clipByPath.set("0", this.root);
     this.flatten(this.root, IDENTITY, 1, "0", { n: 0 }, nodes);
+    const liveButtons = new Set(nodes.filter((node) => node.kind === "button").map((node) => node.key));
+    for (const key of this.buttonVisualStates.keys()) {
+      if (!liveButtons.has(key)) this.buttonVisualStates.delete(key);
+    }
     this.renderer.apply(nodes);
     this.lastNodes = nodes;
   }
@@ -1183,6 +1383,7 @@ export class Player {
     if (!frames) return;
     const frame = frames[clip.currentFrame];
     if (!frame) return;
+    const occupiedDepths = new Set(frame.instances.map((instance) => instance.depth));
 
     // Active masks (SWF clipDepth): a mask collects the instances at depths it
     // clips, and is emitted as one alpha-masked SVG group once its range ends.
@@ -1250,13 +1451,14 @@ export class Player {
         // icon). The build strips any embedded editText glyphs from that art (FFDec bakes
         // them clipped/mispositioned), so the live field value is drawn by collectButtonText
         // on top — giving the icon AND the correct label (e.g. segment5's Replay button).
-        out.push(buttonNode(key, order.n++, asset, matrix, instance, path, true, opacity));
+        out.push(buttonNode(key, order.n++, asset, matrix, instance, path, true, opacity, this.buttonVisualStates.get(key)));
         this.collectButtonText(asset, matrix, key, order, out, instance);
         continue;
       }
 
       out.push(this.leafNode(key, order.n++, asset, asset.src ?? "", matrix, opacity, instance));
     }
+    this.collectLatentButtons(clip, world, path, order, out, occupiedDepths, worldOpacity);
     flushMasks(Number.POSITIVE_INFINITY);
   }
 
@@ -1273,6 +1475,7 @@ export class Player {
     if (!frames) return;
     const frame = frames[clip.currentFrame];
     if (!frame) return;
+    const occupiedDepths = new Set(frame.instances.map((instance) => instance.depth));
 
     for (const instance of frame.instances) {
       if (instance.clipDepth) continue; // a mask shape — not an overlay leaf
@@ -1282,7 +1485,7 @@ export class Player {
       const key = `${path}/${instance.depth}`;
       if (asset.kind === "button") {
         // Baked path: the button's visual is in the composited frame — just a hit area.
-        out.push(buttonNode(key, order.n++, asset, matrix, instance, path, false));
+        out.push(buttonNode(key, order.n++, asset, matrix, instance, path, false, 1, this.buttonVisualStates.get(key)));
         this.collectButtonText(asset, matrix, key, order, out, instance);
       } else if (asset.kind === "text") {
         // editText is stripped from the baked sprite frame (FFDec bakes it mispositioned),
@@ -1300,6 +1503,60 @@ export class Player {
         if (child) this.collectButtons(child, matrix, key, order, out);
       }
     }
+    this.collectLatentButtons(clip, world, path, order, out, occupiedDepths);
+  }
+
+  private collectLatentButtons(
+    clip: ClipInstance,
+    world: RenderNode["matrix"],
+    path: string,
+    order: { n: number },
+    out: RenderNode[],
+    occupiedDepths: Set<number>,
+    opacity = 1,
+  ) {
+    if (clip.characterId === ROOT_ID || clip.playing) return;
+    for (const instance of this.latentButtonPlacements(clip)) {
+      if (occupiedDepths.has(instance.depth)) continue;
+      const asset = this.getAsset(instance.characterId);
+      if (!asset || asset.kind !== "button") continue;
+      const matrix = multiplyMatrix(world, instance.matrix);
+      const key = `${path}/${instance.depth}`;
+      out.push(buttonNode(key, order.n++, asset, matrix, instance, path, false, opacity, this.buttonVisualStates.get(key)));
+    }
+  }
+
+  private latentButtonPlacements(clip: ClipInstance): TimelineFrame["instances"] {
+    const cacheKey = clip.characterId;
+    const cached = this.latentButtonPlacementsCache.get(cacheKey);
+    if (cached) return cached;
+    const frames = this.framesFor(clip);
+    if (!frames?.length) {
+      this.latentButtonPlacementsCache.set(cacheKey, []);
+      return [];
+    }
+
+    const byDepth = new Map<number, TimelineFrame["instances"][number]>();
+    for (const frame of frames) {
+      for (const instance of frame.instances ?? []) {
+        if (byDepth.has(instance.depth)) continue;
+        const asset = this.getAsset(instance.characterId);
+        if (asset?.kind !== "button" || !this.buttonControlsOwnerTimeline(instance.characterId)) continue;
+        byDepth.set(instance.depth, instance);
+      }
+    }
+    const placements = [...byDepth.values()];
+    this.latentButtonPlacementsCache.set(cacheKey, placements);
+    return placements;
+  }
+
+  private buttonControlsOwnerTimeline(characterId: number): boolean {
+    const group = this.timeline.control?.buttonActions?.[String(characterId)];
+    if (!group) return false;
+    return (["rollOver", "press", "release", "rollOut"] as const).some((event) => {
+      const action = group[event];
+      return Boolean(action && (action.command === "gotoAndPlay" || action.command === "gotoAndStop") && isSelfTimelineTarget(action.target));
+    });
   }
 
 
@@ -1394,6 +1651,24 @@ function isSelfTimelineTarget(target: string | undefined): boolean {
 
 function isEmptyNonRootLevelAssignment(target: string, value: VarValue): boolean {
   return value === "" && NON_ROOT_LEVEL_TARGET.test(target);
+}
+
+function isPrefixInstanceName(candidate: string, target: string): boolean {
+  if (!candidate || !target || candidate === target || !candidate.startsWith(target)) return false;
+  return /^[A-Z0-9_$]/.test(candidate.slice(target.length));
+}
+
+function callMatchesSoundMetadata(call: NonNullable<ControlAction["functionCalls"]>[number], soundAction: SoundActionMetadata | undefined): boolean {
+  if (!soundAction) return false;
+  if (soundAction.command === "markSndSegment") return call.functionName === "markSnd" || call.functionName === "markSndSegment";
+  return call.functionName === soundAction.command;
+}
+
+function stripQuotes(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) return trimmed.slice(1, -1);
+  return undefined;
 }
 
 function singleArgCall(token: string, name: string): string | undefined {

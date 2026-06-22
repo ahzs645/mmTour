@@ -144,7 +144,7 @@ export class PlayerController {
 
     const renderer = new DomRenderer(layer, {
       resolveFontFamily: (fontId) => this.fonts.resolveFamily(fontId),
-      onButtonEvent: (ownerPath, characterId, event) => this.levels.get(level)?.player.handleButtonEvent(ownerPath, characterId, event),
+      onButtonEvent: (ownerPath, characterId, event, buttonKey) => this.levels.get(level)?.player.handleButtonEvent(ownerPath, characterId, event, buttonKey),
     });
     const player = new Player(timeline, renderer, {
       // Level 0 ticks every frame (even when stopped), so poll waiters here.
@@ -153,7 +153,7 @@ export class PlayerController {
           ? (frame, playing) => { this.checkWaiters(); this.options.onFrame?.(frame, playing, this.main?.currentLabel() ?? ""); }
           : undefined,
       onSound: (action) => this.sound.handle(action),
-      onNavigate: (action) => this.handleNavigate(action),
+      onNavigate: (action) => this.handleNavigate(action, level),
       store: this.store,
       onCallFunction: (target, name, args) => this.dispatchCall(target, name, args),
       onClipCommand: (target, command, frame) => this.dispatchClipCommand(target, command, frame),
@@ -299,9 +299,9 @@ export class PlayerController {
     else this.pendingCalls.push({ level, name, args }); // target level not loaded yet
   }
 
-  private handleNavigate(action: ControlAction) {
+  private handleNavigate(action: ControlAction, sourceLevel = 0) {
     if ((action.command !== "loadMovieNum" && action.command !== "loadMovie") || !action.swf) return;
-    const level = Number(action.level ?? 0);
+    const level = Number(action.level ?? this.inferLoadLevel(sourceLevel) ?? 0);
     // A nav section click forces a fresh (re)load (the SWF's doRelease unloads+reloads), so it
     // bypasses the burst/already-loaded guards that exist only for the initial multi-load.
     if (!action.reload) {
@@ -313,6 +313,12 @@ export class PlayerController {
       this.loadBurst.add(level);
     }
     void this.loadLevel(level, action.swf, Boolean(action.reload));
+  }
+
+  private inferLoadLevel(sourceLevel: number): number | undefined {
+    if (sourceLevel <= 0) return undefined;
+    const candidates = [...this.levels.keys()].filter((level) => level > 0 && level < sourceLevel);
+    return candidates.length ? Math.max(...candidates) : undefined;
   }
 
   private async loadLevel(level: number, swf: string, reload = false) {

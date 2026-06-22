@@ -5,6 +5,8 @@ import { ClipInstance } from "./ClipInstance";
 import { clamp, type RenderNode } from "./types";
 import type { TimelineAsset, TimelineFrame } from "../data/timelineTypes";
 
+export type ButtonVisualState = "up" | "over" | "down";
+
 export function findChildByName(clip: ClipInstance, name: string): ClipInstance | null {
   for (const child of clip.childClips.values()) {
     if (child.name === name) return child;
@@ -71,24 +73,33 @@ export function buttonNode(
   ownerPath: string,
   renderArtwork: boolean,
   opacity = 1,
+  visualState?: ButtonVisualState,
 ): RenderNode {
-  // Tree path (renderArtwork=true): render the button's up-state artwork — its icon. The build
+  // Tree path (renderArtwork=true): render the button's current artwork — normally its up-state
+  // icon, switching to extracted over/down states while the pointer is active. The build
   // strips any embedded editText glyphs from that SVG (FFDec bakes them clipped/mispositioned),
   // so a button that wraps a bound field (segment5's Replay icon, the nav "Skip Intro") draws
   // just its icon here, and the caller overlays the live field value via collectButtonText —
-  // giving icon + correct label with no doubling. (Baked path passes renderArtwork=false: the
-  // visual is already in the composited sprite frame, with the same text overlay on top.)
-  const up = renderArtwork ? asset.states?.up : undefined;
+  // giving icon + correct label with no doubling. Baked path passes renderArtwork=false: the
+  // normal visual is already in the composited sprite frame, but pointer-active over/down art is
+  // overlaid so SimpleButton-native highlights still appear.
+  const active =
+    visualState === "down"
+      ? (asset.states?.down ?? asset.states?.over ?? asset.states?.up)
+      : visualState === "over"
+        ? (asset.states?.over ?? asset.states?.up)
+        : asset.states?.up;
+  const visual = renderArtwork || visualState ? active : undefined;
   return {
     key,
     order,
     characterId: asset.id,
     kind: "button",
     name: instance.name,
-    src: up?.src ?? "",
-    origin: up?.origin ?? asset.origin,
+    src: visual?.src ?? "",
+    origin: visual?.origin ?? asset.origin,
     matrix,
-    opacity: up?.src ? opacity : 1,
+    opacity: visual?.src ? opacity : 1,
     buttonOwnerPath: ownerPath,
   };
 }

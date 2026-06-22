@@ -36,13 +36,11 @@ interface Avm1Fn {
 
 const UNDEF = undefined;
 
-export function runInit(program: Avm1Action[], opts: { osVersion?: string; budget?: number } = {}): InterpResult {
+export function runInit(program: Avm1Action[], opts: { budget?: number } = {}): InterpResult {
   const root: Record<string, any> = {};
   const loads: RecordedLoad[] = [];
   const calls: RecordedCall[] = [];
-  // Seed a couple of globals the tour gates on; OSVersion defaults to Pro.
   setPath(root, "bkgd", {});
-  if (opts.osVersion) setPath(root, "bkgd.OSVersion", opts.osVersion);
 
   const vm = new Vm(root, loads, calls, opts.budget ?? 200_000);
   try {

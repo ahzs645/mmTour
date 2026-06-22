@@ -13,6 +13,8 @@ import { swf } from "swf-parser";
 import type { Matrix } from "../data/timelineTypes";
 import { shapeInner, type ShapeSvgOptions } from "./svgEmit.ts";
 
+type Bounds = { minX: number; minY: number; maxX: number; maxY: number };
+
 const STATES = [
   { key: "stateUp", file: "1_up" },
   { key: "stateOver", file: "2_over" },
@@ -77,12 +79,13 @@ export function collectButtons(movie: any): any[] {
 export function composeButton(button: any, getShape: (id: number) => any, options: ShapeSvgOptions = {}): ComposedButton {
   const states: Record<string, string> = {};
   const unsupported: string[] = [];
+  const hitBounds = boundsForRecords(button.records.filter((r: any) => r.stateHitTest), getShape);
 
   for (const { key, file } of STATES) {
     const records = button.records.filter((r: any) => r[key]);
     const parts: string[] = [];
     const defs: string[] = [];
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let bounds: Bounds | undefined;
 
     records.forEach((rec: any, i: number) => {
       const shape = getShape(rec.characterId);
@@ -107,28 +110,54 @@ export function composeButton(button: any, getShape: (id: number) => any, option
       parts.push(`<g transform="matrix(${num(a)}, ${num(b)}, ${num(c)}, ${num(d)}, ${num(e)}, ${num(f)})"${opacity}${filterAttr}>${inner.body}</g>`);
       if (inner.defs) defs.push(inner.defs);
 
-      // transform the shape's twip bounds by the record matrix → px button space
-      const bd = shape.bounds;
-      for (const [bx, by] of [[bd.xMin, bd.yMin], [bd.xMax, bd.yMin], [bd.xMin, bd.yMax], [bd.xMax, bd.yMax]]) {
-        const px = (a * bx + c * by) / 20 + e;
-        const py = (b * bx + d * by) / 20 + f;
-        minX = Math.min(minX, px); minY = Math.min(minY, py);
-        maxX = Math.max(maxX, px); maxY = Math.max(maxY, py);
-      }
+      bounds = mergeBounds(bounds, transformShapeBounds(shape.bounds, { a, b, c, d, tx: e, ty: f }));
     });
 
-    if (!parts.length || !Number.isFinite(minX)) {
-      // empty state (e.g. a hit area with only non-shape records) — emit a stub.
+    const finalBounds = bounds ?? hitBounds;
+    if (!finalBounds) {
+      // Empty state with no usable bounds.
       states[file] = `<svg xmlns:xlink="http://www.w3.org/1999/xlink" height="0px" width="0px" xmlns="http://www.w3.org/2000/svg"><g/></svg>`;
       continue;
     }
 
-    const w = maxX - minX;
-    const h = maxY - minY;
+    const w = finalBounds.maxX - finalBounds.minX;
+    const h = finalBounds.maxY - finalBounds.minY;
     const defsBlock = defs.length ? `<defs>${defs.join("")}</defs>` : "";
-    const g = `<g transform="matrix(1.0, 0.0, 0.0, 1.0, ${num(-minX)}, ${num(-minY)})">${parts.join("")}</g>`;
+    const body = parts.join("");
+    const g = body
+      ? `<g transform="matrix(1.0, 0.0, 0.0, 1.0, ${num(-finalBounds.minX)}, ${num(-finalBounds.minY)})">${body}</g>`
+      : `<g transform="matrix(1.0, 0.0, 0.0, 1.0, ${num(-finalBounds.minX)}, ${num(-finalBounds.minY)})"/>`;
     states[file] = `<svg xmlns:xlink="http://www.w3.org/1999/xlink" height="${num(h)}px" width="${num(w)}px" xmlns="http://www.w3.org/2000/svg">${defsBlock}${g}</svg>`;
   }
 
   return { id: button.id, dir: `DefineButton2_${button.id}`, states, unsupported };
+}
+
+function boundsForRecords(records: any[], getShape: (id: number) => any): Bounds | undefined {
+  let bounds: Bounds | undefined;
+  for (const rec of records) {
+    const shape = getShape(rec.characterId);
+    if (!shape?.bounds) continue;
+    bounds = mergeBounds(bounds, transformShapeBounds(shape.bounds, matrixFromButtonRecord(rec.matrix)));
+  }
+  return bounds;
+}
+
+function transformShapeBounds(bounds: any, matrix: Matrix): Bounds {
+  let out: Bounds | undefined;
+  for (const [bx, by] of [[bounds.xMin, bounds.yMin], [bounds.xMax, bounds.yMin], [bounds.xMin, bounds.yMax], [bounds.xMax, bounds.yMax]]) {
+    const px = (matrix.a * bx + matrix.c * by) / 20 + matrix.tx;
+    const py = (matrix.b * bx + matrix.d * by) / 20 + matrix.ty;
+    out = mergeBounds(out, { minX: px, minY: py, maxX: px, maxY: py });
+  }
+  return out ?? { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+}
+
+function mergeBounds(a: Bounds | undefined, b: Bounds): Bounds {
+  return {
+    minX: Math.min(a?.minX ?? Infinity, b.minX),
+    minY: Math.min(a?.minY ?? Infinity, b.minY),
+    maxX: Math.max(a?.maxX ?? -Infinity, b.maxX),
+    maxY: Math.max(a?.maxY ?? -Infinity, b.maxY),
+  };
 }

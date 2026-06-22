@@ -104,7 +104,7 @@ export type DomRendererOptions = {
   /** Resolve a CSS font-family for a text field's font id. */
   resolveFontFamily?: (fontId?: number) => string | undefined;
   /** Dispatch a button pointer event, tagged with the owning clip's tree path. */
-  onButtonEvent?: (ownerPath: string, characterId: number, event: ButtonEvent) => void;
+  onButtonEvent?: (ownerPath: string, characterId: number, event: ButtonEvent, buttonKey: string) => void;
 };
 
 /**
@@ -117,6 +117,7 @@ export class DomRenderer {
   private readonly layer: HTMLElement;
   private readonly options: DomRendererOptions;
   private nodes = new Map<string, RenderedNode>();
+  private hoveredButtonKeys = new Set<string>();
 
   constructor(layer: HTMLElement, options: DomRendererOptions = {}) {
     this.layer = layer;
@@ -125,6 +126,7 @@ export class DomRenderer {
 
   clear() {
     this.nodes.clear();
+    this.hoveredButtonKeys.clear();
     this.layer.replaceChildren();
   }
 
@@ -156,6 +158,7 @@ export class DomRenderer {
       if (!live.has(key)) {
         rendered.element.remove();
         this.nodes.delete(key);
+        this.hoveredButtonKeys.delete(key);
       }
     }
   }
@@ -191,22 +194,50 @@ export class DomRenderer {
     this.layer.append(element);
 
     if (node.kind === "button" && node.buttonOwnerPath !== undefined) {
-      this.wireButton(media, node.buttonOwnerPath, node.characterId);
+      this.wireButton(media, node.buttonOwnerPath, node.characterId, node.key);
     }
 
     return { element, media, characterId: node.characterId, kind: node.kind, src: "" };
   }
 
   /** Forward pointer events on a button leaf to the Player (which resolves the action). */
-  private wireButton(media: HTMLElement, ownerPath: string, characterId: number) {
+  private wireButton(media: HTMLElement, ownerPath: string, characterId: number, buttonKey: string) {
     const dispatch = this.options.onButtonEvent;
     if (!dispatch) return;
     media.dataset.buttonOwnerPath = ownerPath;
     media.dataset.buttonCharacter = String(characterId);
+    media.dataset.buttonKey = buttonKey;
     media.style.pointerEvents = "auto";
     media.style.cursor = "pointer";
-    media.addEventListener("pointerenter", () => dispatch(ownerPath, characterId, "rollOver"));
-    media.addEventListener("pointerleave", () => dispatch(ownerPath, characterId, "rollOut"));
+    const rollOver = () => {
+      if (this.hoveredButtonKeys.has(buttonKey)) return;
+      this.hoveredButtonKeys.add(buttonKey);
+      dispatch(ownerPath, characterId, "rollOver", buttonKey);
+    };
+    const rollOut = () => {
+      if (!this.hoveredButtonKeys.delete(buttonKey)) return;
+      dispatch(ownerPath, characterId, "rollOut", buttonKey);
+    };
+    media.addEventListener("pointerenter", rollOver);
+    media.addEventListener("pointerover", rollOver);
+    media.addEventListener("mouseover", rollOver);
+    media.addEventListener("pointerleave", (event) => {
+      const rect = media.getBoundingClientRect();
+      const x = event.clientX;
+      const y = event.clientY;
+      const insideOriginalBounds = x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+      requestAnimationFrame(() => {
+        const hit = document.elementFromPoint(x, y)?.closest<HTMLElement>(".player-hit");
+        const sameButton = hit?.dataset.buttonKey === buttonKey;
+        if (!sameButton && !insideOriginalBounds) rollOut();
+      });
+    });
+    media.addEventListener("mouseleave", (event) => {
+      const rect = media.getBoundingClientRect();
+      const x = event.clientX;
+      const y = event.clientY;
+      if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) rollOut();
+    });
     media.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
       const rect = media.getBoundingClientRect();
@@ -219,10 +250,9 @@ export class DomRenderer {
         if (upEvent.pointerId !== event.pointerId) return;
         cleanup();
         const hit = document.elementFromPoint(upEvent.clientX, upEvent.clientY)?.closest<HTMLElement>(".player-hit");
-        const sameButton =
-          hit?.dataset.buttonOwnerPath === ownerPath && hit.dataset.buttonCharacter === String(characterId);
+        const sameButton = hit?.dataset.buttonKey === buttonKey;
         if (sameButton || insideOriginalBounds(upEvent.clientX, upEvent.clientY)) {
-          dispatch(ownerPath, characterId, "release");
+          dispatch(ownerPath, characterId, "release", buttonKey);
         }
       };
       const cancel = (cancelEvent: PointerEvent) => {
@@ -236,7 +266,7 @@ export class DomRenderer {
       } catch {
         // The hit node can be removed by the press animation before capture sticks.
       }
-      dispatch(ownerPath, characterId, "press");
+      dispatch(ownerPath, characterId, "press", buttonKey);
     });
   }
 

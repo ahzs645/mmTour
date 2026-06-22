@@ -12,6 +12,7 @@ import {
 import { clearTimelineCache } from "../data/TimelineLoader";
 import { createTourPlayer, type TourPlayer } from "../index.ts";
 import {
+  COMPILED_CACHE_VERSION,
   clearHistory,
   deleteConvert,
   getConvert,
@@ -21,6 +22,7 @@ import {
   type StoredCompiledScene,
 } from "./historyDb.ts";
 import { downloadBytes, exportArchiveForScenes, importArchiveScenes } from "./exportBundle.ts";
+import { applyInheritedGlobalDefaults, collectInheritableGlobalDefaults } from "./inheritedDefaults.ts";
 
 setAssetSource("pack");
 setPackNetworkFallback(false);
@@ -96,7 +98,7 @@ export function SwfStudioApp() {
       const rows = await listConverts();
       if (cancelled) return;
       for (const rec of [...rows].reverse()) {
-        if (rec.compiled) acceptCompiled(rec.name, reviveCompiled(rec.compiled));
+        if (rec.compiled && isCompiledCurrent(rec.compiled)) acceptCompiled(rec.name, reviveCompiled(rec.compiled));
       }
       if (!cancelled) setHistory(rows);
     })();
@@ -131,14 +133,14 @@ export function SwfStudioApp() {
     });
   }, []);
 
-  const compile = useCallback(async (bytes: Uint8Array, name: string): Promise<CompiledScene> => {
+  const compile = useCallback(async (bytes: Uint8Array, name: string, options: { force?: boolean } = {}): Promise<CompiledScene> => {
     const scene = canonical(name);
-    const done = compiledScenes.current.get(scene);
+    const done = options.force ? undefined : compiledScenes.current.get(scene);
     if (done) return done;
     const running = inFlight.current.get(scene);
-    if (running) return running;
+    if (running && !options.force) return running;
 
-    setCards((prev) => prev[scene] ? prev : { ...prev, [scene]: { scene, name, status: "converting" } });
+    setCards((prev) => ({ ...prev, [scene]: { scene, name, status: "converting" } }));
     const promise = compileSceneAsync(bytes, scene)
       .then((compiled) => {
         acceptCompiled(name, compiled);
@@ -193,12 +195,17 @@ export function SwfStudioApp() {
     }
   }, [compile, persistCompiled]);
 
-  const resolveDependencies = useCallback(async (compiled: CompiledScene, visited = new Set<string>()) => {
+  const resolveDependencies = useCallback(async (
+    compiled: CompiledScene,
+    visited = new Set<string>(),
+    inheritedDefaults: Record<string, string | number | boolean> = {},
+  ) => {
     if (!compiled.dependencies.length) return;
+    const carriedDefaults = { ...inheritedDefaults, ...collectInheritableGlobalDefaults(compiled) };
     setAllDepsPending(compiled.scene, compiled);
-    const startup = new Set(startupSwfs(compiled).map((swf) => swf.toLowerCase()));
+    const startup = new Set(startupSwfs(compiled).map(canonical));
     const ordered = [...compiled.dependencies].sort(
-      (a, b) => Number(startup.has(b.swf.toLowerCase())) - Number(startup.has(a.swf.toLowerCase())),
+      (a, b) => Number(startup.has(canonical(b.swf))) - Number(startup.has(canonical(a.swf))),
     );
 
     for (const dep of ordered) {
@@ -215,14 +222,17 @@ export function SwfStudioApp() {
       if (!visited.has(key)) {
         visited.add(key);
         const depScene = compiledScenes.current.get(key);
+        if (depScene && !startup.has(key) && applyInheritedGlobalDefaults(depScene, carriedDefaults)) {
+          acceptCompiled(dep.swf, depScene);
+        }
         if (depScene?.dependencies.length) {
           setDepStatus(compiled.scene, dep.swf, "linking");
-          await resolveDependencies(depScene, visited);
+          await resolveDependencies(depScene, visited, carriedDefaults);
         }
       }
       setDepStatus(compiled.scene, dep.swf, "done");
     }
-  }, [ensureDependencyCompiled, setAllDepsPending, setDepStatus]);
+  }, [acceptCompiled, ensureDependencyCompiled, setAllDepsPending, setDepStatus]);
 
   const ensureDependencies = useCallback((compiled: CompiledScene): Promise<void> => {
     const running = dependencyLoads.current.get(compiled.scene);
@@ -323,7 +333,7 @@ export function SwfStudioApp() {
 
   const convertFile = useCallback(async (name: string, bytes: Uint8Array) => {
     try {
-      const compiled = await compile(bytes, name);
+      const compiled = await compile(bytes, name, { force: true });
       await persistCompiled(name, bytes, compiled);
       await ensureDependencies(compiled);
     } catch (error) {
@@ -368,24 +378,24 @@ export function SwfStudioApp() {
   const playHistory = useCallback(async (record: ConvertRecord) => {
     const full = record.id ? await getConvert(record.id) : undefined;
     if (!full) return;
-    let compiled = full.compiled ? reviveCompiled(full.compiled) : compiledScenes.current.get(full.scene ?? canonical(full.name));
+    let compiled = full.compiled && isCompiledCurrent(full.compiled)
+      ? reviveCompiled(full.compiled)
+      : compiledScenes.current.get(full.scene ?? canonical(full.name));
     if (compiled) {
       acceptCompiled(full.name, compiled);
-    } else {
+    } else if (full.swf.size) {
       const bytes = new Uint8Array(await full.swf.arrayBuffer());
       compiled = await compile(bytes, full.name);
       await persistCompiled(full.name, bytes, compiled);
+    } else if (full.compiled) {
+      compiled = reviveCompiled(full.compiled);
+      acceptCompiled(full.name, compiled);
+    } else {
+      return;
     }
     void ensureDependencies(compiled);
     await play(compiled.scene, compiled, full.name);
   }, [acceptCompiled, compile, ensureDependencies, persistCompiled, play]);
-
-  const deleteHistoryItem = useCallback(async (record: ConvertRecord) => {
-    if (!record.id) return;
-    await deleteConvert(record.id);
-    removeScene(record.scene ?? canonical(record.name));
-    await refreshHistory();
-  }, [refreshHistory]);
 
   const removeScene = useCallback((scene: string) => {
     unregisterPackedScene(scene);
@@ -397,6 +407,28 @@ export function SwfStudioApp() {
       return next;
     });
   }, []);
+
+  const deleteHistoryItem = useCallback(async (record: ConvertRecord) => {
+    if (!record.id) return;
+    const scene = record.scene ?? canonical(record.name);
+    await deleteConvert(record.id);
+    const rows = await listConverts();
+    const replacement = rows.find((row) => (row.scene ?? canonical(row.name)) === scene);
+    if (replacement?.compiled && isCompiledCurrent(replacement.compiled)) {
+      acceptCompiled(replacement.name, reviveCompiled(replacement.compiled));
+    } else if (replacement?.id) {
+      const full = await getConvert(replacement.id);
+      if (full?.swf.size) {
+        const compiled = await compile(new Uint8Array(await full.swf.arrayBuffer()), full.name, { force: true });
+        acceptCompiled(full.name, compiled);
+      } else {
+        removeScene(scene);
+      }
+    } else {
+      removeScene(scene);
+    }
+    setHistory(rows);
+  }, [acceptCompiled, compile, removeScene]);
 
   const clearAll = useCallback(async () => {
     await clearHistory();
@@ -683,6 +715,7 @@ function buildTree(cards: Record<string, CardView>): TreeNode[] {
 
 function storeCompiled(compiled: CompiledScene): StoredCompiledScene {
   return {
+    version: COMPILED_CACHE_VERSION,
     scene: compiled.scene,
     timeline: compiled.timeline,
     files: [...compiled.files.entries()].map(([path, file]) => ({
@@ -695,6 +728,10 @@ function storeCompiled(compiled: CompiledScene): StoredCompiledScene {
     height: compiled.height,
     dependencies: compiled.dependencies.map((dep) => ({ ...dep })),
   };
+}
+
+function isCompiledCurrent(stored: StoredCompiledScene): boolean {
+  return stored.version === COMPILED_CACHE_VERSION;
 }
 
 function reviveCompiled(stored: StoredCompiledScene): CompiledScene {

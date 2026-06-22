@@ -5,6 +5,8 @@
 import Dexie, { type Table } from "dexie";
 import type { CompileStats } from "./compileScene.ts";
 
+export const COMPILED_CACHE_VERSION = 4;
+
 export interface StoredCompiledFile {
   path: string;
   type: string;
@@ -12,6 +14,7 @@ export interface StoredCompiledFile {
 }
 
 export interface StoredCompiledScene {
+  version?: number;
   scene: string;
   timeline: any;
   files: StoredCompiledFile[];
@@ -53,11 +56,7 @@ const db = new ConvertDB();
 
 export async function saveConvert(rec: Omit<ConvertRecord, "id">): Promise<number> {
   const row: ConvertRecord = { ...rec, scene: rec.scene ?? sceneKey(rec.name) };
-  return db.transaction("rw", db.converts, async () => {
-    const existing = await db.converts.where("scene").equals(row.scene!).primaryKeys();
-    if (existing.length) await db.converts.bulkDelete(existing as number[]);
-    return db.converts.add(row);
-  });
+  return db.converts.add(row);
 }
 
 export async function listConverts(): Promise<ConvertRecord[]> {

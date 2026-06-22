@@ -1,4 +1,5 @@
 import type { CompiledScene } from "./compileScene.ts";
+import { applyInheritedDefaultsGraph } from "./inheritedDefaults.ts";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -22,6 +23,8 @@ type LegacyBitmapImage = {
 };
 
 export function exportArchiveForScenes(scenes: CompiledScene[]): Uint8Array {
+  if (scenes[0]) applyInheritedDefaultsGraph(scenes[0], scenes);
+
   const blocks: Array<{ scene: string; bytes: Uint8Array }> = [];
   for (const scene of scenes) blocks.push({ scene: scene.scene, bytes: sceneBlock(scene) });
 
@@ -72,6 +75,7 @@ export async function importArchiveScenes(bytes: Uint8Array): Promise<CompiledSc
     const compiled = await importSceneBlock(scene, block);
     if (compiled) scenes.push(compiled);
   }
+  if (scenes[0]) applyInheritedDefaultsGraph(scenes[0], scenes);
   return scenes;
 }
 
