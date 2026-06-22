@@ -278,7 +278,7 @@ export class PlayerController {
 
   /** Fetch a `loadVariables` text file (`&key=value&…`) and feed it to the level's text fields. */
   private async handleLoadVariables(level: number, action: ControlAction) {
-    const file = action.target;
+    const file = action.variableSource ?? (action.swf && !/\.swf$/i.test(action.swf) ? action.swf : undefined) ?? action.target;
     if (!file) return;
     try {
       const res = await fetch(assetUrl(file));

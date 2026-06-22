@@ -132,6 +132,8 @@ export type ControlAction = {
   frameExpression?: string;
   label?: string;
   swf?: string;
+  /** Source text file for loadVariables() actions; target remains the destination clip/scope. */
+  variableSource?: string;
   level?: number;
   /** Every movie a button handler loads, in source order, when it loads more than one — e.g. a
    *  "restart the whole tour" button that loads segment1 into the content level AND an MS-logo

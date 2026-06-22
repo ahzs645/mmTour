@@ -256,8 +256,9 @@ function processAction(action: Avm1Action, state: SummaryState, context: Summary
     case "GetUrl2": {
       const target = state.stack.pop() ?? unknown("target");
       const url = state.stack.pop() ?? unknown("url");
+      const variableSource = stringValue(url);
       const call = action.loadVariablesFlag
-        ? { command: "loadVariables" as const, target: pathOf(target), swf: stringValue(url) }
+        ? { command: "loadVariables" as const, target: pathOf(target), swf: variableSource, variableSource }
         : actionFromUrl(url, target, Boolean(action.loadTargetFlag));
       if (call) pushAction(state, { ...call, source: context.source }, guard);
       return;
@@ -341,7 +342,10 @@ function actionFromCall(name: string, target: string | undefined, args: Expr[], 
   if (!name || name === "undefined") return null;
   if (name === "loadMovieNum") return loadAction("loadMovieNum", args[0], args[1]);
   if (name === "loadMovie") return loadAction("loadMovie", args[0], args[1]);
-  if (name === "loadVariables") return { command: "loadVariables", swf: stringValue(args[0]), target: argSource(args[1]) };
+  if (name === "loadVariables") {
+    const variableSource = stringValue(args[0]);
+    return { command: "loadVariables", swf: variableSource, variableSource, target: argSource(args[1]) };
+  }
   if (name === "gotoAndPlay" || name === "gotoAndStop") return makeGoto(name, target ?? "self", args[0] ?? unknown("frame"), true);
   if (name === "play" || name === "stop") return { command: name, target: target ?? "self" };
   if (name === "doRelease") return { command: "doRelease", swf: stringValue(args[0]) };
