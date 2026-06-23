@@ -60,6 +60,7 @@ try {
   if (result.resource404s.length) fail(`resource 404s: ${result.resource404s.slice(0, 3).join(" | ")}`);
   if (!afterSkip.categoryHits) fail("skip intro did not expose nav/category hit areas");
   if (!hover.changed) fail("hovering a nav/category hit did not change the level-6 visual state");
+  if (!hover.ownerArtChanged) fail("hovering a nav/category hit did not change the button owner artwork state");
   if (!afterFirstSection.level4Instances || afterFirstSection.level4Signature === afterSkip.level4Signature) {
     fail("first nav click did not change level 4 content");
   }
@@ -103,21 +104,27 @@ async function clickFirstCategoryHit() {
 }
 
 async function hoverFirstCategoryHit() {
-  const hit = await firstVisibleCategoryHit();
+  const hit = await firstVisibleCategoryHit("", { preferLarge: true });
   const before = await levelSignatureInPage(6);
+  const ownerArtBefore = await buttonOwnerArtSignature(hit.handle);
   await page.mouse.move(hit.box.x + hit.box.width / 2, hit.box.y + hit.box.height / 2);
   let after = before;
+  let ownerArtAfter = ownerArtBefore;
   for (let i = 0; i < 20; i += 1) {
     await page.waitForTimeout(100);
     after = await levelSignatureInPage(6);
-    if (after !== before) break;
+    ownerArtAfter = await buttonOwnerArtSignature(hit.handle);
+    if (after !== before && ownerArtAfter !== ownerArtBefore) break;
   }
   return {
     character: hit.character,
     box: roundedBox(hit.box),
     changed: after !== before,
+    ownerArtChanged: Boolean(ownerArtBefore) && ownerArtAfter !== ownerArtBefore,
     beforeHash: hashString(before),
     afterHash: hashString(after),
+    ownerArtBeforeHash: hashString(ownerArtBefore),
+    ownerArtAfterHash: hashString(ownerArtAfter),
   };
 }
 
@@ -127,10 +134,12 @@ async function clickDifferentCategoryHit(previousCharacter) {
   return { character: hit.character, box: roundedBox(hit.box) };
 }
 
-async function firstVisibleCategoryHit(excludeCharacter) {
+async function firstVisibleCategoryHit(excludeCharacter, options = {}) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     const candidates = await navHitCandidatesInPage(excludeCharacter ?? "");
-    const candidate = candidates[0];
+    const candidate = options.preferLarge
+      ? (candidates.find((hit) => hit.area > 2000) ?? (attempt > 20 ? candidates[0] : undefined))
+      : candidates[0];
     if (candidate) {
       const handle = await page.locator(".player-instance img.player-hit").nth(candidate.index).elementHandle();
       if (handle) return { handle, character: candidate.character, box: candidate.box };
@@ -185,6 +194,34 @@ async function levelSignatureInPage(levelNumber) {
       })
       .join("\n");
   }, levelNumber);
+}
+
+async function buttonOwnerArtSignature(handle) {
+  return handle.evaluate((node) => {
+    const hit = node;
+    const key = hit.closest(".player-instance")?.getAttribute("data-key") ?? "";
+    const ownerPath = hit.dataset.buttonOwnerPath || key.split("/").slice(0, -1).join("/");
+    const groupPath = ownerPath.split("/").slice(0, -1).join("/") || ownerPath;
+    if (!groupPath) return "";
+    return [...document.querySelectorAll(".player-instance")]
+      .filter((inst) => (inst.getAttribute("data-key") ?? "").startsWith(`${groupPath}/`))
+      .map((inst) => {
+        const media = inst.querySelector(".player-media");
+        if (!media || media.classList.contains("player-hit")) return "";
+        const src = media.getAttribute("src") ?? "";
+        return [
+          inst.getAttribute("data-character") ?? "",
+          inst.getAttribute("data-key") ?? "",
+          inst.getAttribute("style") ?? "",
+          media.getAttribute("style") ?? "",
+          getComputedStyle(media).filter,
+          src.startsWith("blob:") ? "blob" : src.slice(0, 96),
+          media.textContent?.replace(/\s+/g, " ").trim() ?? "",
+        ].join("~");
+      })
+      .filter(Boolean)
+      .join("\n");
+  });
 }
 
 async function playerState() {

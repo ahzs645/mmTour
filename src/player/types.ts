@@ -44,6 +44,7 @@ export type MaskVisual = {
   origin: { x: number; y: number; width: number; height: number };
   matrix: import("../data/timelineTypes").Matrix;
   opacity: number;
+  colorTransform?: ColorTransform;
 };
 
 export function clamp(value: number, min: number, max: number): number {

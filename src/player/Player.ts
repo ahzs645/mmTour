@@ -1,6 +1,7 @@
 import type {
   AssetTimeline,
   BodyStatement,
+  ButtonActionRecord,
   ControlAction,
   DefinedFunction,
   TimelineAsset,
@@ -239,6 +240,7 @@ export class Player {
     const owner = this.clipByPath.get(ownerPath) ?? this.root;
     const eventScope = this.buttonEventScope(owner, characterId);
     const action = this.buttonActionFor(owner, characterId, event);
+    const companions = this.companionButtonActions(owner, characterId, event);
     if (!action) {
       this.render();
       return;
@@ -271,8 +273,7 @@ export class Player {
       const n = Number(arg);
       return typeof action.frame === "number" && Number.isFinite(n) && (n - 1 === action.frame || n === action.frame);
     };
-    const isGoto = action.command === "gotoAndPlay" || action.command === "gotoAndStop";
-    const calls = isGoto ? (action.functionCalls ?? []).filter((c) => !duplicatesCommand(c)) : action.functionCalls;
+    const calls = this.buttonCallableActions(action, duplicatesCommand);
     if (calls?.length) this.runCallFunctions({ ...action, functionCalls: calls }, owner, undefined, eventScope);
     if (action.command === "loadMovieNum" || action.command === "loadMovie") this.options.onNavigate?.(action);
     // A nav section button is an exit-navigation: it plays the nav's exit animation (the gotoAndPlay
@@ -294,6 +295,9 @@ export class Player {
         target.playing = action.command === "gotoAndPlay";
         this.enterFrame(target, frame, 0);
       }
+    }
+    for (const companion of companions) {
+      this.runCompanionButtonAction(companion.owner, companion.characterId, companion.action);
     }
     this.render();
   }
@@ -326,6 +330,70 @@ export class Player {
       }
     }
     return best?.action;
+  }
+
+  private companionButtonActions(owner: ClipInstance, characterId: number, event: ButtonEvent): Array<{ owner: ClipInstance; characterId: number; action: ControlAction }> {
+    if (event === "release") return [];
+    const groups = this.timeline.control?.buttonActions ?? {};
+    const group = groups[String(characterId)];
+    const releaseKey = buttonReleaseKey(group?.release);
+    if (!group || !releaseKey) return [];
+    const out: Array<{ owner: ClipInstance; characterId: number; action: ControlAction }> = [];
+    const scope = owner.parent ?? owner;
+    for (const [candidateId, candidateGroup] of Object.entries(groups)) {
+      const id = Number(candidateId);
+      if (!Number.isFinite(id) || id === characterId) continue;
+      const candidateAction = candidateGroup[event];
+      if (!candidateAction) continue;
+      if (buttonReleaseKey(candidateGroup.release) !== releaseKey) continue;
+      if (!buttonOwnerGroupsOverlap(group, candidateGroup)) continue;
+      if (!buttonTimelineActionsMatch(group[event], candidateAction)) continue;
+      const candidateOwner = this.findButtonOwnerClip(scope, id) ?? this.findButtonOwnerClip(this.root, id);
+      if (!candidateOwner || candidateOwner === owner) continue;
+      out.push({ owner: candidateOwner, characterId: id, action: candidateAction });
+    }
+    return out;
+  }
+
+  private runCompanionButtonAction(owner: ClipInstance, characterId: number, action: ControlAction) {
+    const eventScope = this.buttonEventScope(owner, characterId);
+    for (const assign of action.assignments ?? []) {
+      const value = this.resolveExpr(assign.rawValue ?? String(assign.value ?? ""));
+      if (assign.target && value !== undefined && !isEmptyNonRootLevelAssignment(assign.target, value)) this.scopeSet(owner, assign.target, value);
+    }
+    const calls = this.buttonCallableActions(action);
+    if (calls?.length) this.runCallFunctions({ ...action, functionCalls: calls }, owner, undefined, eventScope);
+    if (action.command !== "gotoAndPlay" && action.command !== "gotoAndStop") return;
+    const target = this.resolveTarget(owner, action.target) ?? this.resolveTarget(eventScope, action.target);
+    const frame = this.resolveFrame(action, target);
+    if (target && frame >= 0) {
+      target.playing = action.command === "gotoAndPlay";
+      this.enterFrame(target, frame, 0);
+    }
+  }
+
+  private buttonCallableActions(
+    action: ControlAction,
+    duplicatesCommand: (call: NonNullable<ControlAction["functionCalls"]>[number]) => boolean = () => false,
+  ): ControlAction["functionCalls"] {
+    const calls = action.functionCalls;
+    if (action.command !== "gotoAndPlay" && action.command !== "gotoAndStop") return calls;
+    return (calls ?? []).filter((call) => !duplicatesCommand(call));
+  }
+
+  private findButtonOwnerClip(clip: ClipInstance, characterId: number): ClipInstance | null {
+    if (this.clipOwnsButton(clip, characterId)) return clip;
+    for (const child of clip.childClips.values()) {
+      const found = this.findButtonOwnerClip(child, characterId);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  private clipOwnsButton(clip: ClipInstance, characterId: number): boolean {
+    const frame = this.framesFor(clip)?.[clip.currentFrame];
+    if (frame?.instances?.some((instance) => instance.characterId === characterId && this.getAsset(instance.characterId)?.kind === "button")) return true;
+    return this.latentButtonPlacements(clip).some((instance) => instance.characterId === characterId);
   }
 
   private buttonEventScope(owner: ClipInstance, characterId: number): ClipInstance {
@@ -1369,7 +1437,7 @@ export class Player {
     const nodes: RenderNode[] = [];
     this.clipByPath = new Map();
     this.clipByPath.set("0", this.root);
-    this.flatten(this.root, IDENTITY, 1, "0", { n: 0 }, nodes);
+    this.flatten(this.root, IDENTITY, 1, undefined, "0", { n: 0 }, nodes);
     const liveButtons = new Set(nodes.filter((node) => node.kind === "button").map((node) => node.key));
     for (const key of this.buttonVisualStates.keys()) {
       if (!liveButtons.has(key)) this.buttonVisualStates.delete(key);
@@ -1382,6 +1450,7 @@ export class Player {
     clip: ClipInstance,
     world: RenderNode["matrix"],
     worldOpacity: number,
+    worldColorTransform: RenderNode["colorTransform"],
     path: string,
     order: { n: number },
     out: RenderNode[],
@@ -1408,6 +1477,7 @@ export class Player {
       if (!asset) continue;
       const matrix = multiplyMatrix(world, instance.matrix);
       const opacity = worldOpacity * instance.opacity;
+      const colorTransform = composeColorTransform(worldColorTransform, instance.colorTransform);
       const key = `${path}/${instance.depth}`;
       const child = clip.childClips.get(instance.depth);
 
@@ -1419,7 +1489,7 @@ export class Player {
             key: `${key}#mask`,
             order: order.n++,
             clipDepth: instance.clipDepth,
-            group: { mask: { characterId: asset.id, src, origin: asset.origin, matrix, opacity: 1 }, items: [] },
+            group: { mask: { characterId: asset.id, src, origin: asset.origin, matrix, opacity: 1, colorTransform }, items: [] },
           });
         }
         continue;
@@ -1429,7 +1499,7 @@ export class Player {
       const activeMask = maskStack[maskStack.length - 1];
       if (activeMask && instance.depth <= activeMask.clipDepth) {
         const src = visualSrc(asset, child);
-        if (src) activeMask.group.items.push({ characterId: asset.id, src, origin: asset.origin, matrix, opacity });
+        if (src) activeMask.group.items.push({ characterId: asset.id, src, origin: asset.origin, matrix, opacity, colorTransform });
         continue;
       }
 
@@ -1439,8 +1509,8 @@ export class Player {
       // interactive and its frame scripts still run (logic lives in the tree).
       if (asset.kind === "sprite" && asset.frames?.length && !asset.overflowsBounds) {
         const frameIndex = child ? clamp(child.currentFrame, 0, asset.frames.length - 1) : 0;
-        out.push(spriteNode(key, order.n++, asset, asset.frames[frameIndex], matrix, opacity, instance, child?.currentFrame));
-        if (child && asset.timeline?.length) this.collectButtons(child, matrix, key, order, out);
+        out.push(spriteNode(key, order.n++, asset, asset.frames[frameIndex], matrix, opacity, instance, child?.currentFrame, colorTransform));
+        if (child && asset.timeline?.length) this.collectButtons(child, matrix, colorTransform, key, order, out);
         continue;
       }
 
@@ -1449,7 +1519,7 @@ export class Player {
       // render from the display-list tree so the moving content isn't clipped/dropped.
       if (asset.kind === "sprite" && asset.timeline?.length && child && child.characterId === asset.id) {
         this.clipByPath.set(key, child);
-        this.flatten(child, matrix, opacity, key, order, out);
+        this.flatten(child, matrix, opacity, colorTransform, key, order, out);
         continue;
       }
 
@@ -1458,14 +1528,14 @@ export class Player {
         // icon). The build strips any embedded editText glyphs from that art (FFDec bakes
         // them clipped/mispositioned), so the live field value is drawn by collectButtonText
         // on top — giving the icon AND the correct label (e.g. segment5's Replay button).
-        out.push(buttonNode(key, order.n++, asset, matrix, instance, path, true, opacity, this.buttonVisualStates.get(key)));
-        this.collectButtonText(asset, matrix, key, order, out, instance);
+        out.push(buttonNode(key, order.n++, asset, matrix, instance, path, true, opacity, this.buttonVisualStates.get(key), colorTransform));
+        this.collectButtonText(asset, matrix, colorTransform, key, order, out, instance);
         continue;
       }
 
-      out.push(this.leafNode(key, order.n++, asset, asset.src ?? "", matrix, opacity, instance));
+      out.push(this.leafNode(key, order.n++, asset, asset.src ?? "", matrix, opacity, instance, colorTransform));
     }
-    this.collectLatentButtons(clip, world, path, order, out, occupiedDepths, worldOpacity);
+    this.collectLatentButtons(clip, world, worldColorTransform, path, order, out, occupiedDepths, worldOpacity);
     flushMasks(Number.POSITIVE_INFINITY);
   }
 
@@ -1476,7 +1546,14 @@ export class Player {
    * (those are baked EMPTY in the sprite frame, so we draw them on top — e.g. the
    * nav's "Skip Intro" and "Best for Business" headings).
    */
-  private collectButtons(clip: ClipInstance, world: RenderNode["matrix"], path: string, order: { n: number }, out: RenderNode[]) {
+  private collectButtons(
+    clip: ClipInstance,
+    world: RenderNode["matrix"],
+    worldColorTransform: RenderNode["colorTransform"],
+    path: string,
+    order: { n: number },
+    out: RenderNode[],
+  ) {
     this.clipByPath.set(path, clip);
     const frames = this.framesFor(clip);
     if (!frames) return;
@@ -1489,11 +1566,12 @@ export class Player {
       const asset = this.getAsset(instance.characterId);
       if (!asset) continue;
       const matrix = multiplyMatrix(world, instance.matrix);
+      const colorTransform = composeColorTransform(worldColorTransform, instance.colorTransform);
       const key = `${path}/${instance.depth}`;
       if (asset.kind === "button") {
         // Baked path: the button's visual is in the composited frame — just a hit area.
-        out.push(buttonNode(key, order.n++, asset, matrix, instance, path, false, 1, this.buttonVisualStates.get(key)));
-        this.collectButtonText(asset, matrix, key, order, out, instance);
+        out.push(buttonNode(key, order.n++, asset, matrix, instance, path, false, 1, this.buttonVisualStates.get(key), colorTransform));
+        this.collectButtonText(asset, matrix, colorTransform, key, order, out, instance);
       } else if (asset.kind === "text") {
         // editText is stripped from the baked sprite frame (FFDec bakes it mispositioned),
         // so re-draw it here at its own bounds: a loadVariables()-bound field once its value
@@ -1503,19 +1581,20 @@ export class Player {
           ? this.textVars.has(field.normalizedVariableName)
           : Boolean(field?.text && String(field.text).trim());
         if (show) {
-          out.push(this.leafNode(key, order.n++, asset, asset.src ?? "", matrix, instance.opacity, instance));
+          out.push(this.leafNode(key, order.n++, asset, asset.src ?? "", matrix, instance.opacity, instance, colorTransform));
         }
       } else if (asset.kind === "sprite") {
         const child = clip.childClips.get(instance.depth);
-        if (child) this.collectButtons(child, matrix, key, order, out);
+        if (child) this.collectButtons(child, matrix, colorTransform, key, order, out);
       }
     }
-    this.collectLatentButtons(clip, world, path, order, out, occupiedDepths);
+    this.collectLatentButtons(clip, world, worldColorTransform, path, order, out, occupiedDepths);
   }
 
   private collectLatentButtons(
     clip: ClipInstance,
     world: RenderNode["matrix"],
+    worldColorTransform: RenderNode["colorTransform"],
     path: string,
     order: { n: number },
     out: RenderNode[],
@@ -1528,8 +1607,9 @@ export class Player {
       const asset = this.getAsset(instance.characterId);
       if (!asset || asset.kind !== "button") continue;
       const matrix = multiplyMatrix(world, instance.matrix);
+      const colorTransform = composeColorTransform(worldColorTransform, instance.colorTransform);
       const key = `${path}/${instance.depth}`;
-      out.push(buttonNode(key, order.n++, asset, matrix, instance, path, false, opacity, this.buttonVisualStates.get(key)));
+      out.push(buttonNode(key, order.n++, asset, matrix, instance, path, false, opacity, this.buttonVisualStates.get(key), colorTransform));
     }
   }
 
@@ -1579,6 +1659,7 @@ export class Player {
   private collectButtonText(
     asset: TimelineAsset,
     buttonMatrix: RenderNode["matrix"],
+    buttonColorTransform: RenderNode["colorTransform"],
     key: string,
     order: { n: number },
     out: RenderNode[],
@@ -1591,7 +1672,7 @@ export class Player {
       // Only overlay once a loadVariables() value exists (else the baked frame is authoritative).
       if (!resolved?.normalizedVariableName || !this.textVars.has(resolved.normalizedVariableName)) continue;
       const matrix = multiplyMatrix(buttonMatrix, field.matrix);
-      out.push(this.leafNode(`${key}/txt:${field.id}`, order.n++, fieldAsset, fieldAsset.src ?? "", matrix, instance.opacity, instance));
+      out.push(this.leafNode(`${key}/txt:${field.id}`, order.n++, fieldAsset, fieldAsset.src ?? "", matrix, instance.opacity, instance, buttonColorTransform));
     }
   }
 
@@ -1603,6 +1684,7 @@ export class Player {
     matrix: RenderNode["matrix"],
     opacity: number,
     instance: TimelineFrame["instances"][number],
+    colorTransform: RenderNode["colorTransform"] = instance.colorTransform,
   ): RenderNode {
     return {
       key,
@@ -1614,7 +1696,7 @@ export class Player {
       origin: asset.origin,
       matrix,
       opacity,
-      colorTransform: instance.colorTransform,
+      colorTransform,
       clipDepth: instance.clipDepth,
       text: asset.kind === "text" ? this.resolveTextField(asset.id, asset) : undefined,
     };
@@ -1661,6 +1743,42 @@ function isSelfTimelineTarget(target: string | undefined): boolean {
 
 function isEmptyNonRootLevelAssignment(target: string, value: VarValue): boolean {
   return value === "" && NON_ROOT_LEVEL_TARGET.test(target);
+}
+
+function composeColorTransform(parent: RenderNode["colorTransform"], child: RenderNode["colorTransform"]): RenderNode["colorTransform"] {
+  if (!parent) return child;
+  if (!child) return parent;
+  const rm = (child.rm ?? 1) * (parent.rm ?? 1);
+  const gm = (child.gm ?? 1) * (parent.gm ?? 1);
+  const bm = (child.bm ?? 1) * (parent.bm ?? 1);
+  const ra = (child.ra ?? 0) * (parent.rm ?? 1) + (parent.ra ?? 0);
+  const ga = (child.ga ?? 0) * (parent.gm ?? 1) + (parent.ga ?? 0);
+  const ba = (child.ba ?? 0) * (parent.bm ?? 1) + (parent.ba ?? 0);
+  if (rm === 1 && gm === 1 && bm === 1 && ra === 0 && ga === 0 && ba === 0) return undefined;
+  return { rm, gm, bm, ra, ga, ba };
+}
+
+function buttonReleaseKey(action: ControlAction | undefined): string {
+  if (!action) return "";
+  const nav = action.exitNavigation;
+  if (nav) return ["exit", nav.variable, nav.value, nav.swf, nav.level ?? "", nav.exitLabel ?? "", nav.exitFrame].join("|");
+  if (!action.swf && action.frame === undefined && !action.label) return "";
+  return ["release", action.command ?? "", action.target ?? "", action.swf ?? "", action.level ?? "", action.label ?? "", action.frame ?? ""].join("|");
+}
+
+function buttonOwnerGroupsOverlap(a: ButtonActionRecord, b: ButtonActionRecord): boolean {
+  const owners = new Set((a.ownerSpriteIds ?? []).map(String));
+  return (b.ownerSpriteIds ?? []).some((id) => owners.has(String(id)));
+}
+
+function buttonTimelineActionsMatch(a: ControlAction | undefined, b: ControlAction | undefined): boolean {
+  if (!a || !b) return false;
+  if (a.command !== b.command) return false;
+  if ((a.target ?? "self") !== (b.target ?? "self")) return false;
+  if ((a.label ?? "") !== (b.label ?? "")) return false;
+  if ((a.frame ?? "") !== (b.frame ?? "")) return false;
+  if ((a.frameExpression ?? "") !== (b.frameExpression ?? "")) return false;
+  return true;
 }
 
 function loadedTextAlign(text: string, fallback: string | undefined, html: boolean): string | undefined {

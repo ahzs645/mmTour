@@ -193,10 +193,11 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
       if (!content) continue;
       put(`texts/${t.id}.txt`, "text/plain", content);
       const b = t.bounds;
+      const text = staticTextStyle(t, content);
       assets[String(t.id)] ??= {
         id: t.id, kind: "text", src: `generated/${scene}/texts/${t.id}.txt`,
         origin: b ? { x: b.xMin / 20, y: b.yMin / 20, width: (b.xMax - b.xMin) / 20, height: (b.yMax - b.yMin) / 20 } : zero(),
-        text: { text: content, align: "center", x: b ? b.xMin / 20 : 0, y: 0 },
+        text,
       };
       stats.texts++;
     }
@@ -397,6 +398,28 @@ function editTextStyle(t: any, scene: string) {
     normalizedVariableName: t.variableName ? normalizeBindingName(t.variableName) : undefined,
   };
   return { id: t.id, kind: "text", src: `generated/${scene}/texts/${t.id}.txt`, origin: { x: text.x, y: text.y, width: w, height: h }, text };
+}
+
+function staticTextStyle(t: any, content: string) {
+  const b = t.bounds;
+  const firstRecord = (t.records ?? []).find((record: any) => record.fontId !== undefined || record.fontSize !== undefined || record.color);
+  const width = b ? (b.xMax - b.xMin) / 20 : 0;
+  const height = b ? (b.yMax - b.yMin) / 20 : 0;
+  return {
+    fontId: firstRecord?.fontId,
+    fontHeight: firstRecord?.fontSize ? firstRecord.fontSize / 20 : 12,
+    color: firstRecord?.color ? `#${hx(firstRecord.color.r)}${hx(firstRecord.color.g)}${hx(firstRecord.color.b)}` : undefined,
+    align: "center",
+    x: b ? b.xMin / 20 : 0,
+    // FFDec positions static DefineText at the tag registration and keeps vertical
+    // alignment in the glyph records; matching that avoids pushing section titles down.
+    y: 0,
+    width: width || undefined,
+    height: height || undefined,
+    wordWrap: false,
+    multiline: false,
+    text: content,
+  };
 }
 
 function dynamicTextInfo(movie: any): Map<number, DynamicTextInfo> {

@@ -5,7 +5,7 @@
 import Dexie, { type Table } from "dexie";
 import type { CompileStats } from "./compileScene.ts";
 
-export const COMPILED_CACHE_VERSION = 5;
+export const COMPILED_CACHE_VERSION = 6;
 
 export interface StoredCompiledFile {
   path: string;

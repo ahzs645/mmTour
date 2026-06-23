@@ -37,6 +37,7 @@ export function spriteNode(
   opacity: number,
   instance: TimelineFrame["instances"][number],
   spriteFrame?: number,
+  colorTransform: RenderNode["colorTransform"] = instance.colorTransform,
 ): RenderNode {
   return {
     key,
@@ -48,7 +49,7 @@ export function spriteNode(
     origin: asset.origin,
     matrix,
     opacity,
-    colorTransform: instance.colorTransform,
+    colorTransform,
     clipDepth: instance.clipDepth,
     spriteFrame,
   };
@@ -74,6 +75,7 @@ export function buttonNode(
   renderArtwork: boolean,
   opacity = 1,
   visualState?: ButtonVisualState,
+  colorTransform: RenderNode["colorTransform"] = instance.colorTransform,
 ): RenderNode {
   // Tree path (renderArtwork=true): render the button's current artwork — normally its up-state
   // icon, switching to extracted over/down states while the pointer is active. The build
@@ -100,6 +102,7 @@ export function buttonNode(
     origin: visual?.origin ?? asset.origin,
     matrix,
     opacity: visual?.src ? opacity : 1,
+    colorTransform,
     buttonOwnerPath: ownerPath,
   };
 }

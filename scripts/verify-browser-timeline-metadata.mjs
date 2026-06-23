@@ -15,6 +15,7 @@ for (const scene of scenes) {
   const browserTimeline = (await compileScene(new Uint8Array(readFileSync(join(root, "public", `${scene}.swf`))), scene)).timeline;
 
   verifyDynamicTexts(scene, browserTimeline.control?.dynamicTexts ?? {}, ffdecTimeline.control?.dynamicTexts ?? {});
+  const staticTexts = verifyStaticTexts(scene, browserTimeline.assets ?? {}, ffdecTimeline.assets ?? {});
   verifySpriteLocalDefaults(scene, browserTimeline.control?.spriteLocalDefaults ?? {}, ffdecTimeline.control?.spriteLocalDefaults ?? {});
   const overflow = verifyOverflowFlags(scene, browserTimeline, ffdecTimeline);
 
@@ -24,6 +25,7 @@ for (const scene of scenes) {
       required: Object.keys(ffdecTimeline.control?.dynamicTexts ?? {}).length,
       browser: Object.keys(browserTimeline.control?.dynamicTexts ?? {}).length,
     },
+    staticTexts,
     spriteLocalDefaults: {
       required: Object.keys(ffdecTimeline.control?.spriteLocalDefaults ?? {}).length,
       browser: Object.keys(browserTimeline.control?.spriteLocalDefaults ?? {}).length,
@@ -35,6 +37,7 @@ for (const scene of scenes) {
 for (const summary of summaries) {
   console.log(
     `${summary.scene}: dynamicText ${summary.dynamicTexts.required}/${summary.dynamicTexts.browser}, `
+      + `staticText ${summary.staticTexts.required}/${summary.staticTexts.browser}, `
       + `spriteLocalDefaults ${summary.spriteLocalDefaults.required}/${summary.spriteLocalDefaults.browser}, `
       + `overflow required=${summary.overflow.required} browser=${summary.overflow.browser} ignoredMetadataOnly=${summary.overflow.ignoredMetadataOnly}`,
   );
@@ -66,6 +69,34 @@ function verifyDynamicTexts(scene, actual, expected) {
       failures.push(`${scene}: dynamic text ${id}.align expected runtime ${JSON.stringify(required.align)}, got ${JSON.stringify(runtimeAlign)} from browser ${JSON.stringify(found.align)}`);
     }
   }
+}
+
+function verifyStaticTexts(scene, actualAssets, expectedAssets) {
+  const fields = ["fontId", "fontHeight", "color", "align", "x", "y", "width", "height"];
+  let required = 0;
+  let browser = 0;
+  for (const [id, requiredAsset] of Object.entries(expectedAssets)) {
+    const requiredText = requiredAsset?.kind === "text" ? requiredAsset.text : undefined;
+    if (!requiredText?.text || requiredText.normalizedVariableName) continue;
+    required += 1;
+    const found = actualAssets[id]?.text;
+    if (!found) {
+      failures.push(`${scene}: static text ${id} missing`);
+      continue;
+    }
+    if (String(found.text ?? "") !== String(requiredText.text ?? "")) {
+      failures.push(`${scene}: static text ${id}.text expected ${JSON.stringify(requiredText.text)}, got ${JSON.stringify(found.text)}`);
+      continue;
+    }
+    browser += 1;
+    for (const field of fields) {
+      if (requiredText[field] === undefined) continue;
+      if (normalizeValue(found[field]) !== normalizeValue(requiredText[field])) {
+        failures.push(`${scene}: static text ${id}.${field} expected ${JSON.stringify(requiredText[field])}, got ${JSON.stringify(found[field])}`);
+      }
+    }
+  }
+  return { required, browser };
 }
 
 function verifySpriteLocalDefaults(scene, actual, expected) {

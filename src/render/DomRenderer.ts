@@ -1,5 +1,6 @@
 import { gsap } from "gsap";
 import { assetUrl } from "../data/TimelineLoader";
+import type { ColorTransform } from "../data/timelineTypes";
 import type { MaskVisual, RenderNode } from "../player/types";
 import { applyColorTransform } from "./colorTransform";
 
@@ -60,20 +61,22 @@ function loadMaskShape(src: string): ParsedShape | null | undefined {
 function svgImage(v: MaskVisual, extra = ""): string {
   const m = v.matrix;
   const url = assetUrl(v.src);
+  const filter = v.colorTransform ? ` filter="url(#${maskColorFilterId(v.colorTransform)})"` : "";
   return (
     `<image href="${url}" xlink:href="${url}" x="${-v.origin.x}" y="${-v.origin.y}" ` +
     `width="${v.origin.width}" height="${v.origin.height}" ` +
-    `transform="matrix(${m.a},${m.b},${m.c},${m.d},${m.tx},${m.ty})"${extra}/>`
+    `transform="matrix(${m.a},${m.b},${m.c},${m.d},${m.tx},${m.ty})"${filter}${extra}/>`
   );
 }
 
 /** Build an inline SVG string that clips `items` to the `mask` shape's geometry. */
 function maskGroupSvg(group: { mask: MaskVisual; items: MaskVisual[] }, key: string): string {
   const open = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="640" height="480" style="position:absolute;left:0;top:0;overflow:visible">`;
+  const filterDefs = maskColorFilterDefs(group.items);
   const shape = loadMaskShape(group.mask.src);
   // Until the mask shape loads (or if it failed), show the items unclipped.
   if (!shape) {
-    return `${open}${group.items.map((it) => svgImage(it)).join("")}</svg>`;
+    return `${open}${filterDefs ? `<defs>${filterDefs}</defs>` : ""}${group.items.map((it) => svgImage(it)).join("")}</svg>`;
   }
 
   // Bake mask-matrix ∘ origin-shift ∘ shape-g into ONE matrix on a single <g>, so the
@@ -87,7 +90,36 @@ function maskGroupSvg(group: { mask: MaskVisual; items: MaskVisual[] }, key: str
   const tf = `matrix(${combined.a},${combined.b},${combined.c},${combined.d},${combined.tx},${combined.ty})`;
   const clipBody = shape.body.replace(/<(path|polygon|rect|ellipse|circle)\b/g, `<$1 transform="${tf}"`);
   const items = group.items.map((it) => svgImage(it, it.opacity !== 1 ? ` opacity="${it.opacity}"` : "")).join("");
-  return `${open}<defs><clipPath id="${clipId}" clipPathUnits="userSpaceOnUse">${clipBody}</clipPath></defs><g clip-path="url(#${clipId})">${items}</g></svg>`;
+  return `${open}<defs>${filterDefs}<clipPath id="${clipId}" clipPathUnits="userSpaceOnUse">${clipBody}</clipPath></defs><g clip-path="url(#${clipId})">${items}</g></svg>`;
+}
+
+function maskColorFilterDefs(items: MaskVisual[]): string {
+  const transforms = new Map<string, ColorTransform>();
+  for (const item of items) {
+    if (!item.colorTransform) continue;
+    transforms.set(maskColorFilterId(item.colorTransform), item.colorTransform);
+  }
+  return [...transforms.entries()].map(([id, ct]) => {
+    const rm = ct.rm ?? 1;
+    const gm = ct.gm ?? 1;
+    const bm = ct.bm ?? 1;
+    const ra = ct.ra ?? 0;
+    const ga = ct.ga ?? 0;
+    const ba = ct.ba ?? 0;
+    return (
+      `<filter id="${id}" color-interpolation-filters="sRGB">` +
+      `<feComponentTransfer>` +
+      `<feFuncR type="linear" slope="${rm}" intercept="${ra}"/>` +
+      `<feFuncG type="linear" slope="${gm}" intercept="${ga}"/>` +
+      `<feFuncB type="linear" slope="${bm}" intercept="${ba}"/>` +
+      `</feComponentTransfer></filter>`
+    );
+  }).join("");
+}
+
+function maskColorFilterId(ct: ColorTransform): string {
+  const values = [ct.rm ?? 1, ct.gm ?? 1, ct.bm ?? 1, ct.ra ?? 0, ct.ga ?? 0, ct.ba ?? 0];
+  return `mc${values.map((value) => String(Math.round(value * 100000)).replace("-", "n")).join("_")}`;
 }
 
 type RenderedNode = {
