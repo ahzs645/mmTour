@@ -17,11 +17,19 @@
  */
 import "./player.css";
 import { PlayerController } from "./app/PlayerController";
-import type { TourButtonEvent, TourNavigation } from "./app/PlayerController";
+import type {
+  PlayerLoadErrorEvent,
+  PlayerLoadEvent,
+  PlayerLoadLifecycleCallbacks,
+  TourButtonEvent,
+  TourNavigation,
+} from "./app/PlayerController";
 import { clearTimelineCache, loadTimeline } from "./data/TimelineLoader";
+import { sceneNameFromSwf } from "./data/scenes";
+import type { AssetTimeline } from "./data/timelineTypes";
 import { setArchiveUrl, setAssetsBaseUrl, setAssetSource, type AssetSource } from "./data/packedAssets.ts";
 
-export interface TourPlayerOptions {
+export interface DecompiledPlayerAssetOptions {
   /** Where the converted `generated/` (and `generated-packed/`) assets are served. Default "" (origin root). */
   assetsBaseUrl?: string;
   /**
@@ -34,8 +42,9 @@ export interface TourPlayerOptions {
   assetSource?: AssetSource;
   /** For assetSource "archive": URL of the single archive. Default `${assetsBaseUrl}/xp-tour.pack`. */
   archiveUrl?: string;
-  /** Entry SWF. Default "A-tour.swf" — the Tour Shell that drives the full guided tour. */
-  scene?: string;
+}
+
+export interface PlayerRuntimeOptions {
   /** Begin playing immediately. Default true. */
   autoplay?: boolean;
   /** Enable verbose segment-flash tracing in the console. Default false. */
@@ -49,10 +58,41 @@ export interface TourPlayerOptions {
   /** Notified when the tour navigates between scenes/levels (loadMovie/unloadMovie),
    *  so the host can follow progress (e.g. detect the final segment / tour end). */
   onNavigate?: (nav: TourNavigation) => void;
+  /** Notified when the movie issues an AVM1 `fscommand(command, args)`. The original
+   *  tour's quit button is `fscommand("quit")`; map it to your own response (e.g. close
+   *  the tour). Any embedder gets a working quit button with no per-button wiring. */
+  onFsCommand?: (command: string, args: string) => void;
 }
 
-/** Handle returned by {@link createTourPlayer} for driving playback. */
-export interface TourPlayer {
+export type DecompiledPlayerLoadEvent = PlayerLoadEvent;
+export type DecompiledPlayerLoadErrorEvent = PlayerLoadErrorEvent;
+export type DecompiledPlayerLoadLifecycleCallbacks = PlayerLoadLifecycleCallbacks;
+
+export type DecompiledPlayerRuntimeOptions = PlayerRuntimeOptions & DecompiledPlayerLoadLifecycleCallbacks;
+
+export type DecompiledPlayerOptions = DecompiledPlayerAssetOptions & DecompiledPlayerRuntimeOptions & (
+  | {
+      /** Entry SWF to load from the configured generated assets, e.g. "intro.swf". */
+      scene: string;
+      timeline?: never;
+      swf?: never;
+    }
+  | {
+      /** Already-loaded timeline data to play without fetching the entry timeline. */
+      timeline: AssetTimeline;
+      /** Optional SWF name used for level identity and self-load guards. Defaults to `${timeline.scene}.swf`. */
+      swf?: string;
+      scene?: never;
+    }
+);
+
+export interface TourPlayerOptions extends DecompiledPlayerAssetOptions, PlayerRuntimeOptions, DecompiledPlayerLoadLifecycleCallbacks {
+  /** Entry SWF. Default "A-tour.swf" — the Tour Shell that drives the full guided tour. */
+  scene?: string;
+}
+
+/** Handle returned by {@link createDecompiledPlayer} for driving playback. */
+export interface DecompiledPlayer {
   play(): void;
   pause(): void;
   toggle(): void;
@@ -64,6 +104,9 @@ export interface TourPlayer {
   /** Tear down the player, its levels, audio, and DOM. */
   destroy(): void;
 }
+
+/** Handle returned by {@link createTourPlayer} for driving playback. */
+export interface TourPlayer extends DecompiledPlayer {}
 
 /**
  * Create and (optionally) start a tour player inside `container`.
@@ -83,24 +126,132 @@ export async function createTourPlayer(
     onFrame,
     onButton,
     onNavigate,
+    onFsCommand,
+    onLoadStart,
+    onLoadComplete,
+    onLoadError,
   } = options;
 
+  configureAssets({ assetsBaseUrl, assetSource, archiveUrl });
+
+  const swf = swfForScene(scene);
+  const initialScene = sceneNameFromSwf(scene);
+  onLoadStart?.({ source: "initial", level: 0, swf, scene: initialScene });
+
+  let timeline: AssetTimeline;
+  try {
+    const loaded = await loadTimeline(scene);
+    if (!loaded) throw new Error(`mmtour: failed to load tour scene "${scene}" from "${assetsBaseUrl || "/"}"`);
+    timeline = loaded;
+  } catch (error) {
+    onLoadError?.({ source: "initial", level: 0, swf, scene: initialScene, error });
+    throw error;
+  }
+
+  const controller = new PlayerController(container, { debug, onFrame, onButton, onNavigate, onFsCommand, onLoadStart, onLoadComplete, onLoadError });
+  controller.activate(timeline, swf);
+  onLoadComplete?.({ source: "initial", level: 0, swf, scene: timeline.scene, timeline });
+  if (autoplay) controller.play();
+
+  return playerHandle(controller);
+}
+
+/**
+ * Create and (optionally) start the data-driven Decompiled Player inside `container`.
+ *
+ * Unlike {@link createTourPlayer}, this generic API has no tour-shell default:
+ * pass either a `scene` SWF to load from generated assets or an already-loaded
+ * `timeline`.
+ */
+export async function createDecompiledPlayer(
+  container: HTMLElement,
+  options: DecompiledPlayerOptions,
+): Promise<DecompiledPlayer> {
+  const {
+    assetsBaseUrl = "",
+    assetSource = "files",
+    archiveUrl,
+    autoplay = true,
+    debug = false,
+    onFrame,
+    onButton,
+    onNavigate,
+    onFsCommand,
+    onLoadStart,
+    onLoadComplete,
+    onLoadError,
+  } = options;
+
+  configureAssets({ assetsBaseUrl, assetSource, archiveUrl });
+
+  const timelineInput = "timeline" in options ? options.timeline : undefined;
+  const sceneInput = "scene" in options ? options.scene : undefined;
+  let sceneToLoad: string | undefined;
+  let swf: string;
+  let initialScene: string;
+  if (timelineInput) {
+    swf = swfForTimeline(timelineInput, options.swf);
+    initialScene = timelineInput.scene;
+  } else {
+    if (!sceneInput) throw new Error("mmtour: createDecompiledPlayer requires either a scene or a timeline");
+    sceneToLoad = sceneInput;
+    swf = swfForScene(sceneInput);
+    initialScene = sceneNameFromSwf(sceneInput);
+  }
+  onLoadStart?.({ source: "initial", level: 0, swf, scene: initialScene });
+
+  let timeline: AssetTimeline;
+  try {
+    if (timelineInput) {
+      timeline = timelineInput;
+    } else {
+      if (!sceneToLoad) throw new Error("mmtour: createDecompiledPlayer requires either a scene or a timeline");
+      const loaded = await loadTimeline(sceneToLoad);
+      if (!loaded) throw new Error(`mmtour: failed to load scene "${sceneToLoad}" from "${assetsBaseUrl || "/"}"`);
+      timeline = loaded;
+    }
+  } catch (error) {
+    onLoadError?.({ source: "initial", level: 0, swf, scene: initialScene, error });
+    throw error;
+  }
+
+  const controller = new PlayerController(container, {
+    debug,
+    onFrame,
+    onButton,
+    onNavigate,
+    onFsCommand,
+    onLoadStart,
+    onLoadComplete,
+    onLoadError,
+  });
+  controller.activate(timeline, swf);
+  onLoadComplete?.({ source: "initial", level: 0, swf, scene: timeline.scene, timeline });
+  if (autoplay) controller.play();
+
+  return playerHandle(controller);
+}
+
+function configureAssets(options: Required<Pick<DecompiledPlayerAssetOptions, "assetsBaseUrl" | "assetSource">> & Pick<DecompiledPlayerAssetOptions, "archiveUrl">) {
+  const { assetsBaseUrl, assetSource, archiveUrl } = options;
   setAssetsBaseUrl(assetsBaseUrl);
   setAssetSource(assetSource);
   if (assetSource === "archive") {
     setArchiveUrl(archiveUrl ?? `${assetsBaseUrl.replace(/\/+$/, "")}/xp-tour.pack`);
   }
   clearTimelineCache();
+}
 
-  const timeline = await loadTimeline(scene);
-  if (!timeline) {
-    throw new Error(`mmtour: failed to load tour scene "${scene}" from "${assetsBaseUrl || "/"}"`);
-  }
+function swfForTimeline(timeline: AssetTimeline, swf?: string): string {
+  if (swf) return swf;
+  return swfForScene(timeline.scene);
+}
 
-  const controller = new PlayerController(container, { debug, onFrame, onButton, onNavigate });
-  controller.activate(timeline, scene);
-  if (autoplay) controller.play();
+function swfForScene(scene: string): string {
+  return /\.swf$/i.test(scene) ? scene : `${scene}.swf`;
+}
 
+function playerHandle(controller: PlayerController): DecompiledPlayer {
   return {
     play: () => controller.play(),
     pause: () => controller.pause(),
@@ -123,9 +274,19 @@ export async function createTourPlayer(
 // Lower-level building blocks, for hosts that need more control than
 // createTourPlayer offers (custom level handling, asset source switching, etc.).
 export { PlayerController } from "./app/PlayerController";
-export type { PlayerControllerOptions, TourButtonEvent, TourButtonAction, TourNavigation } from "./app/PlayerController";
+export type {
+  PlayerControllerOptions,
+  PlayerLoadEvent,
+  PlayerLoadErrorEvent,
+  PlayerLoadLifecycleCallbacks,
+  PlayerLoadSource,
+  TourButtonEvent,
+  TourButtonAction,
+  TourNavigation,
+} from "./app/PlayerController";
 export { setAssetsBaseUrl, getAssetsBaseUrl, setAssetSource, getAssetSource, setArchiveUrl } from "./data/packedAssets.ts";
 export type { AssetSource } from "./data/packedAssets.ts";
 export { loadTimeline } from "./data/TimelineLoader";
+export type { AssetTimeline } from "./data/timelineTypes";
 export { scenes, sceneNameFromSwf } from "./data/scenes";
 export type { TourScene } from "./data/scenes";

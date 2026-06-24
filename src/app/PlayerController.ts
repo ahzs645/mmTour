@@ -1,5 +1,6 @@
 import type { AssetTimeline, ControlAction } from "../data/timelineTypes";
 import { assetUrl, loadTimeline } from "../data/TimelineLoader";
+import { sceneNameFromSwf } from "../data/scenes";
 import { collectReferencedSwfs, prefetchScene } from "../data/prefetch";
 import { collectExplicitSoundTimings } from "../data/soundTimings";
 import { DomRenderer } from "../render/DomRenderer";
@@ -40,6 +41,31 @@ export interface TourNavigation {
   reload?: boolean;
 }
 
+export type PlayerLoadSource = "initial" | "level";
+
+export interface PlayerLoadEvent {
+  /** Whether this is the entry movie or a movie loaded into another Flash level. */
+  source: PlayerLoadSource;
+  /** Flash level receiving the movie. The entry movie is level 0. */
+  level: number;
+  /** Requested SWF name, e.g. "intro.swf". */
+  swf: string;
+  /** Extracted/generated scene name, e.g. "intro". */
+  scene: string;
+  /** Present once a timeline has been resolved. */
+  timeline?: AssetTimeline;
+}
+
+export interface PlayerLoadErrorEvent extends Omit<PlayerLoadEvent, "timeline"> {
+  error: unknown;
+}
+
+export type PlayerLoadLifecycleCallbacks = {
+  onLoadStart?: (event: PlayerLoadEvent) => void;
+  onLoadComplete?: (event: PlayerLoadEvent) => void;
+  onLoadError?: (event: PlayerLoadErrorEvent) => void;
+};
+
 export type PlayerControllerOptions = {
   onFrame?: (rootFrame: number, playing: boolean, label: string) => void;
   /** Enable temporary segment-flash tracing (console logs + a bottom-bar rAF watch). Off by default. */
@@ -49,7 +75,10 @@ export type PlayerControllerOptions = {
   onButton?: (event: TourButtonEvent) => boolean | void;
   /** Notified when the tour loads/unloads a scene into a level. */
   onNavigate?: (nav: TourNavigation) => void;
-};
+  /** Notified when the movie issues an AVM1 `fscommand(command, args)` — e.g. the tour's
+   *  quit button (`fscommand("quit")`). The host decides what each command means. */
+  onFsCommand?: (command: string, args: string) => void;
+} & PlayerLoadLifecycleCallbacks;
 
 type Level = { player: Player; layer: HTMLElement; swf: string };
 
@@ -199,6 +228,7 @@ export class PlayerController {
         ? (characterId, ownerPath, event, action) =>
             this.options.onButton!({ characterId, ownerPath, event, scene: timeline.scene, action })
         : undefined,
+      onFsCommand: this.options.onFsCommand,
       store: this.store,
       onCallFunction: (target, name, args) => this.dispatchCall(target, name, args),
       onClipCommand: (target, command, frame) => this.dispatchClipCommand(target, command, frame),
@@ -387,9 +417,26 @@ export class PlayerController {
     if (!reload && existing && existing.swf.toLowerCase() === swf.toLowerCase()) return; // already loaded
     if (swf.toLowerCase() === this.mainSwf.toLowerCase()) return; // avoid loading self into a level
 
-    const timeline = await loadTimeline(swf);
-    if (!timeline || this.container.hidden) return; // deactivated while loading
-    this.createLevel(level, swf, timeline as unknown as AssetTimeline);
+    const scene = sceneNameFromSwf(swf);
+    this.options.onLoadStart?.({ source: "level", level, swf, scene });
+    try {
+      const timeline = await loadTimeline(swf);
+      if (!timeline) {
+        this.options.onLoadError?.({
+          source: "level",
+          level,
+          swf,
+          scene,
+          error: new Error(`mmtour: failed to load level ${level} scene "${swf}"`),
+        });
+        return;
+      }
+      if (this.container.hidden) return; // deactivated while loading
+      this.createLevel(level, swf, timeline);
+      this.options.onLoadComplete?.({ source: "level", level, swf, scene: timeline.scene, timeline });
+    } catch (error) {
+      this.options.onLoadError?.({ source: "level", level, swf, scene, error });
+    }
   }
 
   private destroyLevel(level: number) {

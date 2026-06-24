@@ -2,8 +2,8 @@
 // reconcile passes. No Player state — plain functions over assets, clips and matrices.
 
 import { ClipInstance } from "./ClipInstance";
-import { clamp, type RenderNode } from "./types";
-import type { TimelineAsset, TimelineFrame } from "../data/timelineTypes";
+import { clamp, type RenderNode, type RenderPlacementMetadata } from "./types";
+import type { ColorTransform, TimelineAsset, TimelineFrame } from "../data/timelineTypes";
 
 export type ButtonVisualState = "up" | "over" | "down";
 
@@ -28,6 +28,32 @@ export function visualSrc(asset: TimelineAsset, child: ClipInstance | undefined)
   return asset.src ?? "";
 }
 
+export function renderMetadataFromInstance(instance: TimelineFrame["instances"][number]): RenderPlacementMetadata {
+  const metadata: RenderPlacementMetadata = {};
+  if (instance.visible !== undefined) metadata.visible = instance.visible;
+  if (instance.blendMode !== undefined) metadata.blendMode = instance.blendMode;
+  if (instance.filters !== undefined) metadata.filters = instance.filters;
+  if (instance.cacheAsBitmap !== undefined) metadata.cacheAsBitmap = instance.cacheAsBitmap;
+  if (instance.className !== undefined) metadata.className = instance.className;
+  if (instance.clipActions !== undefined) metadata.clipActions = instance.clipActions;
+  return metadata;
+}
+
+export function composeRenderColorTransform(parent: ColorTransform | undefined, child: ColorTransform | undefined): ColorTransform | undefined {
+  if (!parent) return child;
+  if (!child) return parent;
+  const rm = (child.rm ?? 1) * (parent.rm ?? 1);
+  const gm = (child.gm ?? 1) * (parent.gm ?? 1);
+  const bm = (child.bm ?? 1) * (parent.bm ?? 1);
+  const am = (child.am ?? 1) * (parent.am ?? 1);
+  const ra = (child.ra ?? 0) * (parent.rm ?? 1) + (parent.ra ?? 0);
+  const ga = (child.ga ?? 0) * (parent.gm ?? 1) + (parent.ga ?? 0);
+  const ba = (child.ba ?? 0) * (parent.bm ?? 1) + (parent.ba ?? 0);
+  const aa = (child.aa ?? 0) * (parent.am ?? 1) + (parent.aa ?? 0);
+  if (rm === 1 && gm === 1 && bm === 1 && am === 1 && ra === 0 && ga === 0 && ba === 0 && aa === 0) return undefined;
+  return { rm, gm, bm, am, ra, ga, ba, aa };
+}
+
 export function spriteNode(
   key: string,
   order: number,
@@ -50,6 +76,7 @@ export function spriteNode(
     matrix,
     opacity,
     colorTransform,
+    ...renderMetadataFromInstance(instance),
     clipDepth: instance.clipDepth,
     spriteFrame,
   };
@@ -103,6 +130,7 @@ export function buttonNode(
     matrix,
     opacity: visual?.src ? opacity : 1,
     colorTransform,
+    ...renderMetadataFromInstance(instance),
     buttonOwnerPath: ownerPath,
   };
 }

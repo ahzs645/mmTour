@@ -5,11 +5,12 @@
 //                               FF D9 FF D8 prefix that must be stripped)
 //   - image/x-swf-partial-jpeg → a JPEG missing its tables; the shared
 //                               DefineJpegTables stream supplies DQT/DHT
+//   - image/x-swf-jpeg3/4     → [jpegLength:u32le][JPEG bytes][zlib alpha]
 //   - image/x-swf-lossless / 2 → zlib-compressed palette or direct-color pixels
 //
 // JPEGs need no pixel decode here — we reconstruct standalone JPEG bytes and let
-// the platform decoder (browser <img>/createImageBitmap) handle them. Only
-// lossless images are unpacked to RGBA, since nothing else decodes them.
+// the platform decoder (browser <img>/createImageBitmap) handle them. JPEG3/4
+// with alpha and lossless images are unpacked to RGBA for PNG encoding.
 
 import { swf } from "swf-parser";
 
@@ -28,10 +29,77 @@ export function collectBitmaps(movie: any): BitmapSet {
 export function isJpegBitmap(tag: any): boolean {
   return tag.mediaType === "image/jpeg"
     || tag.mediaType === "image/x-swf-partial-jpeg"
-    || tag.mediaType === "image/x-swf-jpeg3";
+    || tag.mediaType === "image/x-swf-jpeg3"
+    || tag.mediaType === "image/x-swf-jpeg4";
 }
 export function isLosslessBitmap(tag: any): boolean {
   return typeof tag.mediaType === "string" && tag.mediaType.includes("lossless");
+}
+
+export function isAlphaJpegBitmap(tag: any): boolean {
+  return tag.mediaType === "image/x-swf-jpeg3" || tag.mediaType === "image/x-swf-jpeg4";
+}
+
+export interface JpegAlphaParts {
+  jpegData: Uint8Array;
+  alphaData?: Uint8Array;
+}
+
+function readU32LE(data: Uint8Array, offset: number): number {
+  return (data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24)) >>> 0;
+}
+
+/** Split swf-parser's JPEG3/JPEG4 payload into JPEG bytes and optional zlib alpha bytes. */
+export function splitJpegAlphaData(data: Uint8Array): JpegAlphaParts {
+  if (data.length < 6) return { jpegData: data };
+  const jpegLength = readU32LE(data, 0);
+  const jpegStart = 4;
+  const alphaStart = jpegStart + jpegLength;
+  if (jpegLength <= 0 || alphaStart > data.length || data[jpegStart] !== 0xff || data[jpegStart + 1] !== 0xd8) {
+    return { jpegData: data };
+  }
+  const alphaData = data.subarray(alphaStart);
+  return {
+    jpegData: data.subarray(jpegStart, alphaStart),
+    alphaData: alphaData.length ? alphaData : undefined,
+  };
+}
+
+function stripErroneousJpegPrefix(data: Uint8Array): Uint8Array {
+  if (data.length >= 4 && data[0] === 0xff && data[1] === 0xd9 && data[2] === 0xff && data[3] === 0xd8) {
+    return data.subarray(4);
+  }
+  return data;
+}
+
+function markerHasSegmentLength(marker: number): boolean {
+  return marker !== 0x01 && !(marker >= 0xd0 && marker <= 0xd9);
+}
+
+function jpegNeedsTables(data: Uint8Array): boolean {
+  const img = stripErroneousJpegPrefix(data);
+  if (img.length < 4 || img[0] !== 0xff || img[1] !== 0xd8) return false;
+
+  let hasDqt = false;
+  let hasDht = false;
+  let i = 2;
+  while (i + 3 < img.length) {
+    if (img[i] !== 0xff) {
+      i++;
+      continue;
+    }
+    while (i < img.length && img[i] === 0xff) i++;
+    const marker = img[i++];
+    if (marker === 0xda) break; // Start of Scan: tables must appear before compressed data.
+    if (marker === 0xdb) hasDqt = true;
+    if (marker === 0xc4) hasDht = true;
+    if (!markerHasSegmentLength(marker)) continue;
+    if (i + 1 >= img.length) break;
+    const length = (img[i] << 8) | img[i + 1];
+    if (length < 2) break;
+    i += length;
+  }
+  return !(hasDqt && hasDht);
 }
 
 /**
@@ -40,19 +108,7 @@ export function isLosslessBitmap(tag: any): boolean {
  * - for partial JPEGs, splices the shared tables (DQT/DHT) in after the SOI
  */
 export function mergeJpeg(data: Uint8Array, jpegTables?: Uint8Array): Uint8Array {
-  let img = data;
-  if (
-    img.length >= 6
-    && !(img[0] === 0xff && img[1] === 0xd8)
-    && img[4] === 0xff
-    && img[5] === 0xd8
-  ) {
-    const alphaOffset = img[0] | (img[1] << 8) | (img[2] << 16) | (img[3] << 24);
-    img = img.subarray(4, alphaOffset > 0 ? 4 + alphaOffset : undefined);
-  }
-  if (img.length >= 4 && img[0] === 0xff && img[1] === 0xd9 && img[2] === 0xff && img[3] === 0xd8) {
-    img = img.subarray(4);
-  }
+  const img = stripErroneousJpegPrefix(splitJpegAlphaData(data).jpegData);
 
   const hasTables = jpegTables && jpegTables.length > 2;
   if (!hasTables) return img.slice();
@@ -83,6 +139,35 @@ export interface RawImage {
   height: number;
   /** Straight (non-premultiplied) RGBA, row-major. */
   rgba: Uint8Array;
+}
+
+async function decodeJpegToRgba(id: number, jpegBytes: Uint8Array): Promise<RawImage> {
+  if (typeof createImageBitmap === "undefined" || typeof OffscreenCanvas === "undefined") {
+    throw new Error("JPEG3/JPEG4 alpha composition needs createImageBitmap + OffscreenCanvas");
+  }
+  const blob = new Blob([jpegBytes as BlobPart], { type: "image/jpeg" });
+  const bitmap = await createImageBitmap(blob);
+  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(bitmap, 0, 0);
+  bitmap.close?.();
+  const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  return { id, width: canvas.width, height: canvas.height, rgba: new Uint8Array(pixels) };
+}
+
+export async function decodeJpegAlpha(tag: any, jpegTables?: Uint8Array): Promise<RawImage | undefined> {
+  const parts = splitJpegAlphaData(tag.data);
+  if (!parts.alphaData) return undefined;
+
+  const jpegBytes = mergeJpeg(parts.jpegData, jpegTables && jpegNeedsTables(parts.jpegData) ? jpegTables : undefined);
+  const img = await decodeJpegToRgba(tag.id, jpegBytes);
+  const alpha = await inflate(parts.alphaData);
+  const pixelCount = img.width * img.height;
+  if (alpha.length < pixelCount) {
+    throw new Error(`JPEG alpha data too short for bitmap ${tag.id}: ${alpha.length} < ${pixelCount}`);
+  }
+  for (let i = 0, o = 3; i < pixelCount; i++, o += 4) img.rgba[o] = alpha[i];
+  return img;
 }
 
 /**
@@ -169,6 +254,13 @@ export async function bitmapToDataUrl(
   encodeRgba?: (img: RawImage) => Promise<string> | string,
 ): Promise<DecodedImage> {
   if (isJpegBitmap(tag)) {
+    if (isAlphaJpegBitmap(tag)) {
+      const img = await decodeJpegAlpha(tag, jpegTables);
+      if (img) {
+        const dataUrl = encodeRgba ? await encodeRgba(img) : await rgbaToPngDataUrl(img);
+        return { id: tag.id, width: img.width, height: img.height, mime: "image/png", dataUrl };
+      }
+    }
     const bytes = mergeJpeg(tag.data, tag.mediaType === "image/x-swf-partial-jpeg" ? jpegTables : undefined);
     return { id: tag.id, width: tag.width, height: tag.height, mime: "image/jpeg", dataUrl: `data:image/jpeg;base64,${bytesToBase64(bytes)}` };
   }

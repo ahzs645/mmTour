@@ -10,7 +10,16 @@ import type {
 import { collectExplicitSoundTimings } from "../data/soundTimings";
 import type { DomRenderer } from "../render/DomRenderer";
 import { isLocalVar, localizeCondition, splitTopLevelArgs } from "./avm1";
-import { buttonNode, findChildByName, isClipAsset, spriteNode, visualSrc, type ButtonVisualState } from "./renderNodes";
+import {
+  buttonNode,
+  composeRenderColorTransform,
+  findChildByName,
+  isClipAsset,
+  renderMetadataFromInstance,
+  spriteNode,
+  visualSrc,
+  type ButtonVisualState,
+} from "./renderNodes";
 import { ClipInstance } from "./ClipInstance";
 import { evalCondition } from "./conditions";
 import { IDENTITY, multiplyMatrix } from "./matrix";
@@ -56,6 +65,9 @@ export type PlayerOptions = {
     event: ButtonEvent,
     action?: { command?: string; target?: string; label?: string; swf?: string; level?: number },
   ) => boolean | void;
+  /** Host hook: fired when the movie issues an AVM1 `fscommand(command, args)` (e.g. the
+   *  tour's quit button → `fscommand("quit")`). The host decides what it means. */
+  onFsCommand?: (command: string, args: string) => void;
   /** Shared tour variable store (seeded from control.globalDefaults). */
   store?: VariableStore;
   /** Dispatch a function call whose target is another level (`_levelN[.path].fn`). */
@@ -297,6 +309,9 @@ export class Player {
     const calls = this.buttonCallableActions(action, duplicatesCommand);
     if (calls?.length) this.runCallFunctions({ ...action, functionCalls: calls }, owner, undefined, eventScope);
     if (action.command === "loadMovieNum" || action.command === "loadMovie") this.options.onNavigate?.(action);
+    // fscommand(command, args) — e.g. the tour's quit button. Surface it so the host
+    // decides the response (close the tour, etc.); there is no in-player default.
+    if (action.command === "fsCommand") this.options.onFsCommand?.(String(action.value ?? ""), action.arguments ?? "");
     // A nav section button is an exit-navigation: it plays the nav's exit animation (the gotoAndPlay
     // below) AND loads the chosen segment into the content level. The SWF load is otherwise lost
     // because the command is gotoAndPlay (the exit), not loadMovie — so dispatch it explicitly. A
@@ -1056,6 +1071,9 @@ export class Player {
       case "doRelease":
         if (action.swf) this.options.onNavigate?.({ command: "loadMovie", swf: action.swf, level: action.level, reload: true });
         break;
+      case "fsCommand":
+        this.options.onFsCommand?.(String(action.value ?? ""), action.arguments ?? "");
+        break;
       case "loadVariables":
         this.options.onLoadVariables?.(action);
         break;
@@ -1581,7 +1599,7 @@ export class Player {
       if (!asset) continue;
       const matrix = multiplyMatrix(world, instance.matrix);
       const opacity = worldOpacity * instance.opacity;
-      const colorTransform = composeColorTransform(worldColorTransform, instance.colorTransform);
+      const colorTransform = composeRenderColorTransform(worldColorTransform, instance.colorTransform);
       const key = `${path}/${instance.depth}`;
       const child = clip.childClips.get(instance.depth);
 
@@ -1593,7 +1611,7 @@ export class Player {
             key: `${key}#mask`,
             order: order.n++,
             clipDepth: instance.clipDepth,
-            group: { mask: { characterId: asset.id, src, origin: asset.origin, matrix, opacity: 1, colorTransform }, items: [] },
+            group: { mask: { characterId: asset.id, src, origin: asset.origin, matrix, opacity: 1, colorTransform, ...renderMetadataFromInstance(instance) }, items: [] },
           });
         }
         continue;
@@ -1603,7 +1621,7 @@ export class Player {
       const activeMask = maskStack[maskStack.length - 1];
       if (activeMask && instance.depth <= activeMask.clipDepth) {
         const src = visualSrc(asset, child);
-        if (src) activeMask.group.items.push({ characterId: asset.id, src, origin: asset.origin, matrix, opacity, colorTransform });
+        if (src) activeMask.group.items.push({ characterId: asset.id, src, origin: asset.origin, matrix, opacity, colorTransform, ...renderMetadataFromInstance(instance) });
         continue;
       }
 
@@ -1670,7 +1688,7 @@ export class Player {
       const asset = this.getAsset(instance.characterId);
       if (!asset) continue;
       const matrix = multiplyMatrix(world, instance.matrix);
-      const colorTransform = composeColorTransform(worldColorTransform, instance.colorTransform);
+      const colorTransform = composeRenderColorTransform(worldColorTransform, instance.colorTransform);
       const key = `${path}/${instance.depth}`;
       if (asset.kind === "button") {
         // Baked path: the button's visual is in the composited frame — just a hit area.
@@ -1711,7 +1729,7 @@ export class Player {
       const asset = this.getAsset(instance.characterId);
       if (!asset || asset.kind !== "button") continue;
       const matrix = multiplyMatrix(world, instance.matrix);
-      const colorTransform = composeColorTransform(worldColorTransform, instance.colorTransform);
+      const colorTransform = composeRenderColorTransform(worldColorTransform, instance.colorTransform);
       const key = `${path}/${instance.depth}`;
       out.push(buttonNode(key, order.n++, asset, matrix, instance, path, false, opacity, this.buttonVisualStates.get(key), colorTransform));
     }
@@ -1801,6 +1819,7 @@ export class Player {
       matrix,
       opacity,
       colorTransform,
+      ...renderMetadataFromInstance(instance),
       clipDepth: instance.clipDepth,
       text: asset.kind === "text" ? this.resolveTextField(asset.id, asset) : undefined,
     };
@@ -1847,19 +1866,6 @@ function isSelfTimelineTarget(target: string | undefined): boolean {
 
 function isEmptyNonRootLevelAssignment(target: string, value: VarValue): boolean {
   return value === "" && NON_ROOT_LEVEL_TARGET.test(target);
-}
-
-function composeColorTransform(parent: RenderNode["colorTransform"], child: RenderNode["colorTransform"]): RenderNode["colorTransform"] {
-  if (!parent) return child;
-  if (!child) return parent;
-  const rm = (child.rm ?? 1) * (parent.rm ?? 1);
-  const gm = (child.gm ?? 1) * (parent.gm ?? 1);
-  const bm = (child.bm ?? 1) * (parent.bm ?? 1);
-  const ra = (child.ra ?? 0) * (parent.rm ?? 1) + (parent.ra ?? 0);
-  const ga = (child.ga ?? 0) * (parent.gm ?? 1) + (parent.ga ?? 0);
-  const ba = (child.ba ?? 0) * (parent.bm ?? 1) + (parent.ba ?? 0);
-  if (rm === 1 && gm === 1 && bm === 1 && ra === 0 && ga === 0 && ba === 0) return undefined;
-  return { rm, gm, bm, ra, ga, ba };
 }
 
 function buttonReleaseKey(action: ControlAction | undefined): string {

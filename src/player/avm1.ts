@@ -3,6 +3,9 @@
 
 import type { VarValue } from "./VariableStore";
 
+export * from "./avm1Paths";
+export * from "./avm1Properties";
+
 type Locals = Record<string, VarValue | undefined>;
 
 /** Split a raw AVM1 argument string on top-level commas (respecting quotes and

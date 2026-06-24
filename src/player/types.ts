@@ -1,4 +1,6 @@
-import type { AssetKind, ColorTransform, DynamicText, Matrix, Origin } from "../data/timelineTypes";
+import type { AssetKind, ColorTransform, DynamicText, Matrix, Origin, PlaceObjectRenderMetadata } from "../data/timelineTypes";
+
+export type RenderPlacementMetadata = PlaceObjectRenderMetadata;
 
 /**
  * One resolved leaf to draw for the current composite frame. The Player walks
@@ -20,6 +22,13 @@ export type RenderNode = {
   matrix: Matrix;
   opacity: number;
   colorTransform?: ColorTransform;
+  /** Generic PlaceObject/render metadata carried from the extracted timeline. */
+  visible?: boolean;
+  blendMode?: RenderPlacementMetadata["blendMode"];
+  filters?: RenderPlacementMetadata["filters"];
+  cacheAsBitmap?: boolean;
+  className?: string;
+  clipActions?: RenderPlacementMetadata["clipActions"];
   clipDepth?: number;
   /** Styling + content for dynamic/static text fields. */
   text?: DynamicText;
@@ -45,7 +54,7 @@ export type MaskVisual = {
   matrix: import("../data/timelineTypes").Matrix;
   opacity: number;
   colorTransform?: ColorTransform;
-};
+} & RenderPlacementMetadata;
 
 export function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));

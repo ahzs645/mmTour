@@ -2,6 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseSwf, swf } from "swf-parser";
 import { extractControl } from "../src/convert/avm1Control.ts";
+import { parseProgram } from "../src/convert/avm1/parse.ts";
+import { addProgramCoverage, createAvm1Coverage } from "../src/convert/avm1/coverage.ts";
 import { compactObject } from "./lib/util.mjs";
 import {
   disassembleAvm1, decodeAvm1Action, decodePushValues, actionName, matrixFromParser,
@@ -43,6 +45,7 @@ for (const target of targets) {
     const merged = {
       ...annotated,
       avm: report.avm,
+      avm1Coverage: report.avm1Coverage,
       secondaryValidation: report.secondaryValidation,
       autoPlayRanges: report.autoPlayRanges,
       bytecodeFrameActions: report.rootFrameActions,
@@ -65,6 +68,7 @@ for (const target of targets) {
     timeline.control ??= {};
     timeline.control = mergeBytecodeFallbacks(timeline.control, report.bytecodeControl);
     timeline.control.avm = report.avm;
+    timeline.control.avm1Coverage = report.avm1Coverage;
     timeline.control.autoPlayRanges = report.autoPlayRanges;
     timeline.control.buttonDefinitions = report.buttons;
     timeline.control.clickableRegions = report.clickableRegions;
@@ -362,6 +366,7 @@ function hasResolvableSpriteTarget(action, nestedSprite) {
 function buildReport(swfPath, scene) {
   const movie = parseSwf(readFileSync(swfPath));
   const bytecodeControl = extractControl(movie);
+  const avm1Coverage = buildAvm1Coverage(movie);
   const soundDurations = soundDurationsFromMovie(movie);
   const tagCounts = countTags(movie.tags);
   const root = inspectTimeline(movie.tags, "root", undefined);
@@ -409,6 +414,7 @@ function buildReport(swfPath, scene) {
         fileAttributesUseAs3: movie.tags.some((tag) => tag.type === swf.TagType.FileAttributes && tag.useAs3),
       },
     },
+    avm1Coverage,
     secondaryValidation: {
       parser: "swf-parser",
       tagCounts,
@@ -431,6 +437,58 @@ function buildReport(swfPath, scene) {
     buttons,
     clickableRegions,
   };
+}
+
+function buildAvm1Coverage(movie) {
+  const coverage = createAvm1Coverage();
+  scanAvm1CoverageTimeline(coverage, movie.tags ?? [], "root", undefined);
+  return coverage;
+}
+
+function scanAvm1CoverageTimeline(coverage, tags, scope, spriteId) {
+  let frame = 0;
+  for (const tag of tags ?? []) {
+    if (tag.type === swf.TagType.DoAction) {
+      addParsedCoverage(coverage, tag.actions, {
+        source: scope === "sprite" ? "spriteFrame" : "rootFrame",
+        scope,
+        spriteId,
+        frame,
+        path: scope === "sprite"
+          ? `DefineSprite_${spriteId}/frame_${frame + 1}/DoAction`
+          : `root/frame_${frame + 1}/DoAction`,
+      });
+      continue;
+    }
+    if (tag.type === swf.TagType.DefineSprite) {
+      scanAvm1CoverageTimeline(coverage, tag.tags ?? [], "sprite", tag.id);
+      continue;
+    }
+    if (tag.type === swf.TagType.DefineButton) {
+      for (let index = 0; index < (tag.actions ?? []).length; index += 1) {
+        const action = tag.actions[index];
+        const events = buttonEventsFromConditions(action.conditions ?? {});
+        addParsedCoverage(coverage, action.actions, {
+          source: "buttonAction",
+          scope: "button",
+          buttonId: tag.id,
+          events,
+          path: `DefineButton_${tag.id}/action_${index + 1}`,
+        });
+      }
+      continue;
+    }
+    if (tag.type === swf.TagType.ShowFrame) frame += 1;
+  }
+}
+
+function addParsedCoverage(coverage, bytes, location) {
+  try {
+    addProgramCoverage(coverage, parseProgram(bytes), location);
+  } catch {
+    // Malformed bytecode is surfaced by the existing bytecode report; coverage
+    // stays best-effort so one bad action block does not hide the rest.
+  }
 }
 
 function soundDurationsFromMovie(movie) {

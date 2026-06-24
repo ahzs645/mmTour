@@ -19,14 +19,125 @@ export type Origin = {
 };
 
 export type ColorTransform = {
+  /** Red/green/blue/alpha multipliers, normalized from SWF terms where 1 is identity. */
   rm?: number;
   gm?: number;
   bm?: number;
   am?: number;
+  /** Red/green/blue/alpha additive terms, normalized to channel units where 0 is identity. */
   ra?: number;
   ga?: number;
   ba?: number;
   aa?: number;
+};
+
+export type BlendMode =
+  | "normal"
+  | "layer"
+  | "multiply"
+  | "screen"
+  | "lighten"
+  | "darken"
+  | "difference"
+  | "add"
+  | "subtract"
+  | "invert"
+  | "alpha"
+  | "erase"
+  | "overlay"
+  | "hardlight"
+  | number
+  | (string & {});
+
+export type FilterKind =
+  | "dropShadow"
+  | "blur"
+  | "glow"
+  | "bevel"
+  | "gradientGlow"
+  | "convolution"
+  | "colorMatrix"
+  | "gradientBevel"
+  | (string & {});
+
+export type BaseFilterMetadata = {
+  kind: FilterKind;
+  /** Original SWF/FFDec filter class name, when available. */
+  className?: string;
+  enabled?: boolean;
+  raw?: unknown;
+};
+
+export type BlurFilterMetadata = BaseFilterMetadata & {
+  kind: "blur";
+  blurX?: number;
+  blurY?: number;
+  passes?: number;
+};
+
+export type ColorMatrixFilterMetadata = BaseFilterMetadata & {
+  kind: "colorMatrix";
+  matrix?: number[];
+};
+
+export type DropShadowFilterMetadata = BaseFilterMetadata & {
+  kind: "dropShadow" | "glow" | "bevel" | "gradientGlow" | "gradientBevel";
+  color?: string;
+  alpha?: number;
+  blurX?: number;
+  blurY?: number;
+  angle?: number;
+  distance?: number;
+  strength?: number;
+  inner?: boolean;
+  knockout?: boolean;
+  compositeSource?: boolean;
+  passes?: number;
+};
+
+export type FilterMetadata =
+  | BlurFilterMetadata
+  | ColorMatrixFilterMetadata
+  | DropShadowFilterMetadata
+  | (BaseFilterMetadata & Record<string, unknown>);
+
+export type ClipActionEvent =
+  | "load"
+  | "enterFrame"
+  | "unload"
+  | "mouseMove"
+  | "mouseDown"
+  | "mouseUp"
+  | "keyDown"
+  | "keyUp"
+  | "data"
+  | "initialize"
+  | "press"
+  | "release"
+  | "releaseOutside"
+  | "rollOver"
+  | "rollOut"
+  | "dragOver"
+  | "dragOut"
+  | "construct"
+  | (string & {});
+
+export type ClipActionMetadata = {
+  events?: ClipActionEvent[];
+  eventFlags?: number;
+  keyCode?: number;
+  source?: string;
+  actions?: unknown[];
+  raw?: unknown;
+};
+
+export type PlaceObjectRenderMetadata = {
+  visible?: boolean;
+  blendMode?: BlendMode;
+  filters?: FilterMetadata[];
+  cacheAsBitmap?: boolean;
+  className?: string;
+  clipActions?: ClipActionMetadata[];
 };
 
 export type AssetKind = "shape" | "sprite" | "image" | "text" | "button" | "font" | "sound";
@@ -73,7 +184,7 @@ export type PlacedInstance = {
   name: string;
   clipDepth?: number;
   colorTransform?: ColorTransform;
-};
+} & PlaceObjectRenderMetadata;
 
 export type TimelineFrame = {
   index: number;
@@ -99,6 +210,7 @@ export type ActionCommand =
   | "attachSound"
   | "stopSound"
   | "setVolume"
+  | "fsCommand"
   | "callFunctions"
   | "setVariable";
 

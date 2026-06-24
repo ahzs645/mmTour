@@ -100,23 +100,27 @@ button {
 .theme-toggle .sun,
 .theme-toggle .moon {
   position: absolute;
-  top: 5px;
-  font-size: 12px;
+  top: 2px;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
   line-height: 1;
   z-index: 1;
 }
 
 .theme-toggle .sun {
-  left: 8px;
+  left: 3px;
   color: #ffffff;
 }
 
 .theme-toggle .moon {
-  right: 8px;
+  right: 3px;
 }
 
 body[data-theme="dark"] .theme-toggle::after {
-  transform: translateX(20px);
+  transform: translateX(22px);
 }
 
 body[data-theme="dark"] .theme-toggle .sun {
@@ -324,10 +328,6 @@ aside {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 5px 8px 5px 4px;
-}
-
-.trow.root {
-  border-left: 3px solid var(--accent);
 }
 
 .trow.busy {
@@ -585,8 +585,7 @@ aside h2 {
 }
 
 .hrow.root {
-  border-left: 3px solid var(--accent);
-  padding-left: 4px;
+  padding-left: 10px;
 }
 
 .hrow.child {

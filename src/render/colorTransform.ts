@@ -4,30 +4,31 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 const FILTER_ROOT_ID = "mmtour-color-transform-filters";
 
 /**
- * Apply a SWF colour transform's RGB tint (per-channel `out = in*mult + add`) to
- * a media element via an SVG `feComponentTransfer` filter. Alpha is handled by
- * the element's `opacity` (the Player folds the alpha multiplier into
- * `node.opacity`), so this only touches R/G/B.
+ * Apply a SWF colour transform (per-channel `out = in*mult + add`) to a media
+ * element via an SVG `feComponentTransfer` filter. The alpha channel is included
+ * when present so RGBA CXFORM data can flow through the render node unchanged.
  */
 export function applyColorTransform(media: HTMLElement, ct: ColorTransform | undefined) {
   const rm = ct?.rm ?? 1;
   const gm = ct?.gm ?? 1;
   const bm = ct?.bm ?? 1;
+  const am = ct?.am ?? 1;
   const ra = ct?.ra ?? 0;
   const ga = ct?.ga ?? 0;
   const ba = ct?.ba ?? 0;
+  const aa = ct?.aa ?? 0;
 
-  const identity = rm === 1 && gm === 1 && bm === 1 && ra === 0 && ga === 0 && ba === 0;
+  const identity = rm === 1 && gm === 1 && bm === 1 && am === 1 && ra === 0 && ga === 0 && ba === 0 && aa === 0;
   if (identity) {
     media.style.removeProperty("filter");
     return;
   }
 
-  media.style.filter = `url(#${ensureColorTransformFilter(rm, gm, bm, ra, ga, ba)})`;
+  media.style.filter = `url(#${ensureColorTransformFilter(rm, gm, bm, am, ra, ga, ba, aa)})`;
 }
 
-function ensureColorTransformFilter(rm: number, gm: number, bm: number, ra: number, ga: number, ba: number): string {
-  const id = filterId(rm, gm, bm, ra, ga, ba);
+function ensureColorTransformFilter(rm: number, gm: number, bm: number, am: number, ra: number, ga: number, ba: number, aa: number): string {
+  const id = filterId(rm, gm, bm, am, ra, ga, ba, aa);
   if (document.getElementById(id)) return id;
 
   let root = document.getElementById(FILTER_ROOT_ID) as SVGSVGElement | null;
@@ -49,13 +50,13 @@ function ensureColorTransformFilter(rm: number, gm: number, bm: number, ra: numb
   // SWF colour transforms operate on gamma (sRGB) channel values, not linearised ones.
   filter.setAttribute("color-interpolation-filters", "sRGB");
   const transfer = document.createElementNS(SVG_NS, "feComponentTransfer");
-  transfer.append(channel("feFuncR", rm, ra), channel("feFuncG", gm, ga), channel("feFuncB", bm, ba));
+  transfer.append(channel("feFuncR", rm, ra), channel("feFuncG", gm, ga), channel("feFuncB", bm, ba), channel("feFuncA", am, aa));
   filter.append(transfer);
   root.append(filter);
   return id;
 }
 
-function channel(name: "feFuncR" | "feFuncG" | "feFuncB", slope: number, intercept: number): SVGElement {
+function channel(name: "feFuncR" | "feFuncG" | "feFuncB" | "feFuncA", slope: number, intercept: number): SVGElement {
   const node = document.createElementNS(SVG_NS, name);
   node.setAttribute("type", "linear");
   node.setAttribute("slope", String(slope));
