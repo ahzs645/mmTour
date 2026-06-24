@@ -2,6 +2,51 @@
 
 This workspace now contains a web-native conversion prototype for the bundled Windows XP Tour SWFs.
 
+## How to use this repo
+
+Three ways, depending on what you want:
+
+### 1. Convert & embed in the browser — no install
+
+Open the hosted **SWF Studio** (the GitHub Pages site, `https://ahzs645.github.io/mmTour/`):
+drop a `.swf` (or pick the bundled Windows XP Tour) and it converts and plays entirely
+client-side. **Export & embed** then gives you a single self-contained `.mmtour.pack`
+plus a copy-paste snippet to drop the tour into any web page — see
+[Embedding](#embedding-the-tour-in-another-web-app).
+
+### 2. Embed a tour in your own app
+
+The player loads a one-file pack in archive mode via `createTourPlayer`. Build the
+whole-tour pack and a drop-in bundle, then follow the embedding section:
+
+```sh
+npm run pack:tour     # -> public/generated-archive/xp-tour.pack (needs Java/FFDec)
+npm run build:embed   # -> dist-embed/ (player + pack + example) ; npm run verify:embed
+```
+
+### 3. Develop / regenerate locally
+
+```sh
+npm install
+npm run dev           # comparison lab (Ruffle vs the players) at http://127.0.0.1:5173/
+npm run convert       # regenerate public/generated/ from the SWFs (needs Java/FFDec)
+```
+
+### Commands at a glance
+
+| command | what it does |
+| --- | --- |
+| `npm run dev` | comparison lab: Ruffle vs the Decompiled Player / Frame-SVG renderer |
+| `npm run convert` · `convert:tree-player` | FFDec extract → timelines → control-flow (`:tree-player` = smaller player bundle) |
+| `npm run pack:tour` | build the one-file whole-tour `xp-tour.pack` (~25 MB) |
+| `npm run build:embed` | assemble `dist-embed/` (player + gsap + pack + example) |
+| `npm run build:lib` | the embeddable npm library (gsap external) |
+| `npm run build:pages` | the GitHub Pages Studio + hosted embed player |
+| `npm run verify:*` | headless checks (player vs Ruffle, embed, shape records, convert flows…) |
+
+Runtime architecture and the data-driven rules live in **AGENTS.md**; design notes,
+size/packing analysis, and audits are under **docs/**.
+
 ## What is included
 
 - Ruffle reference playback for the original `.swf` files.
