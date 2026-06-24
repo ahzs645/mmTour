@@ -535,35 +535,34 @@ export class Player {
     // call's locals. The old per-action evalCondition loop did neither.
     const actionFire = this.functionActionDecisions(def.actions, locals);
     // The build encodes a function's calls TWICE: in its structured `body` (with the full nested
-    // if/else gates) AND as flattened function-tagged `callFunctions` actions (which keep only the
-    // OUTERMOST guard, losing the nested discrimination). Running both fires a call the body gate
-    // would suppress — LoadInitialInteractive's actions fire BOTH `startNavEntrance` (→ nav frame
-    // 71) and `startAddedNav` (→ nav frame 115) when the body picks exactly one by nav-loaded
-    // state, so the nav jumps PAST its entrance cascade. When the body already issues a call, let
-    // the body decide it (below) and skip the lossy action duplicate. Non-call actions (sound,
-    // loadMovie, assigns) aren't body-executable, so they still run here.
-    // Decide every body guard against the store as it is on ENTRY — AVM1 checks an `if` once
-    // when control reaches it, so a CONDITIONAL mutation inside a block (LoadInitialInteractive's
-    // `if(!blnDisableSkip){ blnDisableSkip=1; … }`, whose nested arms all re-include the
-    // `!blnDisableSkip` guard) must not retro-skip its own block. The one exception is an
-    // UNCONDITIONAL simple-name assign earlier in the body, which a later `if` legitimately reads
-    // (setSelect's `scene = currScene; if(scene=="BestForBusiness"){ yellowPro… }`) — overlay those
-    // onto the guard locals so the highlight arm fires.
-    const guardLocals: Locals = { ...locals };
-    for (const statement of def.body) {
-      if (!statement.branchCondition && statement.kind === "assign" && /^[A-Za-z_$][\w$]*$/.test(statement.target)) {
-        guardLocals[statement.target] = this.resolveExpr(statement.rawValue, guardLocals);
-      }
-    }
-    const decisions = def.body.map((statement) => this.branchPasses(statement.branchCondition, guardLocals));
-    const bodyCalls = new Set(def.body.filter((s) => s.kind === "call").map((s) => (s as { functionName?: string }).functionName));
+    // if/else gates) AND as flattened function-tagged actions (which keep only the OUTERMOST
+    // guard, losing the nested discrimination). Running both fires a call the body gate would
+    // suppress — LoadInitialInteractive's actions fire BOTH `startNavEntrance` (→ nav frame 71)
+    // and `startAddedNav` (→ nav frame 115) when the body picks exactly one by nav-loaded state,
+    // so the nav jumps PAST its entrance cascade. When the body already issues a call, let the
+    // body decide it (below) and skip the lossy action duplicate. Sound actions need the same
+    // treatment now that body-form Sound.attachSound/start/stop calls are executable.
+    const bodyDecisions = this.functionBodyDecisions(def.body, locals);
+    const firedBodyCalls = new Set(
+      def.body
+        .filter((s, i) => bodyDecisions[i] && s.kind === "call")
+        .map((s) => (s as { functionName?: string }).functionName),
+    );
+    const firedBodySoundKeys = new Set(
+      def.body
+        .filter((s, i) => bodyDecisions[i] && s.kind === "call")
+        .map((s) => this.bodySoundCallKey(s as Extract<BodyStatement, { kind: "call" }>, locals))
+        .filter((key): key is string => Boolean(key)),
+    );
     def.actions.forEach((action, i) => {
       if (!actionFire[i]) return;
       const calls = action.functionCalls ?? [];
-      if (action.command === "callFunctions" && calls.length > 0 && calls.every((c) => bodyCalls.has(c.functionName))) return;
+      if (action.command === "callFunctions" && calls.length > 0 && calls.every((c) => firedBodyCalls.has(c.functionName))) return;
+      const soundKey = actionSoundKey(action);
+      if (soundKey && firedBodySoundKeys.has(soundKey)) return;
       this.runFunctionAction(action, locals);
     });
-    def.body.forEach((statement, i) => { if (decisions[i]) this.runBodyStatement(statement, locals); });
+    this.runFunctionBody(def.body, locals, bodyDecisions);
     this.render();
     return true;
   }
@@ -683,6 +682,35 @@ export class Player {
     return evalCondition(localizeCondition(condition, locals), this.store);
   }
 
+  /**
+   * Decide function-body guards against an entry snapshot plus safe prior assigns.
+   * Assigns such as `doSndSet = 1` must be visible to a later `if(doSndSet) start()`,
+   * but self-blocking guards such as `if(!blnDisableSkip){ blnDisableSkip = 1; ... }`
+   * must not cause later statements from the same original block to skip themselves.
+   */
+  private functionBodyDecisions(body: BodyStatement[], locals: Locals): boolean[] {
+    const guardLocals = this.functionGuardLocals(body, locals);
+    return body.map((statement) => this.branchPasses(statement.branchCondition, guardLocals));
+  }
+
+  private runFunctionBody(body: BodyStatement[], locals: Locals, decisions = this.functionBodyDecisions(body, locals)) {
+    body.forEach((statement, i) => {
+      if (decisions[i]) this.runBodyStatement(statement, locals);
+    });
+  }
+
+  private functionGuardLocals(body: BodyStatement[], locals: Locals): Locals {
+    const guardLocals: Locals = { ...locals };
+    for (const statement of body) {
+      if (statement.kind !== "assign") continue;
+      if (conditionReferencesTarget(statement.branchCondition, statement.target)) continue;
+      if (!this.branchPasses(statement.branchCondition, guardLocals)) continue;
+      const value = this.resolveExpr(statement.rawValue, guardLocals);
+      if (value !== undefined) guardLocals[statement.target] = value;
+    }
+    return guardLocals;
+  }
+
   private runBodyStatement(statement: BodyStatement, locals: Locals) {
     if (statement.kind === "assign") {
       const value = this.resolveExpr(statement.rawValue, locals);
@@ -697,6 +725,8 @@ export class Player {
   private runBodyCall(call: Extract<BodyStatement, { kind: "call" }>, locals: Locals) {
     const fn = call.functionName;
     const target = call.target;
+    if (this.runMovieLoadCall(fn, call.arguments, locals)) return;
+    if (this.runMovieUnloadCall(fn, call.arguments, locals)) return;
     if (this.runSoundMethod(target, fn, call.arguments, locals)) return;
     if (WAITER_FUNCTIONS.has(fn)) {
       this.options.onWaiter?.(fn, this.parseArgs(call.arguments, locals));
@@ -722,6 +752,48 @@ export class Player {
       if (clip === this.root) this.callFunction(fn, call.arguments, locals);
       else if (clip) this.callClipFunction(clip, fn);
     }
+  }
+
+  private bodySoundCallKey(call: Extract<BodyStatement, { kind: "call" }>, locals: Locals): string | undefined {
+    const [firstArg] = this.parseArgs(call.arguments, locals);
+    switch (call.functionName) {
+      case "attachSound":
+        return soundKey("attachSound", firstArg);
+      case "playVO":
+        return soundKey("playVO", firstArg);
+      case "markSnd":
+      case "markSndSegment":
+        return soundKey("markSndSegment", firstArg);
+      case "stop":
+        return call.target ? soundKey("stopSound", normalizeVarName(call.target)) : undefined;
+      default:
+        return undefined;
+    }
+  }
+
+  private runMovieLoadCall(fn: string, argsRaw: string | undefined, locals?: Locals): boolean {
+    if (fn !== "loadMovieNum" && fn !== "loadMovie") return false;
+    const args = this.parseArgs(argsRaw, locals);
+    const swf = args[0] === undefined ? "" : String(args[0]);
+    if (!swf) return true;
+    this.options.onNavigate?.({
+      command: fn,
+      swf,
+      level: fn === "loadMovieNum" ? levelFromValue(args[1], firstRawArg(argsRaw, 1)) : undefined,
+      executionContext: "function",
+    });
+    return true;
+  }
+
+  private runMovieUnloadCall(fn: string, argsRaw: string | undefined, locals?: Locals): boolean {
+    if (fn !== "unloadMovieNum" && fn !== "unloadMovie") return false;
+    const args = this.parseArgs(argsRaw, locals);
+    this.options.onNavigate?.({
+      command: fn,
+      level: levelFromValue(args[0], firstRawArg(argsRaw, 0)),
+      executionContext: "function",
+    });
+    return true;
   }
 
   private runSoundMarker(target: string | undefined, segment: string, argsRaw?: string, metadata?: SoundActionMetadata) {
@@ -793,10 +865,13 @@ export class Player {
       return true;
     }
 
-    // Volume is already represented by the target Sound object; the current SoundController
-    // owns output volume, so consume AVM1 setVolume/getVolume calls instead of treating them as
-    // missing clip functions.
-    return fn === "setVolume" || fn === "getVolume";
+    if (fn === "setVolume") {
+      const value = this.parseArgs(argsRaw, locals)[0];
+      this.options.onSound?.({ command: "setVolume", target, value: typeof value === "boolean" ? Number(value) : value, executionContext: "function" });
+      return true;
+    }
+
+    return fn === "getVolume";
   }
 
   private soundTargetKey(target: string): string {
@@ -951,6 +1026,10 @@ export class Player {
         break;
       case "loadMovieNum":
       case "loadMovie":
+        this.options.onNavigate?.(action);
+        break;
+      case "unloadMovieNum":
+      case "unloadMovie":
         this.options.onNavigate?.(action);
         break;
       case "doRelease":
@@ -1313,6 +1392,10 @@ export class Player {
         break;
         case "loadMovieNum":
         case "loadMovie":
+          this.options.onNavigate?.(action);
+          break;
+        case "unloadMovieNum":
+        case "unloadMovie":
           this.options.onNavigate?.(action);
           break;
         case "doRelease":
@@ -1728,7 +1811,7 @@ export class Player {
   private primeAmbientSound() {
     if (!this.options.onSound) return;
     let music: ControlAction | undefined;
-    for (let frame = 0; frame <= this.root.currentFrame; frame += 1) {
+    for (let frame = 0; frame < this.root.currentFrame; frame += 1) {
       for (const action of this.rootActions.get(frame) ?? []) {
         if (action.command === "attachSound" && action.soundRole === "music") music = action;
       }
@@ -1781,6 +1864,39 @@ function buttonTimelineActionsMatch(a: ControlAction | undefined, b: ControlActi
   return true;
 }
 
+function conditionReferencesTarget(condition: string | undefined, target: string): boolean {
+  if (!condition) return false;
+  const normalized = normalizeVarName(target);
+  const variants = new Set([
+    target,
+    normalized,
+    normalized.replace(/^_root\./i, ""),
+    normalized.replace(/^_level0\./i, ""),
+  ].filter(Boolean));
+  for (const name of variants) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`(^|[^\\w$])${escaped}([^\\w$]|$)`).test(condition)) return true;
+  }
+  return false;
+}
+
+function firstRawArg(argsRaw: string | undefined, index: number): string | undefined {
+  return splitTopLevelArgs(argsRaw)[index]?.trim();
+}
+
+function levelFromValue(value: VarValue | undefined, raw?: string): number | undefined {
+  const fromValue = parseLevel(value);
+  return fromValue ?? parseLevel(raw);
+}
+
+function parseLevel(value: VarValue | string | undefined): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const text = String(value).replace(/^["']|["']$/g, "").trim();
+  const match = /^_level(\d+)$/i.exec(text);
+  const n = Number(match?.[1] ?? text);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 function loadedTextAlign(text: string, fallback: string | undefined, html: boolean): string | undefined {
   if (!html) return fallback;
   const declared = text.match(/<p\b[^>]*\balign\s*=\s*["']?(left|center|right|justify)\b/i)
@@ -1798,6 +1914,26 @@ function callMatchesSoundMetadata(call: NonNullable<ControlAction["functionCalls
   if (!soundAction) return false;
   if (soundAction.command === "markSndSegment") return call.functionName === "markSnd" || call.functionName === "markSndSegment";
   return call.functionName === soundAction.command;
+}
+
+function actionSoundKey(action: ControlAction): string | undefined {
+  switch (action.command) {
+    case "attachSound":
+      return soundKey("attachSound", action.sound ?? action.resolvedSound);
+    case "playVO":
+      return soundKey("playVO", action.sound ?? action.resolvedSound);
+    case "markSndSegment":
+      return soundKey("markSndSegment", action.segment ?? action.sound ?? action.resolvedSound);
+    case "stopSound":
+      return action.target ? soundKey("stopSound", normalizeVarName(action.target)) : undefined;
+    default:
+      return undefined;
+  }
+}
+
+function soundKey(kind: string, value: VarValue | string | undefined): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  return `${kind}:${String(value)}`;
 }
 
 function stripQuotes(value: string | undefined): string | undefined {

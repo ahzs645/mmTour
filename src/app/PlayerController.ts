@@ -126,11 +126,7 @@ export class PlayerController {
 
   private createLevel(level: number, swf: string, timeline: AssetTimeline) {
     const existing = this.levels.get(level);
-    if (existing) {
-      existing.player.destroy();
-      existing.layer.remove();
-      this.levels.delete(level);
-    }
+    if (existing) this.destroyLevel(level);
 
     // Seed the shared variable scope from this timeline's own globalDefaults
     // (e.g. _level0's bkgd.OSVersion). Existing values win so _level0 stays
@@ -154,7 +150,7 @@ export class PlayerController {
         level === 0
           ? (frame, playing) => { this.checkWaiters(); this.options.onFrame?.(frame, playing, this.main?.currentLabel() ?? ""); }
           : undefined,
-      onSound: (action) => this.sound.handle(action),
+      onSound: (action) => this.sound.handle(action, level),
       onNavigate: (action) => this.handleNavigate(action, level),
       store: this.store,
       onCallFunction: (target, name, args) => this.dispatchCall(target, name, args),
@@ -302,8 +298,17 @@ export class PlayerController {
   }
 
   private handleNavigate(action: ControlAction, sourceLevel = 0) {
+    if (action.command === "unloadMovieNum" || action.command === "unloadMovie") {
+      const level = Number(action.level ?? this.inferLoadLevel(sourceLevel) ?? 0);
+      if (level > 0) this.destroyLevel(level);
+      return;
+    }
     if ((action.command !== "loadMovieNum" && action.command !== "loadMovie") || !action.swf) return;
     const level = Number(action.level ?? this.inferLoadLevel(sourceLevel) ?? 0);
+    const existing = this.levels.get(level);
+    if (level > 0 && existing && (action.reload || existing.swf.toLowerCase() !== action.swf.toLowerCase())) {
+      this.sound.stopOwner(level);
+    }
     // A nav section click forces a fresh (re)load (the SWF's doRelease unloads+reloads), so it
     // bypasses the burst/already-loaded guards that exist only for the initial multi-load.
     if (!action.reload) {
@@ -332,6 +337,15 @@ export class PlayerController {
     const timeline = await loadTimeline(swf);
     if (!timeline || this.container.hidden) return; // deactivated while loading
     this.createLevel(level, swf, timeline as unknown as AssetTimeline);
+  }
+
+  private destroyLevel(level: number) {
+    const existing = this.levels.get(level);
+    if (!existing) return;
+    this.sound.stopOwner(level);
+    existing.player.destroy();
+    existing.layer.remove();
+    this.levels.delete(level);
   }
 
   private emitFrame() {

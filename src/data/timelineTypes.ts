@@ -91,11 +91,14 @@ export type ActionCommand =
   | "doRelease"
   | "loadMovieNum"
   | "loadMovie"
+  | "unloadMovieNum"
+  | "unloadMovie"
   | "loadVariables"
   | "playVO"
   | "markSndSegment"
   | "attachSound"
   | "stopSound"
+  | "setVolume"
   | "callFunctions"
   | "setVariable";
 
