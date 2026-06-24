@@ -4,14 +4,51 @@ import { collectReferencedSwfs, prefetchScene } from "../data/prefetch";
 import { collectExplicitSoundTimings } from "../data/soundTimings";
 import { DomRenderer } from "../render/DomRenderer";
 import { FontRegistry } from "../render/TextRenderer";
-import { Player } from "../player/Player";
+import { Player, type ButtonEvent } from "../player/Player";
 import { VariableStore, type VarValue } from "../player/VariableStore";
 import { SoundController } from "../audio/SoundController";
+
+/** A trimmed view of a button's resolved in-tour action (the full record stays internal). */
+export interface TourButtonAction {
+  command?: string;
+  target?: string;
+  label?: string;
+  swf?: string;
+  level?: number;
+}
+
+/** A button interaction surfaced to the host so it can drive its own response — e.g.
+ *  bind "Skip Intro"/end-of-tour to exit, even for buttons the conversion left unbound. */
+export interface TourButtonEvent {
+  /** SWF character id of the button definition. */
+  characterId: number;
+  /** Render-tree path of the owning clip (matches the DOM `data-button-owner-path`). */
+  ownerPath: string;
+  /** Which phase fired — the click is `"release"`; the rest are hover/press. */
+  event: ButtonEvent;
+  /** Scene the button belongs to, e.g. "intro", "nav", "segment1". */
+  scene: string;
+  /** The bound in-tour action, or `undefined` when the conversion recovered none. */
+  action?: TourButtonAction;
+}
+
+/** A scene/level navigation as the tour runs (a Flash `loadMovie`/`unloadMovie`). */
+export interface TourNavigation {
+  command: string;
+  swf?: string;
+  level?: number;
+  reload?: boolean;
+}
 
 export type PlayerControllerOptions = {
   onFrame?: (rootFrame: number, playing: boolean, label: string) => void;
   /** Enable temporary segment-flash tracing (console logs + a bottom-bar rAF watch). Off by default. */
   debug?: boolean;
+  /** Notified on every button interaction (including unbound buttons). Return `true`
+   *  to suppress the player's own default handling so the host owns the response. */
+  onButton?: (event: TourButtonEvent) => boolean | void;
+  /** Notified when the tour loads/unloads a scene into a level. */
+  onNavigate?: (nav: TourNavigation) => void;
 };
 
 type Level = { player: Player; layer: HTMLElement; swf: string };
@@ -73,6 +110,11 @@ export class PlayerController {
     this.deactivate();
     this.container.hidden = false;
     this.mainSwf = swf;
+    // Apply the SWF stage background (SetBackgroundColor). As in Flash, only _level0's
+    // background applies. Without this the host's stage shows through, so empty areas of
+    // a light scene (e.g. the white intro) render black. The lab does the same in
+    // sceneLoader; the embeddable player must too.
+    this.container.style.background = timeline.backgroundColor ?? "#ffffff";
     this.createLevel(0, swf, timeline);
     if (typeof entryFrame === "number") this.main?.seekRootFrame(entryFrame);
     this.emitFrame();
@@ -90,6 +132,7 @@ export class PlayerController {
     this.loadBurst.clear();
     this.prefetched.clear();
     this.sound.destroy();
+    this.container.style.background = "";
     this.container.hidden = true;
     this.container.replaceChildren();
   }
@@ -152,6 +195,10 @@ export class PlayerController {
           : undefined,
       onSound: (action) => this.sound.handle(action, level),
       onNavigate: (action) => this.handleNavigate(action, level),
+      onButton: this.options.onButton
+        ? (characterId, ownerPath, event, action) =>
+            this.options.onButton!({ characterId, ownerPath, event, scene: timeline.scene, action })
+        : undefined,
       store: this.store,
       onCallFunction: (target, name, args) => this.dispatchCall(target, name, args),
       onClipCommand: (target, command, frame) => this.dispatchClipCommand(target, command, frame),
@@ -298,6 +345,12 @@ export class PlayerController {
   }
 
   private handleNavigate(action: ControlAction, sourceLevel = 0) {
+    this.options.onNavigate?.({
+      command: action.command ?? "",
+      swf: action.swf,
+      level: action.level != null ? Number(action.level) : undefined,
+      reload: action.reload,
+    });
     if (action.command === "unloadMovieNum" || action.command === "unloadMovie") {
       const level = Number(action.level ?? this.inferLoadLevel(sourceLevel) ?? 0);
       if (level > 0) this.destroyLevel(level);

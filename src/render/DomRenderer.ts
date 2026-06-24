@@ -375,7 +375,7 @@ export class DomRenderer {
     element.style.textAlign = (text.align as string) ?? "left";
     element.style.whiteSpace = text.wordWrap ? "pre-wrap" : "pre";
     if (family) element.style.fontFamily = family;
-    if (text.html) element.innerHTML = text.text ?? "";
+    if (text.html) element.innerHTML = flashHtmlTextToBrowserHtml(text.text ?? "");
     else element.textContent = text.text ?? "";
   }
 
@@ -398,4 +398,64 @@ export class DomRenderer {
     });
     applyColorTransform(rendered.media, node.colorTransform);
   }
+}
+
+function flashHtmlTextToBrowserHtml(value: string): string {
+  const template = document.createElement("template");
+  template.innerHTML = value;
+  const serializeNode = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) return escapeHtml(node.textContent ?? "");
+    if (!(node instanceof Element)) return "";
+    const tag = node.tagName.toLowerCase();
+    const children = [...node.childNodes].map(serializeNode).join("");
+    if (tag === "sbr" || tag === "br") return "<br>";
+    if (tag === "p") {
+      const align = safeTextAlign(node.getAttribute("align"));
+      return `<div style="margin:0${align ? `;text-align:${align}` : ""}">${children}</div>`;
+    }
+    if (tag === "font") {
+      const style = flashFontStyle(node);
+      return style ? `<span style="${style}">${children}</span>` : `<span>${children}</span>`;
+    }
+    if (tag === "a") {
+      const href = safeHref(node.getAttribute("href"));
+      return href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${children}</a>` : `<span>${children}</span>`;
+    }
+    if (tag === "b" || tag === "strong") return `<strong>${children}</strong>`;
+    if (tag === "i" || tag === "em") return `<em>${children}</em>`;
+    if (tag === "u") return `<u>${children}</u>`;
+    return children;
+  };
+  return [...template.content.childNodes].map(serializeNode).join("");
+}
+
+function flashFontStyle(node: Element): string {
+  const styles: string[] = [];
+  const color = node.getAttribute("color");
+  const face = node.getAttribute("face");
+  const size = Number.parseFloat(node.getAttribute("size") ?? "");
+  const letterSpacing = Number.parseFloat(node.getAttribute("letterSpacing") ?? "");
+  if (color && /^#[0-9a-f]{6}$/i.test(color)) styles.push(`color:${color}`);
+  if (face) styles.push(`font-family:${face.split(",").map((part) => `"${part.trim().replaceAll("\"", "\\\"")}"`).join(",")}`);
+  if (Number.isFinite(size) && size > 0) styles.push(`font-size:${size}px`);
+  if (Number.isFinite(letterSpacing)) styles.push(`letter-spacing:${letterSpacing}px`);
+  return styles.join(";");
+}
+
+function safeTextAlign(value: string | null): string {
+  const align = String(value ?? "").toLowerCase();
+  return align === "left" || align === "right" || align === "center" || align === "justify" ? align : "";
+}
+
+function safeHref(value: string | null): string {
+  const href = String(value ?? "");
+  return /^(https?:|mailto:)/i.test(href) ? href : "";
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;");
 }

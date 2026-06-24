@@ -47,6 +47,15 @@ export type PlayerOptions = {
   onFrame?: (rootFrame: number, playing: boolean) => void;
   onNavigate?: (action: ControlAction) => void;
   onSound?: (action: ControlAction) => void;
+  /** Host hook: fired on every button event (including buttons the conversion left
+   *  unbound, where `action` is undefined). Returning `true` marks the event handled
+   *  and suppresses the player's own default handling, so the host fully owns it. */
+  onButton?: (
+    characterId: number,
+    ownerPath: string,
+    event: ButtonEvent,
+    action?: { command?: string; target?: string; label?: string; swf?: string; level?: number },
+  ) => boolean | void;
   /** Shared tour variable store (seeded from control.globalDefaults). */
   store?: VariableStore;
   /** Dispatch a function call whose target is another level (`_levelN[.path].fn`). */
@@ -241,6 +250,18 @@ export class Player {
     const eventScope = this.buttonEventScope(owner, characterId);
     const action = this.buttonActionFor(owner, characterId, event);
     const companions = this.companionButtonActions(owner, characterId, event);
+    // Surface the interaction to the host before doing anything with it, so the host
+    // can give meaning to unbound buttons (and override bound ones). A `true` return
+    // means the host fully handled it — skip the player's own default handling.
+    if (this.options.onButton) {
+      const summary = action
+        ? { command: action.command, target: action.target, label: action.label, swf: action.swf, level: action.level != null ? Number(action.level) : undefined }
+        : undefined;
+      if (this.options.onButton(characterId, ownerPath, event, summary) === true) {
+        this.render();
+        return;
+      }
+    }
     if (!action) {
       this.render();
       return;

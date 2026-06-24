@@ -17,6 +17,7 @@
  */
 import "./player.css";
 import { PlayerController } from "./app/PlayerController";
+import type { TourButtonEvent, TourNavigation } from "./app/PlayerController";
 import { clearTimelineCache, loadTimeline } from "./data/TimelineLoader";
 import { setArchiveUrl, setAssetsBaseUrl, setAssetSource, type AssetSource } from "./data/packedAssets.ts";
 
@@ -41,6 +42,13 @@ export interface TourPlayerOptions {
   debug?: boolean;
   /** Per-frame callback for the root level (frame index, playing, current frame label). */
   onFrame?: (frame: number, playing: boolean, label: string) => void;
+  /** Notified on every button interaction, including buttons the conversion left
+   *  unbound. Return `true` to suppress the player's own handling so the host fully
+   *  owns the response (e.g. wire "Skip Intro" or an end-of-tour button to exit). */
+  onButton?: (event: TourButtonEvent) => boolean | void;
+  /** Notified when the tour navigates between scenes/levels (loadMovie/unloadMovie),
+   *  so the host can follow progress (e.g. detect the final segment / tour end). */
+  onNavigate?: (nav: TourNavigation) => void;
 }
 
 /** Handle returned by {@link createTourPlayer} for driving playback. */
@@ -73,6 +81,8 @@ export async function createTourPlayer(
     autoplay = true,
     debug = false,
     onFrame,
+    onButton,
+    onNavigate,
   } = options;
 
   setAssetsBaseUrl(assetsBaseUrl);
@@ -87,7 +97,7 @@ export async function createTourPlayer(
     throw new Error(`mmtour: failed to load tour scene "${scene}" from "${assetsBaseUrl || "/"}"`);
   }
 
-  const controller = new PlayerController(container, { debug, onFrame });
+  const controller = new PlayerController(container, { debug, onFrame, onButton, onNavigate });
   controller.activate(timeline, scene);
   if (autoplay) controller.play();
 
@@ -113,7 +123,7 @@ export async function createTourPlayer(
 // Lower-level building blocks, for hosts that need more control than
 // createTourPlayer offers (custom level handling, asset source switching, etc.).
 export { PlayerController } from "./app/PlayerController";
-export type { PlayerControllerOptions } from "./app/PlayerController";
+export type { PlayerControllerOptions, TourButtonEvent, TourButtonAction, TourNavigation } from "./app/PlayerController";
 export { setAssetsBaseUrl, getAssetsBaseUrl, setAssetSource, getAssetSource, setArchiveUrl } from "./data/packedAssets.ts";
 export type { AssetSource } from "./data/packedAssets.ts";
 export { loadTimeline } from "./data/TimelineLoader";

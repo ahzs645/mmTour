@@ -26,7 +26,9 @@ export function collectBitmaps(movie: any): BitmapSet {
 }
 
 export function isJpegBitmap(tag: any): boolean {
-  return tag.mediaType === "image/jpeg" || tag.mediaType === "image/x-swf-partial-jpeg";
+  return tag.mediaType === "image/jpeg"
+    || tag.mediaType === "image/x-swf-partial-jpeg"
+    || tag.mediaType === "image/x-swf-jpeg3";
 }
 export function isLosslessBitmap(tag: any): boolean {
   return typeof tag.mediaType === "string" && tag.mediaType.includes("lossless");
@@ -39,6 +41,15 @@ export function isLosslessBitmap(tag: any): boolean {
  */
 export function mergeJpeg(data: Uint8Array, jpegTables?: Uint8Array): Uint8Array {
   let img = data;
+  if (
+    img.length >= 6
+    && !(img[0] === 0xff && img[1] === 0xd8)
+    && img[4] === 0xff
+    && img[5] === 0xd8
+  ) {
+    const alphaOffset = img[0] | (img[1] << 8) | (img[2] << 16) | (img[3] << 24);
+    img = img.subarray(4, alphaOffset > 0 ? 4 + alphaOffset : undefined);
+  }
   if (img.length >= 4 && img[0] === 0xff && img[1] === 0xd9 && img[2] === 0xff && img[3] === 0xd8) {
     img = img.subarray(4);
   }
