@@ -1,4 +1,55 @@
 import type { AssetTimeline } from "./timelineTypes";
+import {
+  inlineShapeBitmaps,
+  inlineShapeBitmapsAsync,
+  sceneRelativeImagePath,
+  shapeHasExternalBitmap,
+} from "./shapeBitmapInline";
+
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
+// Phase 1 (docs/generated-size-and-packing.md): shapes reference their bitmap fills
+// by external path instead of embedding base64. For asset sources whose media is NOT
+// in memory (files/bundle), we pre-build inlined shape Blob URLs at scene load and
+// cache them here, keyed by normalized shape src.
+const inlinedShapeUrls = new Map<string, string>();
+
+function clearInlinedShapeUrls() {
+  for (const url of inlinedShapeUrls.values()) URL.revokeObjectURL(url);
+  inlinedShapeUrls.clear();
+}
+
+/** Fetch + inline the external bitmaps of each listed shape (files/bundle modes),
+ *  caching a self-contained Blob URL so the sandboxed <img> renders the fill. */
+async function warmExternalBitmapShapes(srcs: string[] | undefined) {
+  if (!srcs?.length) return;
+  await Promise.all(srcs.map(async (src) => {
+    const normalized = src.replace(/^\//, "");
+    if (inlinedShapeUrls.has(normalized)) return;
+    try {
+      const res = await fetch(`${assetsBaseUrl}/${normalized}`);
+      if (!res.ok) return;
+      const svg = await res.text();
+      if (!shapeHasExternalBitmap(svg)) return;
+      const inlined = await inlineShapeBitmapsAsync(svg, async (ref) => {
+        const imgRes = await fetch(`${assetsBaseUrl}/${ref.replace(/^\//, "")}`);
+        if (!imgRes.ok) return undefined;
+        const type = imgRes.headers.get("content-type") || guessImageType(ref);
+        return { bytes: new Uint8Array(await imgRes.arrayBuffer()), type };
+      });
+      inlinedShapeUrls.set(normalized, URL.createObjectURL(new Blob([inlined], { type: "image/svg+xml" })));
+    } catch {
+      /* leave the shape to render via its raw URL (bitmap fill will be blank) */
+    }
+  }));
+}
+
+function guessImageType(ref: string): string {
+  if (/\.jpe?g$/i.test(ref)) return "image/jpeg";
+  if (/\.gif$/i.test(ref)) return "image/gif";
+  return "image/png";
+}
 
 type PackedFile = {
   path: string;
@@ -47,10 +98,19 @@ let packNetworkFallback = true;
 // Full URL of the single-file archive (assetSource === "archive").
 let archiveUrl = "";
 let archiveIndex: { blocksStart: number; scenes: Record<string, { offset: number; length: number }> } | null = null;
+// loadVariables() files (`nav.txt`, …) baked into the archive index, resolved as
+// Blob URLs by assetUrl so the archive stays a single self-contained file.
+const archiveVars = new Map<string, { content: string; url?: string }>();
+
+function clearArchiveVars() {
+  for (const v of archiveVars.values()) if (v.url) URL.revokeObjectURL(v.url);
+  archiveVars.clear();
+}
 
 export function setArchiveUrl(url: string) {
   archiveUrl = url;
   archiveIndex = null;
+  clearArchiveVars();
 }
 
 // Base URL under which the converted `generated/` (and `generated-packed/`)
@@ -78,6 +138,7 @@ export function setAssetSource(source: AssetSource) {
   clearPackedScenes();
   clearBundleScenes();
   clearSceneData();
+  clearInlinedShapeUrls();
 }
 
 /**
@@ -96,6 +157,7 @@ function clearSceneData() {
   }
   sceneData.clear();
   archiveIndex = null;
+  clearArchiveVars();
 }
 
 /** Inflate a byte slice that may be gzip (raw bytes) or already-plain (a server
@@ -142,7 +204,9 @@ async function loadArchiveIndex() {
   const indexLen = new DataView(head.buffer, head.byteOffset, head.byteLength).getUint32(0, true);
   const parsed = JSON.parse(await inflate(head.slice(4, 4 + indexLen))) as {
     scenes: Record<string, { offset: number; length: number }>;
+    vars?: Record<string, string>;
   };
+  for (const [name, content] of Object.entries(parsed.vars ?? {})) archiveVars.set(name, { content });
   archiveIndex = { blocksStart: 4 + indexLen, scenes: parsed.scenes };
   return archiveIndex;
 }
@@ -252,8 +316,18 @@ export function cacheKeyForSource(key: string): string {
 }
 
 export async function loadTimelineFromSource(scene: string): Promise<AssetTimeline | null> {
-  if (assetSource === "files") return loadTimelineFile(scene);
-  if (assetSource === "bundle") return (await loadBundleScene(scene))?.timeline ?? null;
+  if (assetSource === "files") {
+    const timeline = await loadTimelineFile(scene);
+    // files/bundle media is not in memory; pre-inline the bitmap-fill shapes so the
+    // sandboxed <img> can render them (in-memory pack modes inline lazily in assetUrl).
+    if (timeline) await warmExternalBitmapShapes(timeline.bitmapFillShapeSrcs);
+    return timeline;
+  }
+  if (assetSource === "bundle") {
+    const timeline = (await loadBundleScene(scene))?.timeline ?? null;
+    if (timeline) await warmExternalBitmapShapes(timeline.bitmapFillShapeSrcs);
+    return timeline;
+  }
   if (assetSource === "archive") return (await ensureArchiveScene(scene))?.timeline ?? null;
   if (assetSource === "scene-pack") return (await ensureScenePack(scene))?.timeline ?? null;
   const packed = await loadPackedScene(scene);
@@ -269,7 +343,17 @@ export function assetUrl(src: string): string {
       if (normalized.endsWith(".svg")) {
         const shape = entry.shapes.get(normalized);
         if (shape) {
-          if (!shape.url) shape.url = URL.createObjectURL(new Blob([shape.svg], { type: "image/svg+xml" }));
+          if (!shape.url) {
+            const svg = shapeHasExternalBitmap(shape.svg)
+              ? inlineShapeBitmaps(shape.svg, (ref) => {
+                  const m = entry.media.get(ref.replace(/^\//, ""));
+                  if (!m) return undefined;
+                  const start = entry.bodyStart + m.offset;
+                  return { bytes: entry.body.slice(start, start + m.length), type: m.type };
+                })
+              : shape.svg;
+            shape.url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+          }
           return shape.url;
         }
       } else {
@@ -283,6 +367,12 @@ export function assetUrl(src: string): string {
         }
       }
     }
+    // loadVariables() files baked into the archive index (nav.txt, …).
+    const v = archiveVars.get(normalized);
+    if (v) {
+      if (!v.url) v.url = URL.createObjectURL(new Blob([v.content], { type: "text/plain" }));
+      return v.url;
+    }
     return `${assetsBaseUrl}/${normalized}`;
   }
   if (assetSource === "bundle") {
@@ -290,6 +380,10 @@ export function assetUrl(src: string): string {
     // Shape/sprite/button SVGs come from the in-memory bundle; media (PNG/MP3/TTF)
     // is served externally from the same base URL.
     if (normalized.endsWith(".svg")) {
+      // External bitmap fills can't be loaded by a sandboxed <img src=blob>; the
+      // warm step (scene load) cached a self-contained, inlined Blob for those.
+      const warm = inlinedShapeUrls.get(normalized);
+      if (warm) return warm;
       const scene = /^generated\/([^/]+)\//.exec(normalized)?.[1];
       const shape = scene ? bundleScenes.get(scene)?.shapes.get(normalized) : undefined;
       if (shape) {
@@ -305,13 +399,31 @@ export function assetUrl(src: string): string {
     if (match) {
       const packed = packedScenes.get(match[1]);
       const file = packed?.files.get(match[2]);
-      if (file) {
-        if (!file.url) file.url = URL.createObjectURL(new Blob([file.bytes.slice().buffer], { type: file.type }));
+      if (file && packed) {
+        if (!file.url) {
+          if (file.type === "image/svg+xml") {
+            const svg = textDecoder.decode(file.bytes);
+            if (shapeHasExternalBitmap(svg)) {
+              const inlined = inlineShapeBitmaps(svg, (ref) => {
+                const img = packed.files.get(sceneRelativeImagePath(ref));
+                return img ? { bytes: img.bytes, type: img.type } : undefined;
+              });
+              file.url = URL.createObjectURL(new Blob([textEncoder.encode(inlined)], { type: file.type }));
+              return file.url;
+            }
+          }
+          file.url = URL.createObjectURL(new Blob([file.bytes.slice().buffer], { type: file.type }));
+        }
         return file.url;
       }
     }
   }
-  return `${assetsBaseUrl}/${src.replace(/^\//, "")}`;
+  const normalized = src.replace(/^\//, "");
+  if (normalized.endsWith(".svg")) {
+    const warm = inlinedShapeUrls.get(normalized);
+    if (warm) return warm;
+  }
+  return `${assetsBaseUrl}/${normalized}`;
 }
 
 async function loadTimelineFile(scene: string): Promise<AssetTimeline | null> {

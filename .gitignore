@@ -4,6 +4,7 @@ node_modules/
 # Build output
 dist/
 dist-lib/
+dist-embed/
 
 # Generated conversion artifacts
 extracted/

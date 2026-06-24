@@ -22,16 +22,19 @@ type LegacyBitmapImage = {
   href: string;
 };
 
-export function exportArchiveForScenes(scenes: CompiledScene[]): Uint8Array {
+export function exportArchiveForScenes(scenes: CompiledScene[], vars?: Record<string, string>): Uint8Array {
   if (scenes[0]) applyInheritedDefaultsGraph(scenes[0], scenes);
 
   const blocks: Array<{ scene: string; bytes: Uint8Array }> = [];
   for (const scene of scenes) blocks.push({ scene: scene.scene, bytes: sceneBlock(scene) });
 
-  const index: { format: string; version: number; scenes: Record<string, { offset: number; length: number }> } = {
+  // loadVariables() text (e.g. nav.txt) baked into the index so the exported pack is a
+  // single self-contained file the embed player resolves with no extra requests.
+  const index: { format: string; version: number; scenes: Record<string, { offset: number; length: number }>; vars?: Record<string, string> } = {
     format: "mmtour-archive",
     version: 1,
     scenes: {},
+    ...(vars && Object.keys(vars).length ? { vars } : {}),
   };
   let offset = 0;
   for (const block of blocks) {

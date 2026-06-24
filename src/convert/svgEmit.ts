@@ -40,7 +40,16 @@ export interface ShapeSvgResult {
 export interface BitmapFillImage {
   width: number;
   height: number;
+  /** Inline data URI (`data:image/png;base64,…`) — the embedded form. */
   href: string;
+  /**
+   * External asset path for the same bitmap (e.g. `generated/<scene>/images/<id>.png`).
+   * When set, the emitted `<image>` references this instead of inlining `href`, so the
+   * stored SVG carries no duplicated base64. The runtime re-inlines the bytes when it
+   * builds the shape's Blob URL, so the rendered output is byte-identical. See
+   * `src/data/shapeBitmapInline.ts` and `docs/generated-size-and-packing.md`.
+   */
+  ref?: string;
 }
 
 export type BitmapFillResolver = (bitmapId: number) => BitmapFillImage | undefined;
@@ -49,11 +58,27 @@ export interface ShapeSvgOptions {
   bitmapFill?: BitmapFillResolver;
 }
 
+export interface ShapeBounds {
+  xMin: number;
+  yMin: number;
+  xMax: number;
+  yMax: number;
+}
+
 export function defineShapeToSvg(tag: any, options: ShapeSvgOptions = {}): ShapeSvgResult {
-  const { bounds } = tag;
+  return rasterizedToShapeSvg(rasterizeShape(tag.shape), tag.bounds, options);
+}
+
+/** Wrap an already-rasterized shape into the full `<svg>` document. Shared by the
+ *  emitter and the shape-record reconstructor so both emit byte-identical SVG. */
+export function rasterizedToShapeSvg(
+  rasterized: { fills: FillPath[]; lines: LinePath[] },
+  bounds: ShapeBounds,
+  options: ShapeSvgOptions = {},
+): ShapeSvgResult {
   const w = (bounds.xMax - bounds.xMin) / 20;
   const h = (bounds.yMax - bounds.yMin) / 20;
-  const inner = shapeInner(tag, "g", options);
+  const inner = shapeInnerFromRasterized(rasterized, "g", options);
 
   const defsBlock = inner.defs ? `<defs>${inner.defs}</defs>` : "";
   const g = `<g transform="matrix(1.0, 0.0, 0.0, 1.0, ${num(-bounds.xMin / 20)}, ${num(-bounds.yMin / 20)})">${inner.body}</g>`;
@@ -73,7 +98,17 @@ export interface ShapeInner {
 /** Build a shape's paint primitives without the outer <svg>/<g origin> — so a
  *  caller (e.g. the button compositor) can place the shape under its own matrix. */
 export function shapeInner(tag: any, idPrefix: string, options: ShapeSvgOptions = {}): ShapeInner {
-  const { fills, lines } = rasterizeShape(tag.shape);
+  return shapeInnerFromRasterized(rasterizeShape(tag.shape), idPrefix, options);
+}
+
+/** Same as `shapeInner`, but from an already-rasterized shape. This is the single
+ *  stringifier shared by the SVG emitter and the shape-record reconstructor
+ *  (`src/render/shapeRecordToSvg.ts`), so both produce byte-identical output. */
+export function shapeInnerFromRasterized(
+  { fills, lines }: { fills: FillPath[]; lines: LinePath[] },
+  idPrefix: string,
+  options: ShapeSvgOptions = {},
+): ShapeInner {
   const defs: string[] = [];
   const body: string[] = [];
   const fillTypes: string[] = [];
@@ -189,7 +224,7 @@ function bitmapPatternDef(id: string, fill: any, bitmap: BitmapFillImage): strin
   return (
     `<pattern id="${id}" patternUnits="userSpaceOnUse" overflow="visible" ` +
     `viewBox="0 0 ${num(bitmap.width)} ${num(bitmap.height)}" width="${num(bitmap.width)}" height="${num(bitmap.height)}" ${transform}>` +
-    `<image width="${num(bitmap.width)}" height="${num(bitmap.height)}" style="image-rendering:optimizeQuality" xlink:href="${escapeAttr(bitmap.href)}"/>` +
+    `<image width="${num(bitmap.width)}" height="${num(bitmap.height)}" style="image-rendering:optimizeQuality" xlink:href="${escapeAttr(bitmap.ref ?? bitmap.href)}"/>` +
     `</pattern>`
   );
 }

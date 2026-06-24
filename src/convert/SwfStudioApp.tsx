@@ -46,6 +46,14 @@ type PlayerView = {
   title: string;
 };
 
+type EmbedInfo = {
+  filename: string;
+  sceneSwf: string;
+  scenes: number;
+  sizeMb: number;
+  missing: number;
+};
+
 export function SwfStudioApp() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [cards, setCards] = useState<Record<string, CardView>>({});
@@ -53,6 +61,7 @@ export function SwfStudioApp() {
   const [dragging, setDragging] = useState(false);
   const [toast, setToast] = useState("");
   const [player, setPlayer] = useState<PlayerView>({ visible: false, title: "" });
+  const [embed, setEmbed] = useState<EmbedInfo | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const playerWrap = useRef<HTMLDivElement | null>(null);
@@ -299,13 +308,23 @@ export function SwfStudioApp() {
     }
   }, [closePlayer, ensureDependencies, ensureDependencyCompiled, showToast]);
 
-  const exportBundle = useCallback((compiled: CompiledScene) => {
+  const exportBundle = useCallback(async (compiled: CompiledScene) => {
     const scenes = collectReachableScenes(compiled, compiledScenes.current);
-    const bytes = exportArchiveForScenes(scenes);
-    downloadBytes(bytes, `${compiled.scene}.mmtour.pack`);
+    // Bake loadVariables() text into the pack so the embedded player needs no extra
+    // files — keeps the export a single self-contained, archive-loadable artifact.
+    const vars = await collectLoadVariableFiles(scenes);
+    const filename = `${compiled.scene}.mmtour.pack`;
+    const bytes = exportArchiveForScenes(scenes, vars);
+    downloadBytes(bytes, filename);
     const missing = reachableDependencyNames(compiled, compiledScenes.current).filter((name) => !compiledScenes.current.has(canonical(name)));
-    showToast(`Exported ${scenes.length} scene${scenes.length === 1 ? "" : "s"}${missing.length ? `; ${missing.length} missing` : ""}`);
-  }, [showToast]);
+    setEmbed({
+      filename,
+      sceneSwf: compiled.timeline.source ?? `${compiled.scene}.swf`,
+      scenes: scenes.length,
+      sizeMb: bytes.byteLength / 1024 / 1024,
+      missing: missing.length,
+    });
+  }, []);
 
   const importPack = useCallback(async (name: string, bytes: Uint8Array) => {
     try {
@@ -475,7 +494,7 @@ export function SwfStudioApp() {
         <div className="topbar">
           <div>
             <h1>SWF Studio</h1>
-            <p>Convert and play Flash tour files locally in the browser.</p>
+            <p>Convert, play, and export embeddable Flash tours — entirely in your browser.</p>
           </div>
           <button
             className="theme-toggle"
@@ -549,6 +568,59 @@ export function SwfStudioApp() {
       </div>
 
       <div id="toast" className={toast ? "on" : ""}>{toast}</div>
+      {embed && <EmbedDialog info={embed} onClose={() => setEmbed(null)} showToast={showToast} />}
+    </div>
+  );
+}
+
+function EmbedDialog({ info, onClose, showToast }: { info: EmbedInfo; onClose: () => void; showToast: (m: string) => void }) {
+  const origin = typeof location !== "undefined" ? location.origin : "";
+  const base = `${origin}${import.meta.env.BASE_URL}`.replace(/\/+$/, "/");
+  const playerJs = `${base}mmtour-player.js`;
+  const playerCss = `${base}mmtour-player.css`;
+  const sceneAttr = info.sceneSwf === "A-tour.swf" ? "" : `\n    scene: ${JSON.stringify(info.sceneSwf)},`;
+  const snippet = `<link rel="stylesheet" href="${playerCss}" />
+<div id="tour" style="width:640px;height:480px;position:relative;overflow:hidden"></div>
+<script type="module">
+  import { createTourPlayer } from "${playerJs}";
+  await createTourPlayer(document.getElementById("tour"), {
+    assetSource: "archive",
+    archiveUrl: "./${info.filename}",${sceneAttr}
+    autoplay: true,
+  });
+</script>`;
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(snippet);
+      showToast("Embed snippet copied");
+    } catch {
+      showToast("Copy failed — select the snippet manually");
+    }
+  };
+
+  return (
+    <div className="embed-backdrop" role="dialog" aria-modal="true" aria-label="Embed snippet" onClick={onClose}>
+      <div className="embed-dialog" onClick={(event) => event.stopPropagation()}>
+        <header>
+          <h3>Embed this tour</h3>
+          <button className="ghost" type="button" onClick={onClose} aria-label="Close">×</button>
+        </header>
+        <p>
+          Downloaded <strong>{info.filename}</strong> — {info.scenes} scene{info.scenes === 1 ? "" : "s"},{" "}
+          {info.sizeMb.toFixed(1)} MB, one self-contained file.
+          {info.missing > 0 && <span className="warn"> ({info.missing} dependency missing — convert it too for a complete tour.)</span>}
+        </p>
+        <ol>
+          <li>Host <code>{info.filename}</code> anywhere that serves over HTTP.</li>
+          <li>Drop this snippet into your page (the player runtime is served from this site):</li>
+        </ol>
+        <pre className="embed-snippet"><code>{snippet}</code></pre>
+        <div className="embed-actions">
+          <button type="button" onClick={() => void copy()}>Copy snippet</button>
+          <span className="dim">Point <code>archiveUrl</code> at wherever you host the pack.</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -633,7 +705,7 @@ function SceneCard({
       {compiled.dependencies.length > 0 && <DependencyLine card={card} />}
       <div className="card-actions">
         <button className="play" type="button" onClick={() => void onPlay(compiled.scene, compiled, card.name)}>Play</button>
-        <button className="export" type="button" onClick={() => onExport(compiled)}>Export Bundle</button>
+        <button className="export" type="button" onClick={() => onExport(compiled)}>Export &amp; embed</button>
       </div>
     </section>
   );
@@ -809,6 +881,39 @@ function collectReachableScenes(root: CompiledScene, compiled: Map<string, Compi
   };
   visit(root);
   return out;
+}
+
+/** Fetch the loadVariables() text files (`nav.txt`, …) the scenes reference, so the
+ *  exported pack can carry them. Resolution mirrors PlayerController.handleLoadVariables. */
+async function collectLoadVariableFiles(scenes: CompiledScene[]): Promise<Record<string, string>> {
+  const names = new Set<string>();
+  const visit = (value: unknown) => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (typeof value !== "object") return;
+    const record = value as Record<string, unknown>;
+    if (record.command === "loadVariables") {
+      const swf = typeof record.swf === "string" && !/\.swf$/i.test(record.swf) ? record.swf : undefined;
+      const file = (record.variableSource as string) ?? swf ?? (record.target as string);
+      if (typeof file === "string" && file) names.add(file.replace(/^\//, ""));
+    }
+    for (const item of Object.values(record)) visit(item);
+  };
+  for (const scene of scenes) visit(scene.timeline?.control);
+
+  const vars: Record<string, string> = {};
+  await Promise.all([...names].map(async (name) => {
+    try {
+      const res = await fetch(`${import.meta.env.BASE_URL}${name}`);
+      if (res.ok) vars[name] = await res.text();
+    } catch {
+      /* a missing loadVariables file just leaves those fields blank */
+    }
+  }));
+  return vars;
 }
 
 function reachableDependencyNames(root: CompiledScene, compiled: Map<string, CompiledScene>): string[] {

@@ -195,6 +195,7 @@ export type AssetTimeline = {
   frameSvgs?: string[];
   frameSvgsOmitted?: boolean;
   bakedSpriteFramesOmitted?: boolean;
+  bitmapFillShapeSrcs?: string[];
   assets: Record<string, TimelineAsset>;
   frames: TimelineFrame[];
 };
