@@ -72,6 +72,7 @@ const SUPPORTED_SUMMARY_OPS = new Set([
   "Decrement",
   "ToInteger",
   "TypeOf",
+  "Trace",
   "GetTime",
   "InitArray",
   "NewObject",

@@ -183,7 +183,7 @@ function mergeButtonAction(existing: ControlAction | undefined, next: ControlAct
   };
 }
 
-function buttonEventsFromConditions(conditions: Record<string, unknown>): string[] {
+export function buttonEventsFromConditions(conditions: Record<string, unknown>): string[] {
   const events: string[] = [];
   if (conditions.overDownToOverUp) events.push("release");
   if (conditions.idleToOverDown || conditions.overUpToOverDown) events.push("press");

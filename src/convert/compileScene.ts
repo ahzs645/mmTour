@@ -20,8 +20,9 @@ import {
 } from "./index.ts";
 import { matrixFromButtonRecord } from "./buttonComposer.ts";
 import type { BitmapFillImage } from "./svgEmit.ts";
-import { extractControl, detectDependencies, type ExtractedControl, type SwfDependency } from "./avm1Control.ts";
+import { extractControl, detectDependencies, buttonEventsFromConditions, type ExtractedControl, type SwfDependency } from "./avm1Control.ts";
 import { parseProgram } from "./avm1/parse.ts";
+import { addProgramCoverage, createAvm1Coverage } from "./avm1/coverage.ts";
 import { runInit } from "./avm1/interp.ts";
 import { enrichSoundMetadata } from "./soundMetadata.ts";
 import { enrichControlWithTimelineData } from "./controlEnrichment.ts";
@@ -303,6 +304,7 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
     spriteLocalDefaults: inferSpriteLocalDefaults(control.spriteActions),
     dynamicTexts: controlDynamicTexts,
     globalDefaults,
+    avm1Coverage: buildAvm1Coverage(movie),
   }, assets, labels);
 
   const timeline = {
@@ -345,6 +347,66 @@ function bitmapFillShapeSrcs(scene: string, files: Map<string, { bytes: Uint8Arr
     if (svg.includes('href="generated/') && svg.includes("/images/")) out.push(`generated/${scene}/${path}`);
   }
   return out;
+}
+
+function buildAvm1Coverage(movie: any) {
+  const coverage = createAvm1Coverage();
+  scanAvm1CoverageTimeline(coverage, movie.tags ?? [], "root", undefined);
+  return coverage;
+}
+
+function scanAvm1CoverageTimeline(
+  coverage: ReturnType<typeof createAvm1Coverage>,
+  tags: any[],
+  scope: "root" | "sprite",
+  spriteId?: number,
+) {
+  let frame = 0;
+  for (const tag of tags ?? []) {
+    if (tag.type === swf.TagType.DoAction) {
+      addParsedCoverage(coverage, tag.actions, {
+        source: scope === "sprite" ? "spriteFrame" : "rootFrame",
+        scope,
+        spriteId,
+        frame,
+        path: scope === "sprite"
+          ? `DefineSprite_${spriteId}/frame_${frame + 1}/DoAction`
+          : `root/frame_${frame + 1}/DoAction`,
+      });
+      continue;
+    }
+    if (tag.type === swf.TagType.DefineSprite) {
+      scanAvm1CoverageTimeline(coverage, tag.tags ?? [], "sprite", tag.id);
+      continue;
+    }
+    if (tag.type === swf.TagType.DefineButton) {
+      for (let index = 0; index < (tag.actions ?? []).length; index += 1) {
+        const action = tag.actions[index];
+        addParsedCoverage(coverage, action.actions, {
+          source: "buttonAction",
+          scope: "button",
+          buttonId: tag.id,
+          events: buttonEventsFromConditions(action.conditions ?? {}),
+          path: `DefineButton_${tag.id}/action_${index + 1}`,
+        });
+      }
+      continue;
+    }
+    if (tag.type === swf.TagType.ShowFrame) frame += 1;
+  }
+}
+
+function addParsedCoverage(
+  coverage: ReturnType<typeof createAvm1Coverage>,
+  bytes: Uint8Array,
+  location: Parameters<typeof addProgramCoverage>[2],
+) {
+  try {
+    addProgramCoverage(coverage, parseProgram(bytes), location);
+  } catch {
+    // Keep browser conversion best-effort: malformed action blocks should not
+    // prevent assets/timelines from being produced.
+  }
 }
 
 type DynamicTextInfo = {

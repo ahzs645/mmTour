@@ -37,7 +37,8 @@ npm run convert       # regenerate public/generated/ from the SWFs (needs Java/F
 | command | what it does |
 | --- | --- |
 | `npm run dev` | comparison lab: Ruffle vs the Decompiled Player / Frame-SVG renderer |
-| `npm run convert` · `convert:tree-player` | FFDec extract → timelines → control-flow (`:tree-player` = smaller player bundle) |
+| `npm run convert` · `convert:tree-player` | FFDec extract → timelines → control-flow → fscommands (`:tree-player` = smaller player bundle) |
+| `npm run enrich:fscommands` | recover AVM1 `fscommand(...)` button actions from SWF bytecode into the timelines (part of convert/pack:tour) |
 | `npm run pack:tour` | build the one-file whole-tour `xp-tour.pack` (~25 MB) |
 | `npm run build:embed` | assemble `dist-embed/` (player + gsap + pack + example) |
 | `npm run build:lib` | the embeddable npm library (gsap external) |
@@ -112,6 +113,31 @@ Drop the folder anywhere that serves over HTTP and:
 Apps that use a bundler can instead consume the npm library build (`npm run build:lib`,
 gsap left external): `import { createTourPlayer } from "windows-xp-tour-gsap"`, then host
 `xp-tour.pack` and point `archiveUrl` at it. See `dist-embed/README.md` for details.
+
+### Reacting to the tour (host callbacks)
+
+`createTourPlayer` (and `createDecompiledPlayer`) take optional callbacks so the host owns
+interactions the tour can't resolve on its own:
+
+```js
+const tour = await createTourPlayer(el, {
+  assetSource: "archive",
+  archiveUrl: "/path/xp-tour.pack",
+  // The tour's Quit button is a Flash fscommand("quit"). The converter recovers it and the
+  // player surfaces it here, so any embedder gets a working quit with no per-button wiring.
+  onFsCommand: (command, args) => { if (command === "quit") closeTheTour(); },
+  // Optional: react to any button, including ones the conversion left unbound. Return true
+  // to fully own the click and suppress the player's default handling.
+  onButton: (e) => { /* { characterId, ownerPath, event, scene, action } */ },
+  // Optional: follow scene/level navigation (loadMovie/unloadMovie) as the tour runs.
+  onNavigate: (nav) => { /* { command, swf, level, reload } */ },
+});
+```
+
+`fscommand(...)` actions are recovered straight from the SWF button bytecode
+(`scripts/enrich-fscommands.mjs`, run as part of `convert`/`pack:tour`), so they work even
+though FFDec's decompiled ActionScript doesn't translate `fscommand`. The current bundled
+tour uses this for the nav toolbar's Quit button (`fscommand("quit")`).
 
 ## Current conversion approach
 

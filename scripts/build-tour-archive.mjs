@@ -26,6 +26,18 @@ mkdirSync(packsDir, { recursive: true });
 
 const MEDIA_DIRS = ["images", "sounds", "fonts", "texts"];
 
+// Pack only the canonical tour scenes (single source of truth: src/data/scenes.ts), so
+// other SWFs being converted under public/generated/ never bloat xp-tour.pack. Falls back
+// to "all scenes" if the list can't be read.
+const TOUR_SCENES = (() => {
+  try {
+    const src = readFileSync(join(root, "src/data/scenes.ts"), "utf8");
+    return new Set([...src.matchAll(/swf:\s*"([^"]+)\.swf"/g)].map((m) => m[1]));
+  } catch {
+    return new Set();
+  }
+})();
+
 function contentType(file) {
   switch (extname(file).toLowerCase()) {
     case ".png": return "image/png";
@@ -74,6 +86,7 @@ function collectLoadVariableFiles() {
 
 const blocks = [];
 for (const scene of readdirSync(genDir)) {
+  if (TOUR_SCENES.size && !TOUR_SCENES.has(scene)) continue; // skip non-tour dirs
   const timelinePath = join(genDir, scene, "timeline.json");
   if (!existsSync(timelinePath)) continue;
 

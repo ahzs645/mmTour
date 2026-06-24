@@ -156,6 +156,13 @@ against the shared `VariableStore`. Key, easy‑to‑get‑wrong details:
 - **Dynamic text** bound to a `loadVariables()` variable reads the per‑Player `textVars`
   map; a frame‑script assignment to such a variable is mirrored into `textVars` so the
   field re‑renders.
+- **`fscommand(…)` + host callbacks.** Button handlers the FFDec `.as` path can't translate
+  — notably `fscommand("quit")`, the nav toolbar's Quit button — are recovered straight from
+  the SWF button bytecode by `scripts/enrich-fscommands.mjs` (run in `convert`/`pack:tour`)
+  and stored as `{ command: "fsCommand", value, arguments }`. The embeddable player surfaces
+  these (and any unbound button via `onButton`, and scene navigation via `onNavigate`) to the
+  host through `createTourPlayer` callbacks, so the host owns the response (quit → close the
+  tour) with no per‑button wiring.
 - **Tree vs baked sprites.** A sprite whose animation stays within its baked frame is
   rendered as one composited SVG (with transparent hit overlays); a sprite flagged
   `overflowsBounds` (moving content that would clip) is rendered from the live tree.

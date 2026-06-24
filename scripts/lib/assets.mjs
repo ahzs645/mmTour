@@ -345,21 +345,32 @@ export /**
 function stripButtonStateText(assetDefs) {
   for (const asset of Object.values(assetDefs)) {
     if (asset?.kind !== "button" || !asset.textFields?.length) continue;
-    const upSrc = asset.states?.up?.src;
-    if (!upSrc) continue;
-    const path = join(ctx.root, "public", upSrc);
-    let svg;
-    try {
-      svg = readFileSync(path, "utf8");
-    } catch {
-      continue;
-    }
     const fieldIds = new Set(asset.textFields.map((field) => field.id));
-    const stripped = svg.replace(/<use\b[^>]*\/>/g, (m) => {
-      const cid = m.match(/ffdec:characterId="(\d+)"/);
-      return cid && fieldIds.has(Number(cid[1])) ? "" : m;
-    });
-    if (stripped !== svg) writeFileSync(path, stripped);
+    // Strip the baked label from EVERY visual state, not just `up`. The runtime overlays
+    // the live field value (collectButtonText), so a baked copy left in the over/down
+    // state doubles the label (offset) while the pointer is over the button — e.g. the
+    // nav "Skip Intro" button. Dedupe paths since over/down often share one SVG file.
+    const srcs = new Set(["up", "over", "down"].map((s) => asset.states?.[s]?.src).filter(Boolean));
+    for (const src of srcs) {
+      const path = join(ctx.root, "public", src);
+      let svg;
+      try {
+        svg = readFileSync(path, "utf8");
+      } catch {
+        continue;
+      }
+      const stripped = svg.replace(/<use\b[^>]*\/>/g, (m) => {
+        const cid = m.match(/ffdec:characterId="(\d+)"/);
+        if (cid && fieldIds.has(Number(cid[1]))) return "";
+        // FFDec also emits the editText field as a `<use href="#text…">` placeholder in
+        // the over/down states (not up) — it re-draws the label offset, doubling it on
+        // hover. Drop it too; the field's glyphs are baked separately and the runtime
+        // overlays the live value.
+        if (/(?:xlink:href|href)="#text\d+"/.test(m)) return "";
+        return m;
+      });
+      if (stripped !== svg) writeFileSync(path, stripped);
+    }
   }
 }
 

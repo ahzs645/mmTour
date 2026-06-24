@@ -35,6 +35,7 @@
     "verify:convert-pack": "node scripts/verify-convert-pack-persistence.mjs",
     "verify:convert-atour": "node scripts/verify-convert-atour-flow.mjs",
     "verify:player": "node scripts/compare-player-ruffle.mjs",
+    "report:avm1": "node scripts/report-avm1-coverage.mjs",
     "capture:render-modes": "node scripts/capture-render-mode-frames.mjs",
     "capture:direct": "node scripts/capture-direct-renderer-frames.mjs",
     "build": "tsc --noEmit && vite build",

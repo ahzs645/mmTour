@@ -291,6 +291,9 @@ function processAction(action: Avm1Action, state: SummaryState, context: Summary
     case "TypeOf":
       state.stack.push({ kind: "call", name: "typeof", args: [state.stack.pop() ?? unknown("typeof")] });
       return;
+    case "Trace":
+      state.stack.pop();
+      return;
     case "GetTime":
       state.stack.push({ kind: "call", name: "getTimer", args: [] });
       return;
