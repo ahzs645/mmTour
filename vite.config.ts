@@ -21,7 +21,6 @@ export default defineConfig({
         rollupOptions: {
           input: {
             "convert-play": fileURLToPath(new URL("./convert-play.html", import.meta.url)),
-            "convert-demo": fileURLToPath(new URL("./convert-demo.html", import.meta.url)),
           },
         },
       }

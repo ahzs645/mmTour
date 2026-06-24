@@ -6,10 +6,11 @@ on:
     paths:
       - "src/**"
       - "scripts/lib/**"
+      - "scripts/build-pages.mjs"
       - "convert-play.html"
-      - "convert-demo.html"
       - "public/*.swf"
       - "vite.config.ts"
+      - "vite.embed.config.ts"
       - "package.json"
       - ".github/workflows/deploy-pages.yml"
   workflow_dispatch:
@@ -34,12 +35,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Build the in-browser SWF Studio
+      - name: Build the Studio + embed player runtime
         run: npm run build:pages
-        env:
-          GITHUB_PAGES: "1"
-      - name: Serve the studio at the site root
-        run: cp dist/convert-play.html dist/index.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

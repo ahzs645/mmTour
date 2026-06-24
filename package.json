@@ -36,7 +36,7 @@
     "capture:render-modes": "node scripts/capture-render-mode-frames.mjs",
     "capture:direct": "node scripts/capture-direct-renderer-frames.mjs",
     "build": "tsc --noEmit && vite build",
-    "build:pages": "vite build",
+    "build:pages": "node scripts/build-pages.mjs",
     "build:lib": "vite build --config vite.lib.config.ts && tsc -p tsconfig.lib.json",
     "smoke": "node scripts/smoke-lib-player.mjs",
     "preview": "vite preview --host 127.0.0.1"
