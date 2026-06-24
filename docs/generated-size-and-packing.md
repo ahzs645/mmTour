@@ -191,6 +191,53 @@ Those systems all point at the same shape: keep a compact symbol dictionary and
 timeline/action stream, then render it with a purpose-built runtime. Do not emit
 one standalone SVG document per shape if the goal is SWF-like size.
 
+## Implemented: bitmap-fill-by-reference + shape records (Phases 1–4)
+
+Measurement revealed the real lever was **not** vector path packing. ~72% of raw
+shape SVG bytes — and ~13.7 MiB of the 14.55 MiB brotli shape weight — was a base64
+copy of each bitmap fill, byte-identical to the already-extracted `images/<id>` file.
+The actual vector geometry brotli's to ~0.8 MiB (already SWF-scale).
+
+**Phase 1 — bitmap-fill-by-reference (shipped, default).** Shapes now reference their
+bitmap fills as `generated/<scene>/images/<id>` instead of embedding base64
+(`svgEmit.bitmapPatternDef` for the in-browser pipeline; `build-asset-timeline`
+content-matches and rewrites FFDec's embedded data URIs, recorded in
+`timeline.bitmapFillShapeSrcs`; `dedupe-generated-assets` follows image dedups into
+SVG bodies). A sandboxed `<img src=blob>` can't load external `<image>` hrefs, so the
+runtime re-inlines the bytes when it builds the shape Blob (`src/data/shapeBitmapInline.ts`):
+synchronously from in-memory media for pack/archive/scene-pack, and via a load-time warm
+for files/bundle. Rendered output is byte-identical; `verify:player` shows no Ruffle
+regression. Measured:
+
+```text
+                       before        after
+generated/             71.38 MiB  -> 52.61 MiB
+shapes/ (brotli)       14.55 MiB  ->  0.81 MiB
+pack:generated brotli  39.54 MiB  -> 23.84 MiB
+archive xp-tour.pack   39.67 MiB  -> 25.51 MiB
+bundle:generated gz    16.5  MiB  ->  2.3  MiB
+client .mmtour.pack    54.87 MiB  -> 43.18 MiB  (gzip 26.24 -> 18.47)
+```
+
+**Phases 2–3 — compact draw records (built, parity-proven, NOT default).**
+`src/convert/shapeRecord.ts` (`shapeToRecord`, from the rasterizer — not by parsing SVG)
+and `src/render/shapeRecordToSvg.ts` reconstruct a shape through the *same* stringifier
+the emitter uses (`rasterizedToShapeSvg`), so reconstruction is byte-identical:
+`verify:shape-records` confirms 409/409 shapes round-trip exactly. But the measurement
+kills the size case — once Phase 1 removed the base64, a **JSON** record is *larger* than
+the residual SVG:
+
+```text
+verbose shape SVG   brotli 0.62 MiB
+JSON shape record   brotli 0.87 MiB   (+0.25 MiB — worse)
+```
+
+JSON's structural overhead (brackets/commas, numbers as text) exceeds SVG path-string
+compactness, and the whole vector budget is already <1 MiB against a ~22 MiB PNG+MP3
+floor. So records are kept as a parity-tested capability, **not wired as the default**:
+realizing a win from them needs a *binary* (varint) encoding, and even then the upside is
+sub-MiB. The next real levers are media (#5/#6 below), not shapes.
+
 ## Next Experiments
 
 These are ordered by likely impact.

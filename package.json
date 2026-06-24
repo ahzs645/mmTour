@@ -26,6 +26,7 @@
     "verify:browser-control": "node scripts/verify-browser-control-enrichment.mjs",
     "verify:browser-sound": "node scripts/verify-browser-sound-metadata.mjs",
     "verify:browser-timeline": "node scripts/verify-browser-timeline-metadata.mjs",
+    "verify:shape-records": "node scripts/verify-shape-records.mjs",
     "verify:convert-pack": "node scripts/verify-convert-pack-persistence.mjs",
     "verify:convert-atour": "node scripts/verify-convert-atour-flow.mjs",
     "verify:player": "node scripts/compare-player-ruffle.mjs",
