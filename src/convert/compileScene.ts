@@ -81,7 +81,12 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
       bitmapFillImages.set(Number(tag.id), {
         width: Number(tag.width) || 0,
         height: Number(tag.height) || 0,
+        // Keep the inline data URI for callers that need a self-contained SVG (e.g.
+        // legacy bitmap-fill repair), but reference the extracted image file in the
+        // emitted shape so the stored SVG carries no duplicated base64. The runtime
+        // re-inlines the bytes when it builds the shape Blob (shapeBitmapInline.ts).
         href: `data:${mime};base64,${bytesToBase64(imgBytes)}`,
+        ref: `generated/${scene}/images/${tag.id}.${ext}`,
       });
       stats.images++;
     } catch { /* skip */ }
@@ -313,6 +318,7 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
     entryFrame: discoverEntryFrame(labels),
     control: timelineControl,
     frameSvgs: [],
+    bitmapFillShapeSrcs: bitmapFillShapeSrcs(scene, files),
     assets,
     frames,
   };
@@ -326,6 +332,20 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
 
 // --- helpers ---
 const zero = () => ({ x: 0, y: 0, width: 0, height: 0 });
+
+const sharedDecoder = new TextDecoder();
+/** Scene-relative srcs of SVGs that reference an external extracted image (their
+ *  bitmap fills were emitted as `generated/.../images/<id>` refs, not base64). The
+ *  runtime pre-inlines these when media isn't in memory (files/bundle modes). */
+function bitmapFillShapeSrcs(scene: string, files: Map<string, { bytes: Uint8Array }>): string[] {
+  const out: string[] = [];
+  for (const [path, file] of files) {
+    if (!path.endsWith(".svg")) continue;
+    const svg = sharedDecoder.decode(file.bytes);
+    if (svg.includes('href="generated/') && svg.includes("/images/")) out.push(`generated/${scene}/${path}`);
+  }
+  return out;
+}
 
 type DynamicTextInfo = {
   origin: Origin;

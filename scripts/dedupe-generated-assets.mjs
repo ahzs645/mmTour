@@ -109,10 +109,20 @@ for (const scene of scenes) {
     }
   }
 
-  if (minifySvg) {
+  // Shapes can now reference their bitmap fills as external images/<id> paths
+  // (Phase 1). When a referenced image is deduped away, rewrite the in-SVG ref to the
+  // surviving canonical path too — rewriteGeneratedRefs only touches the timeline JSON.
+  if (minifySvg || duplicateMap.size) {
     for (const file of walkFiles(sceneDir).filter((path) => path.endsWith(".svg"))) {
       const before = readFileSync(file, "utf8");
-      const after = minifySvgText(before);
+      let after = before;
+      if (duplicateMap.size && after.includes('href="generated/')) {
+        after = after.replace(/\b(xlink:href|href)="(generated\/[^"]+)"/g, (match, attr, ref) => {
+          const canonical = duplicateMap.get(ref);
+          return canonical ? `${attr}="${canonical}"` : match;
+        });
+      }
+      if (minifySvg) after = minifySvgText(after);
       if (after !== before) {
         writeFileSync(file, after);
         sceneBytesRewritten += Buffer.byteLength(before) - Buffer.byteLength(after);

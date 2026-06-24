@@ -1,5 +1,5 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, join, relative, resolve } from "node:path";
 import { XMLParser } from "fast-xml-parser";
 import {
   resolveSound, groupButtonEvents, discoverCallableFunctionNames, markCallableFunctionActionsSupported, runtimeCanExecuteCallableFunctionAction, discoverFunctionAssignments, discoverFunctionBodyCalls, discoverFunctionCallActions, frameVariableActions, chooseExitNavigationTarget,
@@ -111,6 +111,13 @@ copyIfExists("sounds");
 normalizeFrameSvgs(ctx.frames, ctx.assets);
 replaceStaticVariableText(ctx.tags);
 
+// Phase 1 (docs/generated-size-and-packing.md): FFDec embeds each bitmap fill as a
+// base64 copy inside the shape/button SVG — byte-identical to the extracted images/
+// file. Replace those data URIs with a reference to the image file (lossless dedupe;
+// ~72% of raw shape SVG bytes). The runtime re-inlines the bytes when it builds the
+// shape Blob (src/data/shapeBitmapInline.ts), so rendered output is unchanged.
+const bitmapFillShapeSrcs = dereferenceBitmapFills(ctx);
+
 const frameSvgs = listDir("frames")
   .filter((file) => file.endsWith(".svg"))
   .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10))
@@ -129,6 +136,7 @@ const output = {
   entryFrame,
   control,
   frameSvgs,
+  bitmapFillShapeSrcs,
   assets: ctx.assets,
   frames: ctx.frames,
 };
@@ -163,3 +171,46 @@ console.log(`Wrote ${join(ctx.publicDir, "timeline.json")} and control-flow.json
 /** The level a nav section button loads its segment into — `loadMovieNum(strTarget, intMovieTargLevel)`
  *  in the nav's doRelease(); intMovieTargLevel is a nav-wide constant (4). Resolve it from source so
  *  the runtime loads the clicked segment into the content level instead of guessing. */
+/**
+ * Replace base64 bitmap-fill data URIs in shape/button SVGs with a reference to the
+ * matching extracted images/ file (matched by exact content), then return the srcs
+ * of the rewritten SVGs. Lossless: only data URIs whose bytes are byte-identical to
+ * an extracted image are dereferenced; anything unmatched is left embedded.
+ */
+function dereferenceBitmapFills(ctx) {
+  const imagesDir = join(ctx.publicDir, "images");
+  if (!existsSync(imagesDir)) return [];
+  const byBase64 = new Map();
+  for (const name of readdirSync(imagesDir)) {
+    const file = join(imagesDir, name);
+    if (!statSync(file).isFile()) continue;
+    byBase64.set(readFileSync(file).toString("base64"), `generated/${ctx.scene}/images/${name}`);
+  }
+  if (!byBase64.size) return [];
+
+  const changed = new Set();
+  const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    return entry.isDirectory() ? walk(path) : entry.name.endsWith(".svg") ? [path] : [];
+  });
+  for (const sub of ["shapes", "buttons"]) {
+    const dir = join(ctx.publicDir, sub);
+    if (!existsSync(dir)) continue;
+    for (const file of walk(dir)) {
+      const svg = readFileSync(file, "utf8");
+      if (!svg.includes(";base64,")) continue;
+      let touched = false;
+      const rewritten = svg.replace(/(xlink:href|href)="data:[^"]*?;base64,([A-Za-z0-9+/=]+)"/g, (match, attr, base64) => {
+        const ref = byBase64.get(base64);
+        if (!ref) return match;
+        touched = true;
+        return `${attr}="${ref}"`;
+      });
+      if (touched) {
+        writeFileSync(file, rewritten);
+        changed.add(`generated/${ctx.scene}/${relative(ctx.publicDir, file).replaceAll("\\", "/")}`);
+      }
+    }
+  }
+  return [...changed].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}

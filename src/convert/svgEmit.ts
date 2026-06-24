@@ -40,7 +40,16 @@ export interface ShapeSvgResult {
 export interface BitmapFillImage {
   width: number;
   height: number;
+  /** Inline data URI (`data:image/png;base64,…`) — the embedded form. */
   href: string;
+  /**
+   * External asset path for the same bitmap (e.g. `generated/<scene>/images/<id>.png`).
+   * When set, the emitted `<image>` references this instead of inlining `href`, so the
+   * stored SVG carries no duplicated base64. The runtime re-inlines the bytes when it
+   * builds the shape's Blob URL, so the rendered output is byte-identical. See
+   * `src/data/shapeBitmapInline.ts` and `docs/generated-size-and-packing.md`.
+   */
+  ref?: string;
 }
 
 export type BitmapFillResolver = (bitmapId: number) => BitmapFillImage | undefined;
@@ -189,7 +198,7 @@ function bitmapPatternDef(id: string, fill: any, bitmap: BitmapFillImage): strin
   return (
     `<pattern id="${id}" patternUnits="userSpaceOnUse" overflow="visible" ` +
     `viewBox="0 0 ${num(bitmap.width)} ${num(bitmap.height)}" width="${num(bitmap.width)}" height="${num(bitmap.height)}" ${transform}>` +
-    `<image width="${num(bitmap.width)}" height="${num(bitmap.height)}" style="image-rendering:optimizeQuality" xlink:href="${escapeAttr(bitmap.href)}"/>` +
+    `<image width="${num(bitmap.width)}" height="${num(bitmap.height)}" style="image-rendering:optimizeQuality" xlink:href="${escapeAttr(bitmap.ref ?? bitmap.href)}"/>` +
     `</pattern>`
   );
 }

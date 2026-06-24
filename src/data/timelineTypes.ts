@@ -265,6 +265,12 @@ export type AssetTimeline = {
   frameSvgsOmitted?: boolean;
   /** Baked sprite-frame SVGs were intentionally omitted when nested timelines can render them. */
   bakedSpriteFramesOmitted?: boolean;
+  /**
+   * Shape/button SVG srcs whose bitmap fills reference external images instead of
+   * embedding base64 (Phase 1, docs/generated-size-and-packing.md). For asset sources
+   * whose media isn't in memory (files/bundle), the runtime pre-inlines these at load.
+   */
+  bitmapFillShapeSrcs?: string[];
   assets: Record<string, TimelineAsset>;
   frames: TimelineFrame[];
 };
