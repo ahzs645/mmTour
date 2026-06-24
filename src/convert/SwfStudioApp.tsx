@@ -54,6 +54,8 @@ type EmbedInfo = {
   missing: number;
 };
 
+type HistGroup = { key: string; root: ConvertRecord; children: ConvertRecord[] };
+
 export function SwfStudioApp() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [cards, setCards] = useState<Record<string, CardView>>({});
@@ -62,6 +64,9 @@ export function SwfStudioApp() {
   const [toast, setToast] = useState("");
   const [player, setPlayer] = useState<PlayerView>({ visible: false, title: "" });
   const [embed, setEmbed] = useState<EmbedInfo | null>(null);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const [openDetail, setOpenDetail] = useState<Set<string>>(() => new Set());
+  const [histOpen, setHistOpen] = useState<Set<string>>(() => new Set());
   const toastTimer = useRef<number | undefined>(undefined);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const playerWrap = useRef<HTMLDivElement | null>(null);
@@ -487,6 +492,10 @@ export function SwfStudioApp() {
   }, [closePlayer, refreshHistory, showToast]);
 
   const tree = useMemo(() => buildTree(cards), [cards]);
+  const histGroups = useMemo(() => groupHistory(history), [history]);
+  const toggleCollapse = useCallback((key: string) => setCollapsed((set) => toggleKey(set, key)), []);
+  const toggleDetail = useCallback((key: string) => setOpenDetail((set) => toggleKey(set, key)), []);
+  const toggleHist = useCallback((key: string) => setHistOpen((set) => toggleKey(set, key)), []);
 
   return (
     <div className="studio-shell">
@@ -543,9 +552,23 @@ export function SwfStudioApp() {
           </div>
 
           <div className="cards" id="cards">
-            {tree.map((node) => (
-              <SceneNode key={node.key} node={node} cards={cards} onPlay={play} onExport={exportBundle} />
-            ))}
+            {tree.length ? tree.map((node) => (
+              <SceneNode
+                key={node.key}
+                node={node}
+                cards={cards}
+                collapsed={collapsed}
+                openDetail={openDetail}
+                onToggleCollapse={toggleCollapse}
+                onToggleDetail={toggleDetail}
+                onPlay={play}
+                onExport={exportBundle}
+              />
+            )) : (
+              <p className="cards-empty">
+                Converted tours appear here. Drop a <code>.swf</code> or pick a bundled tour above.
+              </p>
+            )}
           </div>
         </main>
 
@@ -555,12 +578,14 @@ export function SwfStudioApp() {
             <button className="ghost" id="clear-hist" type="button" onClick={() => void clearAll()}>clear</button>
           </h2>
           <div className="hist" id="hist">
-            {history.length ? history.map((record) => (
-              <HistoryRow
-                key={record.id ?? `${record.scene}-${record.createdAt}`}
-                record={record}
-                onPlay={() => void playHistory(record)}
-                onDelete={() => void deleteHistoryItem(record)}
+            {histGroups.length ? histGroups.map((group) => (
+              <HistoryGroup
+                key={group.key}
+                group={group}
+                open={histOpen.has(group.key)}
+                onToggle={() => toggleHist(group.key)}
+                onPlay={(record) => void playHistory(record)}
+                onDelete={(record) => void deleteHistoryItem(record)}
               />
             )) : <div className="empty">No converts yet.</div>}
           </div>
@@ -628,11 +653,21 @@ function EmbedDialog({ info, onClose, showToast }: { info: EmbedInfo; onClose: (
 function SceneNode({
   node,
   cards,
+  depth = 0,
+  collapsed,
+  openDetail,
+  onToggleCollapse,
+  onToggleDetail,
   onPlay,
   onExport,
 }: {
   node: TreeNode;
   cards: Record<string, CardView>;
+  depth?: number;
+  collapsed: Set<string>;
+  openDetail: Set<string>;
+  onToggleCollapse: (key: string) => void;
+  onToggleDetail: (key: string) => void;
   onPlay: (scene: string, compiled: CompiledScene, name: string) => Promise<void>;
   onExport: (compiled: CompiledScene) => void;
 }) {
@@ -640,18 +675,43 @@ function SceneNode({
   if (node.reference) {
     return (
       <div className="ref-node">
-        <span>{card?.name ?? `${node.key}.swf`}</span>
+        <span>↑ {card?.name ?? `${node.key}.swf`}</span>
         <em>shown above</em>
       </div>
     );
   }
+  const hasChildren = node.children.length > 0;
+  const isCollapsed = collapsed.has(node.key);
   return (
     <div className="node">
-      {card && <SceneCard card={card} onPlay={onPlay} onExport={onExport} />}
-      {node.children.length > 0 && (
+      {card && (
+        <TreeRow
+          card={card}
+          root={depth === 0}
+          hasChildren={hasChildren}
+          collapsed={isCollapsed}
+          detail={openDetail.has(node.key)}
+          onToggleCollapse={() => onToggleCollapse(node.key)}
+          onToggleDetail={() => onToggleDetail(node.key)}
+          onPlay={onPlay}
+          onExport={onExport}
+        />
+      )}
+      {hasChildren && !isCollapsed && (
         <div className="children">
           {node.children.map((child) => (
-            <SceneNode key={`${node.key}/${child.key}`} node={child} cards={cards} onPlay={onPlay} onExport={onExport} />
+            <SceneNode
+              key={`${node.key}/${child.key}`}
+              node={child}
+              cards={cards}
+              depth={depth + 1}
+              collapsed={collapsed}
+              openDetail={openDetail}
+              onToggleCollapse={onToggleCollapse}
+              onToggleDetail={onToggleDetail}
+              onPlay={onPlay}
+              onExport={onExport}
+            />
           ))}
         </div>
       )}
@@ -659,56 +719,95 @@ function SceneNode({
   );
 }
 
-function SceneCard({
+function TreeRow({
   card,
+  root,
+  hasChildren,
+  collapsed,
+  detail,
+  onToggleCollapse,
+  onToggleDetail,
   onPlay,
   onExport,
 }: {
   card: CardView;
+  root: boolean;
+  hasChildren: boolean;
+  collapsed: boolean;
+  detail: boolean;
+  onToggleCollapse: () => void;
+  onToggleDetail: () => void;
   onPlay: (scene: string, compiled: CompiledScene, name: string) => Promise<void>;
   onExport: (compiled: CompiledScene) => void;
 }) {
-  if (card.status === "converting") {
-    return (
-      <section className="card busy">
-        <h3>{card.name}</h3>
-        <div className="meta">converting</div>
-      </section>
-    );
-  }
-  if (card.status === "error") {
-    return (
-      <section className="card">
-        <h3>{card.name}</h3>
-        <div className="meta error">convert failed: {card.error}</div>
-      </section>
-    );
-  }
-
-  const { compiled } = card;
-  const s = compiled.stats;
+  const ready = card.status === "ready" ? card : null;
+  const compiled = ready?.compiled;
+  const s = compiled?.stats;
+  const dep = ready ? depSummary(ready) : null;
   return (
-    <section className="card">
-      <h3>{card.name} <span className="dim">{compiled.width}x{compiled.height}</span></h3>
-      <div className="statgrid">
-        <Stat value={s.shapes} label="shapes" />
-        <Stat value={s.images} label="images" />
-        <Stat value={s.fonts} label="fonts" />
-        <Stat value={s.sounds} label="sounds" />
-        <Stat value={s.buttons} label="buttons" />
-        <Stat value={s.texts} label="texts" />
-        <Stat value={s.frames} label="frames" />
-        <Stat value={s.sprites} label="sprites" />
-        <Stat value={s.stopFrames} label="stops" />
+    <>
+      <div className={`trow${root ? " root" : ""}${card.status === "converting" ? " busy" : ""}`}>
+        <button
+          className="chev"
+          type="button"
+          aria-label={collapsed ? "Expand linked SWFs" : "Collapse linked SWFs"}
+          aria-expanded={!collapsed}
+          disabled={!hasChildren}
+          onClick={onToggleCollapse}
+        >
+          {hasChildren ? (collapsed ? "▸" : "▾") : ""}
+        </button>
+        <button className="rowmain" type="button" aria-expanded={detail} onClick={onToggleDetail}>
+          <span className="name">{card.name}</span>
+          {compiled && <span className="dim">{compiled.width}×{compiled.height}</span>}
+          {ready && s ? (
+            <span className="sum">
+              {(s.assetBytes / 1024 / 1024).toFixed(2)} MB · {s.frames} fr
+              {dep && <> · <span className={`dep-mini ${dep.cls}`}>{dep.text}</span></>}
+            </span>
+          ) : card.status === "converting" ? (
+            <span className="sum">converting…</span>
+          ) : (
+            <span className="sum err">failed: {card.status === "error" ? card.error : ""}</span>
+          )}
+        </button>
+        {ready && compiled && (
+          <span className="rowacts">
+            <button className="play" type="button" onClick={() => void onPlay(compiled.scene, compiled, card.name)}>Play</button>
+            <button className="export" type="button" onClick={() => onExport(compiled)}>Export</button>
+          </span>
+        )}
       </div>
-      <div className="meta">{(s.assetBytes / 1024 / 1024).toFixed(2)} MB assets - compiled in {s.ms} ms</div>
-      {compiled.dependencies.length > 0 && <DependencyLine card={card} />}
-      <div className="card-actions">
-        <button className="play" type="button" onClick={() => void onPlay(compiled.scene, compiled, card.name)}>Play</button>
-        <button className="export" type="button" onClick={() => onExport(compiled)}>Export &amp; embed</button>
-      </div>
-    </section>
+      {detail && ready && compiled && s && (
+        <div className="trow-detail">
+          <div className="statgrid">
+            <Stat value={s.shapes} label="shapes" />
+            <Stat value={s.images} label="images" />
+            <Stat value={s.fonts} label="fonts" />
+            <Stat value={s.sounds} label="sounds" />
+            <Stat value={s.buttons} label="buttons" />
+            <Stat value={s.texts} label="texts" />
+            <Stat value={s.frames} label="frames" />
+            <Stat value={s.sprites} label="sprites" />
+            <Stat value={s.stopFrames} label="stops" />
+          </div>
+          <div className="meta">{(s.assetBytes / 1024 / 1024).toFixed(2)} MB assets · compiled in {s.ms} ms</div>
+          {compiled.dependencies.length > 0 && <DependencyLine card={ready} />}
+        </div>
+      )}
+    </>
   );
+}
+
+function depSummary(card: Extract<CardView, { status: "ready" }>): { text: string; cls: string } | null {
+  const deps = card.compiled.dependencies;
+  if (!deps.length) return null;
+  const statuses = deps.map((dep) => card.depState[dep.swf] ?? "pending");
+  const settled = statuses.filter((status) => status === "done" || status === "missing").length;
+  if (settled < deps.length) return { text: `linking ${settled}/${deps.length}`, cls: "work" };
+  const missing = statuses.filter((status) => status === "missing").length;
+  if (missing) return { text: `${missing} missing`, cls: "warn" };
+  return { text: `links ${deps.length}`, cls: "ok" };
 }
 
 function DependencyLine({ card }: { card: Extract<CardView, { status: "ready" }> }) {
@@ -746,23 +845,83 @@ function Stat({ value, label }: { value: number; label: string }) {
   return <div><b>{value}</b><span>{label}</span></div>;
 }
 
-function HistoryRow({
+function HistoryGroup({
+  group,
+  open,
+  onToggle,
+  onPlay,
+  onDelete,
+}: {
+  group: HistGroup;
+  open: boolean;
+  onToggle: () => void;
+  onPlay: (record: ConvertRecord) => void;
+  onDelete: (record: ConvertRecord) => void;
+}) {
+  const { root, children } = group;
+  return (
+    <div className="hgroup">
+      <HistRow
+        record={root}
+        isRoot
+        childCount={children.length}
+        open={open}
+        onToggle={children.length ? onToggle : undefined}
+        onPlay={() => onPlay(root)}
+        onDelete={() => onDelete(root)}
+      />
+      {open && children.map((child) => (
+        <HistRow
+          key={child.id ?? `${child.scene}-${child.createdAt}`}
+          record={child}
+          onPlay={() => onPlay(child)}
+          onDelete={() => onDelete(child)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function HistRow({
   record,
+  isRoot = false,
+  childCount = 0,
+  open = false,
+  onToggle,
   onPlay,
   onDelete,
 }: {
   record: ConvertRecord;
+  isRoot?: boolean;
+  childCount?: number;
+  open?: boolean;
+  onToggle?: () => void;
   onPlay: () => void;
   onDelete: () => void;
 }) {
   const s = record.stats;
   const sourceType = record.sourceType === "pack" ? "pack" : "swf";
+  const sub = isRoot
+    ? (childCount ? `+${childCount} linked` : "standalone")
+    : `${s.shapes}sh ${s.images}img ${s.frames}fr`;
   return (
-    <div className="hrow">
+    <div className={`hrow${isRoot ? " root" : " child"}`}>
+      {isRoot && (
+        <button
+          className="chev"
+          type="button"
+          aria-label={open ? "Collapse linked SWFs" : "Expand linked SWFs"}
+          aria-expanded={open}
+          disabled={!onToggle}
+          onClick={onToggle}
+        >
+          {childCount ? (open ? "▾" : "▸") : ""}
+        </button>
+      )}
       <img src={record.thumb ?? transparentPixel()} alt="" />
       <div className="info">
         <b><span>{record.name}</span><em>{sourceType}</em></b>
-        <span>{record.width}x{record.height} - {s.shapes}sh {s.images}img {s.frames}fr - {new Date(record.createdAt).toLocaleString()}</span>
+        <span>{record.width}×{record.height} · {sub} · {new Date(record.createdAt).toLocaleDateString()}</span>
       </div>
       <div className="acts">
         <button type="button" onClick={onPlay} aria-label={`Play ${record.name}`}>Play</button>
@@ -808,6 +967,70 @@ function buildTree(cards: Record<string, CardView>): TreeNode[] {
   const out = roots.map(render);
   for (const key of Object.keys(cards)) if (!placed.has(key)) out.push(render(key));
   return out;
+}
+
+function toggleKey(set: Set<string>, key: string): Set<string> {
+  const next = new Set(set);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  return next;
+}
+
+/** Group saved converts under their root tour: a record nothing else depends on becomes a
+ *  header, its transitively-linked SWFs nest beneath it. Keeps only the latest convert per
+ *  scene so re-runs collapse instead of stacking. Mirrors buildTree's root detection. */
+function groupHistory(history: ConvertRecord[]): HistGroup[] {
+  const keyOf = (record: ConvertRecord) => record.scene ?? canonical(record.name);
+  const depsOf = (record: ConvertRecord) =>
+    (record.compiled?.dependencies ?? []).map((dep) => canonical(dep.swf));
+
+  // History arrives newest-first; keep the most recent convert per scene.
+  const latest = new Map<string, ConvertRecord>();
+  for (const record of history) {
+    const key = keyOf(record);
+    if (!latest.has(key)) latest.set(key, record);
+  }
+  const records = [...latest.values()];
+
+  const childKeys = new Set<string>();
+  for (const record of records) {
+    for (const dep of depsOf(record)) if (latest.has(dep)) childKeys.add(dep);
+  }
+
+  const collectChildren = (root: ConvertRecord): ConvertRecord[] => {
+    const out: ConvertRecord[] = [];
+    const seen = new Set<string>([keyOf(root)]);
+    const stack = [...depsOf(root)];
+    while (stack.length) {
+      const key = stack.pop();
+      if (key === undefined || seen.has(key)) continue;
+      seen.add(key);
+      const rec = latest.get(key);
+      if (!rec) continue;
+      out.push(rec);
+      stack.push(...depsOf(rec));
+    }
+    return out;
+  };
+
+  const groups: HistGroup[] = [];
+  const placed = new Set<string>();
+  for (const record of records) {
+    const key = keyOf(record);
+    if (childKeys.has(key)) continue; // depended upon by another tour — not a root
+    const children = collectChildren(record);
+    placed.add(key);
+    for (const child of children) placed.add(keyOf(child));
+    groups.push({ key, root: record, children });
+  }
+  // Records unreachable from any root (dependency cycle, or no cached deps) stand alone.
+  for (const record of records) {
+    const key = keyOf(record);
+    if (placed.has(key)) continue;
+    placed.add(key);
+    groups.push({ key, root: record, children: [] });
+  }
+  return groups;
 }
 
 function storeCompiled(compiled: CompiledScene): StoredCompiledScene {
