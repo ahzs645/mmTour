@@ -98,10 +98,19 @@ let packNetworkFallback = true;
 // Full URL of the single-file archive (assetSource === "archive").
 let archiveUrl = "";
 let archiveIndex: { blocksStart: number; scenes: Record<string, { offset: number; length: number }> } | null = null;
+// loadVariables() files (`nav.txt`, …) baked into the archive index, resolved as
+// Blob URLs by assetUrl so the archive stays a single self-contained file.
+const archiveVars = new Map<string, { content: string; url?: string }>();
+
+function clearArchiveVars() {
+  for (const v of archiveVars.values()) if (v.url) URL.revokeObjectURL(v.url);
+  archiveVars.clear();
+}
 
 export function setArchiveUrl(url: string) {
   archiveUrl = url;
   archiveIndex = null;
+  clearArchiveVars();
 }
 
 // Base URL under which the converted `generated/` (and `generated-packed/`)
@@ -148,6 +157,7 @@ function clearSceneData() {
   }
   sceneData.clear();
   archiveIndex = null;
+  clearArchiveVars();
 }
 
 /** Inflate a byte slice that may be gzip (raw bytes) or already-plain (a server
@@ -194,7 +204,9 @@ async function loadArchiveIndex() {
   const indexLen = new DataView(head.buffer, head.byteOffset, head.byteLength).getUint32(0, true);
   const parsed = JSON.parse(await inflate(head.slice(4, 4 + indexLen))) as {
     scenes: Record<string, { offset: number; length: number }>;
+    vars?: Record<string, string>;
   };
+  for (const [name, content] of Object.entries(parsed.vars ?? {})) archiveVars.set(name, { content });
   archiveIndex = { blocksStart: 4 + indexLen, scenes: parsed.scenes };
   return archiveIndex;
 }
@@ -354,6 +366,12 @@ export function assetUrl(src: string): string {
           return m.url;
         }
       }
+    }
+    // loadVariables() files baked into the archive index (nav.txt, …).
+    const v = archiveVars.get(normalized);
+    if (v) {
+      if (!v.url) v.url = URL.createObjectURL(new Blob([v.content], { type: "text/plain" }));
+      return v.url;
     }
     return `${assetsBaseUrl}/${normalized}`;
   }

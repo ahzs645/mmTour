@@ -59,6 +59,19 @@ const U32 = (n) => {
   return b;
 };
 
+// loadVariables() reads loose `public/<name>.txt` files (`&key=value&…`). Bake them
+// into the (gzipped) index so the archive is one self-contained file — otherwise an
+// embed deployment would 404 on nav.txt/intro.txt and lose its dynamic headings.
+function collectLoadVariableFiles() {
+  const vars = {};
+  const publicDir = join(root, "public");
+  for (const name of readdirSync(publicDir)) {
+    if (!name.endsWith(".txt")) continue;
+    vars[name] = readFileSync(join(publicDir, name), "utf8");
+  }
+  return vars;
+}
+
 const blocks = [];
 for (const scene of readdirSync(genDir)) {
   const timelinePath = join(genDir, scene, "timeline.json");
@@ -95,7 +108,7 @@ for (const scene of readdirSync(genDir)) {
 }
 
 // Index: scene -> { offset (relative to blocks region), length }.
-const index = { format: "mmtour-archive", version: 1, scenes: {} };
+const index = { format: "mmtour-archive", version: 1, scenes: {}, vars: collectLoadVariableFiles() };
 let rel = 0;
 for (const b of blocks) {
   index.scenes[b.scene] = { offset: rel, length: b.block.length };

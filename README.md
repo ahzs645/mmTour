@@ -32,6 +32,42 @@ If that port is already in use, the current verified dev server is on:
 http://127.0.0.1:5174/
 ```
 
+## Embedding the tour in another web app
+
+The player can run the whole tour from **one self-contained file** — a ~25 MB
+`xp-tour.pack` archive (all eight scenes, media, and `loadVariables` text baked in),
+read on demand via HTTP Range requests.
+
+Generate the pack (needs Java for the FFDec extraction step), then assemble a drop-in
+bundle under `dist-embed/`:
+
+```sh
+npm run pack:tour     # -> public/generated-archive/xp-tour.pack
+npm run build:embed   # -> dist-embed/{mmtour-player.js, .css, xp-tour.pack, embed.html, README.md}
+npm run verify:embed  # headless check that dist-embed/ plays the tour
+```
+
+`dist-embed/mmtour-player.js` is an ESM bundle with gsap included (no peer dependency).
+Drop the folder anywhere that serves over HTTP and:
+
+```html
+<link rel="stylesheet" href="/path/mmtour-player.css" />
+<div id="tour" style="width:640px;height:480px;position:relative;overflow:hidden"></div>
+<script type="module">
+  import { createTourPlayer } from "/path/mmtour-player.js";
+  const tour = await createTourPlayer(document.getElementById("tour"), {
+    assetSource: "archive",
+    archiveUrl: "/path/xp-tour.pack",
+    autoplay: true,
+  });
+  // tour.play() / pause() / toggle() / restart() / seek(frame) / destroy()
+</script>
+```
+
+Apps that use a bundler can instead consume the npm library build (`npm run build:lib`,
+gsap left external): `import { createTourPlayer } from "windows-xp-tour-gsap"`, then host
+`xp-tour.pack` and point `archiveUrl` at it. See `dist-embed/README.md` for details.
+
 ## Current conversion approach
 
 The current implementation has two conversion modes:
