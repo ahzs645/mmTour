@@ -19,6 +19,7 @@
     "pack:tour": "npm run extract && npm run build:timelines && npm run build:control-flow && npm run optimize:tree-player-generated && npm run archive:generated",
     "build:embed": "node scripts/build-embed.mjs",
     "verify:embed": "node scripts/verify-embed.mjs",
+    "verify:export-embed": "node scripts/verify-export-embed.mjs",
     "convert": "npm run extract && npm run build:flasm && npm run build:timelines && npm run build:control-flow && npm run build:secondary-cli && npm run optimize:generated",
     "convert:player": "npm run extract && npm run build:flasm && npm run build:timelines && npm run build:control-flow && npm run build:secondary-cli && npm run optimize:player-generated",
     "convert:tree-player": "npm run extract && npm run build:flasm && npm run build:timelines && npm run build:control-flow && npm run build:secondary-cli && npm run optimize:tree-player-generated && npm run pack:generated",

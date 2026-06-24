@@ -595,3 +595,78 @@ aside h2 {
     grid-template-columns: 1fr;
   }
 }
+
+/* Embed snippet dialog (shown after Export & embed). */
+.embed-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(8, 12, 20, 0.55);
+  backdrop-filter: blur(2px);
+}
+.embed-dialog {
+  width: min(720px, 100%);
+  max-height: 86vh;
+  overflow: auto;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 20px 22px 22px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+}
+.embed-dialog header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.embed-dialog h3 { margin: 0; font-size: 1.15rem; }
+.embed-dialog header .ghost {
+  width: 32px;
+  height: 32px;
+  font-size: 1.3rem;
+  line-height: 1;
+  border-radius: 8px;
+}
+.embed-dialog p { color: var(--ink); margin: 6px 0 10px; }
+.embed-dialog p .warn { color: var(--warn); }
+.embed-dialog ol { margin: 0 0 12px; padding-left: 20px; color: var(--muted); }
+.embed-dialog ol li { margin: 4px 0; }
+.embed-dialog code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: var(--panel-2);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+.embed-snippet {
+  margin: 0 0 14px;
+  padding: 14px 16px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.embed-snippet code { background: none; padding: 0; }
+.embed-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.embed-actions button {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: 9px;
+  padding: 9px 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.embed-actions .dim { color: var(--muted); font-size: 0.85rem; }
