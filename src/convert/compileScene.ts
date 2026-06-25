@@ -289,15 +289,6 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
     .filter((record) => record.actions.length);
   const frameActions: FrameActionRecord[] = [...extractedFrameActions, ...deferredStartupActions];
 
-  // Symbol linkage (export name → id). Feed the per-asset linkageNames the
-  // player's attachMovie() reads, so studio-converted AS2 apps can attach their
-  // own library clips by name — and keep the name→id map for the runtime VM host.
-  const linkage = exportLinkage(movie);
-  for (const [name, id] of Object.entries(linkage)) {
-    const asset = (assets as Record<string, { linkageNames?: string[] }>)[String(id)];
-    if (asset) (asset.linkageNames ??= []).push(name);
-  }
-
   const fr = movie.header.frameSize;
   const width = Math.round((fr.xMax - fr.xMin) / 20);
   const height = Math.round((fr.yMax - fr.yMin) / 20);
@@ -317,6 +308,16 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
     globalDefaults,
     avm1Coverage: buildAvm1Coverage(movie),
   }, assets, labels);
+
+  // Symbol linkage (export name → id), computed once `assets` is fully built.
+  // Feed the per-asset linkageNames the player's attachMovie() reads, so
+  // studio-converted AS2 apps can attach their own library clips by name — and
+  // keep the name→id map for the runtime VM host.
+  const linkage = exportLinkage(movie);
+  for (const [name, id] of Object.entries(linkage)) {
+    const asset = (assets as Record<string, { linkageNames?: string[] }>)[String(id)];
+    if (asset) (asset.linkageNames ??= []).push(name);
+  }
 
   const timeline = {
     scene,
