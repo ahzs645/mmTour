@@ -120,8 +120,8 @@ export class Avm1Vm {
         case "Greater": { const b = stack.pop(); const aa = stack.pop(); stack.push(aa > b); break; }
         case "StringEquals": { const b = stack.pop(); const aa = stack.pop(); stack.push(String(aa) === String(b)); break; }
         case "StringLess": { const b = stack.pop(); const aa = stack.pop(); stack.push(String(aa) < String(b)); break; }
-        case "Add": case "Add2": { const b = stack.pop(); const aa = stack.pop(); stack.push(typeof aa === "string" || typeof b === "string" ? String(aa) + String(b) : Number(aa) + Number(b)); break; }
-        case "StringAdd": { const b = stack.pop(); const aa = stack.pop(); stack.push(String(aa) + String(b)); break; }
+        case "Add": case "Add2": { const b = stack.pop(); const aa = stack.pop(); stack.push(typeof aa === "string" || typeof b === "string" ? avmStr(aa) + avmStr(b) : Number(aa) + Number(b)); break; }
+        case "StringAdd": { const b = stack.pop(); const aa = stack.pop(); stack.push(avmStr(aa) + avmStr(b)); break; }
         case "Subtract": { const b = stack.pop(); const aa = stack.pop(); stack.push(Number(aa) - Number(b)); break; }
         case "Multiply": { const b = stack.pop(); const aa = stack.pop(); stack.push(Number(aa) * Number(b)); break; }
         case "Divide": { const b = stack.pop(); const aa = stack.pop(); stack.push(Number(aa) / Number(b)); break; }
@@ -130,7 +130,7 @@ export class Avm1Vm {
         case "Decrement": stack.push(Number(stack.pop()) - 1); break;
         case "ToInteger": stack.push(Number(stack.pop()) | 0); break;
         case "ToNumber": stack.push(Number(stack.pop())); break;
-        case "ToString": stack.push(String(stack.pop())); break;
+        case "ToString": stack.push(avmStr(stack.pop())); break;
         case "TypeOf": stack.push(typeofAvm(stack.pop())); break;
         case "Trace": stack.pop(); break;
         case "GetProperty": { const index = Number(stack.pop()) | 0; const obj = stack.pop(); stack.push(this.host.getProperty?.(obj, index)); break; }
@@ -195,6 +195,13 @@ export class Avm1Vm {
 interface Frame { thisObj: Avm1Value; registers: Avm1Value[]; locals: Record<string, Avm1Value>; }
 
 export function isFn(v: Avm1Value): v is Avm1Fn { return !!v && typeof v === "object" && (v as any).__avm1fn === true; }
+/** Safe AS2 string coercion: null-prototype objects (our class instances) have no
+ *  toString, so `String(obj)` throws "Cannot convert object to primitive value". */
+function avmStr(v: Avm1Value): string {
+  if (v === undefined || v === null) return "";
+  if (typeof v === "object") { try { return String(v); } catch { return "[object Object]"; } }
+  return String(v);
+}
 function truthy(v: Avm1Value): boolean { return !(v === undefined || v === null || v === false || v === 0 || v === "" || (typeof v === "number" && isNaN(v))); }
 function typeofAvm(v: Avm1Value): string { return v === undefined ? "undefined" : v === null ? "null" : isFn(v) || typeof v === "function" ? "function" : Array.isArray(v) ? "object" : typeof v; }
 function popArgs(stack: Avm1Value[]): Avm1Value[] { const n = Number(stack.pop()) | 0; const args: Avm1Value[] = []; for (let i = 0; i < n; i++) args.push(stack.pop()); return args; }

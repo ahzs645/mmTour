@@ -28,6 +28,9 @@ export interface ExtractedControl {
   /** Raw bytecode of each root frame's DoAction (e.g. frame_3 `App.main(this)`),
    *  for the VM to run the app entry point. */
   frameBytecode: { frame: number; ops: ReturnType<typeof parseProgram> }[];
+  /** Linkage name → dotted class path from `Object.registerClass(...)`, so the runtime
+   *  binds placed clips to their AS2 class from the (fully-built) class tree. */
+  registeredClasses: Record<string, string>;
 }
 
 /** Walk a frame-ordered tag list, returning the 0-based frame index of every
@@ -354,7 +357,75 @@ export function extractControl(movie: any): ExtractedControl {
     buttonActions: extractButtonActions(movie),
     initActions,
     frameBytecode: root.frameBytecode,
+    registeredClasses: extractRegisteredClasses(initActions),
   };
+}
+
+/** Symbolically scan the #initclip programs for `Object.registerClass(linkage, a.b.Class)`,
+ *  recording linkage → dotted class path. The runtime captures this at build time because at
+ *  *run* time the class arg can be read before its namespace finishes building (init order),
+ *  whereas the path is always present in the bytecode. */
+function extractRegisteredClasses(programs: ReturnType<typeof parseProgram>[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  type SV = { kind: "str"; value: string } | { kind: "num"; value: number } | { kind: "path"; path: string } | { kind: "other" };
+  const stripGlobal = (p: string) => p.replace(/^(_global|_root|_level0)\./, "");
+  for (const program of programs) {
+    const stack: SV[] = [];
+    for (const op of program) {
+      switch (op.op) {
+        case "Push":
+          for (const v of op.values ?? []) {
+            if (v?.type === "register") stack.push({ kind: "other" });
+            else if (typeof v?.value === "string") stack.push({ kind: "str", value: v.value });
+            else if (typeof v?.value === "number") stack.push({ kind: "num", value: v.value });
+            else stack.push({ kind: "other" });
+          }
+          break;
+        case "GetVariable": {
+          const n = stack.pop();
+          stack.push(n?.kind === "str" ? { kind: "path", path: n.value } : { kind: "other" });
+          break;
+        }
+        case "GetMember": {
+          const key = stack.pop();
+          const obj = stack.pop();
+          if (obj?.kind === "path" && key?.kind === "str") stack.push({ kind: "path", path: `${obj.path}.${key.value}` });
+          else stack.push({ kind: "other" });
+          break;
+        }
+        case "CallMethod": {
+          const name = stack.pop();
+          stack.pop(); // object
+          const n = popNumber(stack);
+          const args: SV[] = [];
+          for (let i = 0; i < n; i++) args.push(stack.pop() ?? { kind: "other" });
+          if (name?.kind === "str" && name.value === "registerClass" && args[0]?.kind === "str" && args[1]?.kind === "path") {
+            out[args[0].value] = stripGlobal(args[1].path);
+          }
+          stack.push({ kind: "other" });
+          break;
+        }
+        case "CallFunction": { stack.pop(); const n = popNumber(stack); for (let i = 0; i < n; i++) stack.pop(); stack.push({ kind: "other" }); break; }
+        case "DefineFunction": case "DefineFunction2": if (!op.name) stack.push({ kind: "other" }); break;
+        case "Pop": stack.pop(); break;
+        case "InitObject": case "InitArray": { const n = popNumber(stack); for (let i = 0; i < n * (op.op === "InitObject" ? 2 : 1); i++) stack.pop(); stack.push({ kind: "other" }); break; }
+        case "SetMember": stack.pop(); stack.pop(); stack.pop(); break;
+        case "SetVariable": stack.pop(); stack.pop(); break;
+        case "NewObject": case "NewMethod": { stack.pop(); if (op.op === "NewMethod") stack.pop(); const n = popNumber(stack); for (let i = 0; i < n; i++) stack.pop(); stack.push({ kind: "other" }); break; }
+        default:
+          // best effort: most ops we don't model just leave the stack roughly balanced
+          break;
+      }
+    }
+  }
+  return out;
+}
+
+function popNumber(stack: Array<{ kind: string; value?: unknown }>): number {
+  const v = stack.pop();
+  if (v && v.kind === "num") return Number(v.value) || 0;
+  if (v && v.kind === "str") return Number(v.value) || 0;
+  return 0;
 }
 
 function indexDefinedFunctions(defs: DefinedFunction[]): Record<string, DefinedFunction> {

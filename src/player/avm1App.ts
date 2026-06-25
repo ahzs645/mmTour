@@ -80,11 +80,12 @@ const isClip = (v: any): v is AppClip => !!v && v.__appClip === true;
 const isText = (v: any): v is AppText => !!v && v.__appText === true;
 
 export function runDataDrivenApp(
-  control: { initActions?: Avm1Op[][]; frameBytecode?: { frame: number; ops: Avm1Op[] }[] },
+  control: { initActions?: Avm1Op[][]; frameBytecode?: { frame: number; ops: Avm1Op[] }[]; registeredClasses?: Record<string, string> },
   bridge: PlayerBridge,
 ): boolean {
   const initActions = control.initActions ?? [];
   const frameBytecode = control.frameBytecode ?? [];
+  const registeredClasses = control.registeredClasses ?? {};
   if (!initActions.length || !frameBytecode.length) return false;
 
   const globals: any = Object.create(null);
@@ -104,11 +105,18 @@ export function runDataDrivenApp(
   const resolveAccessor = (cls: any, key: string): any => { let p = cls?.prototype; let g = 0; while (p && g++ < 40) { if (p.__accessors && key in p.__accessors) return p.__accessors[key]; p = p.__proto__; } return undefined; };
   const normLinkage = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
   const registryNorm = new Map<string, any>();
+  const resolvePath = (path: string): any => { let o: any = globals; for (const part of path.split(".")) { if (o == null) return undefined; o = o[part]; } return isFn(o) ? o : undefined; };
   const classFor = (clip: AppClip): any => {
     let c = clipClass.get(clip);
     if (!c) {
       const lk = bridge.linkageOf(clip);
-      if (lk) c = registry[lk] ?? registry[lk.trim()] ?? registryNorm.get(normLinkage(lk));
+      if (lk) {
+        // Prefer the build-time linkage→class-path resolved against the now-complete
+        // class tree (registerClass can capture undefined during init ordering); fall
+        // back to whatever the runtime registry captured.
+        const path = registeredClasses[lk] ?? registeredClasses[lk.trim()];
+        c = (path && resolvePath(path)) || registry[lk] || registry[lk.trim()] || registryNorm.get(normLinkage(lk));
+      }
       if (c) clipClass.set(clip, c);
     }
     return c;
@@ -241,7 +249,7 @@ export function runDataDrivenApp(
     setProperty() { /* numbered props unused by these apps */ },
   };
 
-  const vm = new Avm1Vm(host, 30_000_000);
+  const vm = new Avm1Vm(host, 60_000_000);
   vmRef.vm = vm;
   globals.Object = { __obj: true };
   globals._global = globals;

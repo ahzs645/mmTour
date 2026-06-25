@@ -112,15 +112,21 @@ name** (`"topNavButton"`, `"subsectionClip"`, …). `Model.init()` then loads th
   EventDispatcher events fire, and every View `init` is invoked with the correct content
   (`topNav.init([7 section DOs])`, `news.init(newsDO)`, `ticker.init([17 items])`, …).
 
-  **Remaining blocker (one bug):** placed View clips don't bind to their component classes
-  because AS2 `Object.registerClass("top nav", com…components.TopNav)` captures the class
-  *before* its namespace finishes building (an `#initclip` ordering subtlety) — so
-  `registry["top nav"]` is empty even though `globals.com.buynlarge.components.TopNav` is a
-  real class at the end. The View `init`s therefore no-op and no dynamic text is drawn yet.
-  Fix path: emit `registeredClasses` (linkage → class path) at build time (the node build
-  already does this) and resolve the class from the *completed* class tree at bind time,
-  sidestepping the ordering entirely. Then `TopNav.init` runs → `attachMovie` + `set label`
-  → text renders. Verify side-by-side against Ruffle; iterate. No scene-specific branches.
+  **Class binding solved.** Placed View clips now bind to their component classes:
+  `extractRegisteredClasses` (build) symbolically scans the `#initclip` bytecode for
+  `Object.registerClass("linkage", a.b.Class)` and emits `control.registeredClasses`
+  (linkage → class path); at runtime the host resolves that path against the *completed*
+  class tree, sidestepping the init-order issue where `registerClass` captured the class
+  before its namespace finished building. The VM also got a safe string coercion (AS2
+  concatenation on our null-prototype instances no longer throws). With these, the whole
+  app **executes to completion** — `TopNav.init`/`News.init`/etc. run their real bodies
+  (`attachMovie` + AS2 `set label`/`set title` setters → text fields).
+
+  **Remaining (rendering-detail bugs):** the dynamic text isn't visually correct yet — some
+  fields get wrong values (e.g. a static label overwritten with `undefined`) and the
+  `attachMovie`-created buttons' `label_txt` overrides aren't surfacing in the flatten/
+  render path. These are execution/render-plumbing bugs to chase next (value correctness in
+  the View loops; rendering text overrides on runtime-attached clips), not architectural.
 
 ## Non-negotiable
 

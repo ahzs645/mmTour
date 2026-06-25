@@ -309,6 +309,7 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
     avm1Coverage: buildAvm1Coverage(movie),
     initActions: control.initActions,
     frameBytecode: control.frameBytecode,
+    registeredClasses: control.registeredClasses,
   }, assets, labels);
 
   // Symbol linkage (export name → id), computed once `assets` is fully built.
