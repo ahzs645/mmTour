@@ -76,6 +76,7 @@ const isXmlNode = (v: any): v is XmlNode => !!v && v.__xmlNode === true;
 function xmlDescendants(ctx: any, name: string): XmlNode[] { const out: XmlNode[] = []; const w = (n: any) => { for (const c of n?.childNodes || []) { if (c.nodeName === name) out.push(c); w(c); } }; w(ctx); return out; }
 function xmlSelect(ctx: any, query: string): XmlNode[] { return xmlDescendants(ctx, String(query).replace(/^\/+/, "")); }
 
+const avmCoerce = (v: any): string => { if (v == null) return ""; if (typeof v === "object") { try { return String(v); } catch { return ""; } } return String(v); };
 const isClip = (v: any): v is AppClip => !!v && v.__appClip === true;
 const isText = (v: any): v is AppText => !!v && v.__appText === true;
 
@@ -159,7 +160,7 @@ export function runDataDrivenApp(
     setMember(obj, key, value) {
       if (obj == null) return;
       if (isFn(obj)) { (obj as any)[key] = value; return; }
-      if (isText(obj)) { if (key === "text" || key === "htmlText") { bridge.setText(obj, String(value), key === "htmlText"); return; } (obj as any)[key] = value; return; }
+      if (isText(obj)) { if (key === "text" || key === "htmlText") { bridge.setText(obj, avmCoerce(value), key === "htmlText"); return; } (obj as any)[key] = value; return; }
       if (isClip(obj)) {
         const cls = classFor(obj);
         const acc = cls ? resolveAccessor(cls, key as string) : undefined;
