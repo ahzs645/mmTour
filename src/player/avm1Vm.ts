@@ -35,8 +35,11 @@ export interface Avm1Host {
   getMember(obj: Avm1Value, key: string): Avm1Value;
   /** Write a member (host may special-case clip properties, text fields, setters). */
   setMember(obj: Avm1Value, key: string, value: Avm1Value): void;
-  /** `new className(args)` — construct an instance (host owns the class registry). */
+  /** `new className(args)` — construct by name (host owns the class registry / builtins). */
   construct(className: string, args: Avm1Value[]): Avm1Value;
+  /** `new ctor(args)` where the constructor is already a resolved function value
+   *  (AS2 `new a.b.C()` compiles to NewMethod). Host links the prototype + runs it. */
+  instantiate(ctor: Avm1Value, args: Avm1Value[]): Avm1Value;
   /** Call a free function by name (parseInt, Array, user globals…). */
   callNamed(name: string, args: Avm1Value[], thisObj: Avm1Value): Avm1Value;
   /** Call `obj[key](args)` for host-native methods (push, XPath, attachMovie…). */
@@ -76,6 +79,9 @@ export class Avm1Vm {
       if (p.register) registers[p.register] = args[i];
       else locals[p.name] = args[i];
     }
+    // Expose the AS2 `arguments` object (array + `.callee`) for closures that
+    // forward calls (e.g. mx.utils.Delegate's `func.apply(target, arguments)`).
+    if (!("arguments" in locals)) { try { (args as any).callee = fn; } catch { /* frozen */ } locals.arguments = args; }
     return this.exec(fn.body, { thisObj, registers, locals });
   }
 
@@ -166,6 +172,14 @@ export class Avm1Vm {
     return this.host.callNamed(name, args, frame.thisObj);
   }
   private callMethod(obj: Avm1Value, key: string | undefined, args: Avm1Value[]): Avm1Value {
+    // AS2 Function.apply / Function.call — universal, so handle in the core.
+    if (isFn(obj) && (key === "apply" || key === "call")) {
+      const thisArg = args[0];
+      const callArgs = key === "apply"
+        ? (Array.isArray(args[1]) ? args[1] : args[1] != null ? Array.from(args[1] as ArrayLike<Avm1Value>) : [])
+        : args.slice(1);
+      return this.callFunction(obj, callArgs, thisArg);
+    }
     if (obj != null && key !== undefined) {
       const m = this.host.getMember(obj, key);
       if (isFn(m)) return this.callFunction(m, args, obj);
@@ -174,8 +188,7 @@ export class Avm1Vm {
   }
   private newMethod(obj: Avm1Value, key: Avm1Value, args: Avm1Value[]): Avm1Value {
     const ctor = key === undefined || key === null || key === "" ? obj : this.host.getMember(obj, String(key));
-    if (isFn(ctor)) { const inst: any = {}; this.callFunction(ctor, args, inst); return inst; }
-    return {};
+    return this.host.instantiate(ctor, args);
   }
 }
 

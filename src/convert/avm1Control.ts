@@ -21,6 +21,13 @@ export interface ExtractedControl {
   spriteActions: Array<{ spriteId: number; frame: number; actions: ControlAction[] }>;
   definedFunctions: Record<string, DefinedFunction>;
   buttonActions: Record<string, ButtonActionRecord>;
+  /** Raw bytecode of each `#initclip` (DoInitAction) program — the AS2 class
+   *  registrations that build the prototype chain + Object.registerClass. The VM
+   *  runs these to bootstrap the class system for data-driven apps. */
+  initActions: ReturnType<typeof parseProgram>[];
+  /** Raw bytecode of each root frame's DoAction (e.g. frame_3 `App.main(this)`),
+   *  for the VM to run the app entry point. */
+  frameBytecode: { frame: number; ops: ReturnType<typeof parseProgram> }[];
 }
 
 /** Walk a frame-ordered tag list, returning the 0-based frame index of every
@@ -34,15 +41,19 @@ function scanFrames(
   gotos: { frame: number; target: number | string; play: boolean }[];
   frameActions: Array<{ frame: number; actions: ControlAction[] }>;
   definedFunctions: DefinedFunction[];
+  frameBytecode: { frame: number; ops: ReturnType<typeof parseProgram> }[];
 } {
   const stops: number[] = [];
   const gotos: { frame: number; target: number | string; play: boolean }[] = [];
   const frameActions: Array<{ frame: number; actions: ControlAction[] }> = [];
   const definedFunctions: DefinedFunction[] = [];
+  const frameBytecode: { frame: number; ops: ReturnType<typeof parseProgram> }[] = [];
   let frame = 0;
   for (const tag of tags) {
     if (tag.type === swf.TagType.DoAction) {
-      const summary = summarizeProgram(safeParse(tag.actions), { scope, spriteId });
+      const program = safeParse(tag.actions);
+      if (scope === "root" && program.length) frameBytecode.push({ frame, ops: program });
+      const summary = summarizeProgram(program, { scope, spriteId });
       definedFunctions.push(...summary.definedFunctions);
       const actions = summary.actions.map((action) => ({ ...action }));
       if (actions.length) frameActions.push({ frame, actions });
@@ -59,7 +70,7 @@ function scanFrames(
       frame += 1;
     }
   }
-  return { stops, gotos, frameActions, definedFunctions };
+  return { stops, gotos, frameActions, definedFunctions, frameBytecode };
 }
 
 function safeDisassemble(actions: Uint8Array): any[] {
@@ -318,8 +329,11 @@ export function extractControl(movie: any): ExtractedControl {
   const spriteStopFrames: Record<string, number[]> = {};
   const spriteActions: Array<{ spriteId: number; frame: number; actions: ControlAction[] }> = [];
   const definedFunctions: DefinedFunction[] = [...root.definedFunctions];
+  const initActions: ReturnType<typeof parseProgram>[] = [];
   for (const tag of movie.tags) {
     if (tag.type === swf.TagType.DoInitAction) {
+      const program = safeParse(tag.actions);
+      if (program.length) initActions.push(program);
       definedFunctions.push(...collectFunctionMetadata(tag.actions, { scope: "sprite", spriteId: tag.spriteId }));
       continue;
     }
@@ -338,6 +352,8 @@ export function extractControl(movie: any): ExtractedControl {
     spriteActions,
     definedFunctions: indexDefinedFunctions(definedFunctions),
     buttonActions: extractButtonActions(movie),
+    initActions,
+    frameBytecode: root.frameBytecode,
   };
 }
 
