@@ -307,7 +307,20 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
     externalAssets,
     globalDefaults,
     avm1Coverage: buildAvm1Coverage(movie),
+    initActions: control.initActions,
+    frameBytecode: control.frameBytecode,
+    registeredClasses: control.registeredClasses,
   }, assets, labels);
+
+  // Symbol linkage (export name → id), computed once `assets` is fully built.
+  // Feed the per-asset linkageNames the player's attachMovie() reads, so
+  // studio-converted AS2 apps can attach their own library clips by name — and
+  // keep the name→id map for the runtime VM host.
+  const linkage = exportLinkage(movie);
+  for (const [name, id] of Object.entries(linkage)) {
+    const asset = (assets as Record<string, { linkageNames?: string[] }>)[String(id)];
+    if (asset) (asset.linkageNames ??= []).push(name);
+  }
 
   const timeline = {
     scene,
@@ -323,6 +336,7 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
     control: timelineControl,
     frameSvgs: [],
     bitmapFillShapeSrcs: bitmapFillShapeSrcs(scene, files),
+    linkage,
     assets,
     frames,
   };
@@ -529,6 +543,23 @@ function soundExportNames(movie: any): Map<number, string> {
     for (const asset of tag.assets ?? []) {
       if (typeof asset.id !== "number" || !asset.name) continue;
       out.set(asset.id, String(asset.name));
+    }
+  }
+  return out;
+}
+
+/** Linkage/export name → character id, for runtime attachMovie("symbolName").
+ *  Covers every ExportAssets/SymbolClass entry (clips, not just sounds). */
+function exportLinkage(movie: any): Record<string, number> {
+  const out: Record<string, number> = {};
+  const exportAssets = (swf.TagType as any).ExportAssets ?? 35;
+  const symbolClass = (swf.TagType as any).SymbolClass ?? 76;
+  for (const tag of movie.tags) {
+    if (tag.type !== exportAssets && tag.type !== symbolClass) continue;
+    for (const asset of tag.assets ?? tag.symbols ?? []) {
+      const name = asset.name ?? asset.className;
+      if (typeof asset.id !== "number" || !name) continue;
+      out[String(name)] = asset.id;
     }
   }
   return out;

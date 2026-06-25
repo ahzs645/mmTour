@@ -2,28 +2,10 @@
 // carry their body as a nested program (the flat disassembler inlines bodies,
 // which a VM can't execute). Pure, browser-safe.
 
-export interface Avm1Action {
-  op: string;
-  code: number;
-  // operands (per op)
-  values?: any[]; // Push
-  frame?: number; // GotoFrame
-  label?: string; // GotoLabel / GotoFrame2 bias unused
-  url?: string; // GetUrl
-  target?: string; // GetUrl / SetTarget
-  register?: number; // StoreRegister
-  branchOffset?: number; // If / Jump (byte delta)
-  jumpTo?: number; // resolved index into the action list
-  play?: boolean; // GotoFrame2
-  loadVariablesFlag?: boolean; // GetUrl2
-  loadTargetFlag?: boolean; // GetUrl2
-  sendVarsMethod?: number; // GetUrl2
-  name?: string; // DefineFunction(2)
-  params?: { register?: number; name: string }[];
-  registerCount?: number;
-  flags?: number;
-  body?: Avm1Action[]; // DefineFunction(2) body
-}
+import type { Avm1Op } from "../../data/avm1Bytecode.ts";
+
+/** The parser's action type is the shared canonical op shape (see data/avm1Bytecode). */
+export type Avm1Action = Avm1Op;
 
 const dec = new TextDecoder("utf-8");
 const readCStr = (b: Uint8Array, o: number) => {

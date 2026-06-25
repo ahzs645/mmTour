@@ -41,7 +41,7 @@ export function mountConversionLabDom(container: HTMLElement, options: { include
           <option value="direct">Direct SWF Renderer</option>
         </select>
       </label>
-      <label>
+      <label id="assetSourceField">
         Asset source
         <select id="assetSource">
           <option value="files" selected>Generated files</option>
