@@ -253,6 +253,10 @@ export type DefinedFunction = {
   spriteId?: number;
   assignments?: { target: string; value?: unknown; rawValue?: string }[];
   body?: BodyStatement[];
+  /** Raw AVM1 bytecode of the function body (DefineFunction(2) actions), for the
+   *  runtime VM that interprets data-driven AS2 apps. Emitted by the in-browser
+   *  compile only; the lossy `body`/`assignments` above remain for the legacy path. */
+  bytecode?: import("./avm1Bytecode.ts").Avm1Op[];
   /** Browser bytecode extraction can recover executable command actions directly from the function body. */
   actions?: ControlAction[];
   /** Inner clip/function calls (e.g. a sprite's over()/out() → self gotoAndPlay frames). */

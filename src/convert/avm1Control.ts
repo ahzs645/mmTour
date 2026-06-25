@@ -115,6 +115,10 @@ function collectFunctionMetadata(
     flags: action.flags,
     scope: context.scope,
     spriteId: context.spriteId,
+    // Keep the raw function bytecode so the runtime VM can interpret data-driven
+    // AS2 apps (e.g. an XML-fed site); the lossy body/assignments below remain
+    // for the legacy assign/call path.
+    bytecode: action.body ?? [],
     body: [],
     assignments: [],
     calls: [],
