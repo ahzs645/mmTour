@@ -62,6 +62,8 @@ export interface PlayerRuntimeOptions {
    *  tour's quit button is `fscommand("quit")`; map it to your own response (e.g. close
    *  the tour). Any embedder gets a working quit button with no per-button wiring. */
   onFsCommand?: (command: string, args: string) => void;
+  /** Notified when AVM1 asks to open or navigate to a URL. */
+  onGetURL?: (url: string, target?: string) => void;
 }
 
 export type DecompiledPlayerLoadEvent = PlayerLoadEvent;
@@ -127,6 +129,7 @@ export async function createTourPlayer(
     onButton,
     onNavigate,
     onFsCommand,
+    onGetURL,
     onLoadStart,
     onLoadComplete,
     onLoadError,
@@ -148,7 +151,7 @@ export async function createTourPlayer(
     throw error;
   }
 
-  const controller = new PlayerController(container, { debug, onFrame, onButton, onNavigate, onFsCommand, onLoadStart, onLoadComplete, onLoadError });
+  const controller = new PlayerController(container, { debug, onFrame, onButton, onNavigate, onFsCommand, onGetURL, onLoadStart, onLoadComplete, onLoadError });
   controller.activate(timeline, swf);
   onLoadComplete?.({ source: "initial", level: 0, swf, scene: timeline.scene, timeline });
   if (autoplay) controller.play();
@@ -177,6 +180,7 @@ export async function createDecompiledPlayer(
     onButton,
     onNavigate,
     onFsCommand,
+    onGetURL,
     onLoadStart,
     onLoadComplete,
     onLoadError,
@@ -221,6 +225,7 @@ export async function createDecompiledPlayer(
     onButton,
     onNavigate,
     onFsCommand,
+    onGetURL,
     onLoadStart,
     onLoadComplete,
     onLoadError,

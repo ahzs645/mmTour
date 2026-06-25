@@ -18,8 +18,8 @@ export function splitTopLevelArgs(argsRaw: string | undefined): string[] {
     const c = argsRaw[i];
     if (quote) { if (c === quote && argsRaw[i - 1] !== "\\") quote = ""; continue; }
     if (c === '"' || c === "'") quote = c;
-    else if (c === "(" || c === "[") depth++;
-    else if (c === ")" || c === "]") depth--;
+    else if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") depth--;
     else if (c === "," && depth === 0) { parts.push(argsRaw.slice(start, i)); start = i + 1; }
   }
   parts.push(argsRaw.slice(start));

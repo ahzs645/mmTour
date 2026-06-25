@@ -17,12 +17,12 @@ export class FontRegistry {
     for (const asset of Object.values(timeline.assets ?? {})) {
       if (asset.kind !== "font" || !asset.src) continue;
       const file = asset.src.split("/").pop() ?? "";
-      const name = file.replace(/\.ttf$/i, "").replace(/^\d+_/, "").trim();
+      const name = asset.fontName ?? file.replace(/\.ttf$/i, "").replace(/^\d+_/, "").trim();
       const embedded = `swf-font-${asset.id}`;
       // Prefer the embedded face, then the font's real name (if installed), then sans.
       this.families.set(asset.id, `"${embedded}", "${name}", Arial, Helvetica, sans-serif`);
 
-      if (!canEmbed || this.registered.has(asset.id)) continue;
+      if (!canEmbed || asset.fontLoadable === false || this.registered.has(asset.id)) continue;
       this.registered.add(asset.id);
       // Filenames often contain spaces (e.g. "47_Franklin Gothic.ttf") → encode.
       const face = new FontFace(embedded, `url("${encodeURI(assetUrl(asset.src))}")`);

@@ -3,7 +3,7 @@
 
 import { gsap } from "gsap";
 import {
-  assetStage, assetWrap, awaitingLoopLayer, directSwfLayer, externalLevelLayer, frameScrubber,
+  assetStage, awaitingLoopLayer, directSwfLayer, externalLevelLayer, frameScrubber,
   frameStageImage, frameStageInline, gsapDisplayLayer, referenceFrameImage, referenceFrameMeta,
   referenceName, renderModeSelect, status,
 } from "./dom";
@@ -28,6 +28,7 @@ import { updatePlayButton } from "./modes";
 import { updateDebugPanel } from "./debugPanel";
 import { renderDirectSwfFrame } from "./directMode";
 import { navigateToSceneBySwf } from "./sceneLoader";
+import { applyStageDimensions } from "./stageDimensions";
 import { queueShellLevelCallsForLoadedScene, rememberLoadedLevel, runExternalLevelFunctionCall } from "./externalLevels";
 import type { AssetTimeline, ControlAction, RenderedLoopItem, TimelineAsset, TimelineFrame } from "./frameModeTypes";
 import { wireInlineFrameControls, handleReleaseClick, bindReleaseAction, createButtonHitOverlays, createTimelineButtonHitOverlays, showButtonVisualState, clearButtonVisualState, handleButtonHover } from "./buttonOverlays";
@@ -413,17 +414,12 @@ export function setFrameStatus(assetTimeline: AssetTimeline, frameIndex: number,
 }
 
 export function updateStaticReference(assetTimeline: AssetTimeline, frameIndex: number) {
+  applyStageDimensions(assetTimeline);
   const src = assetTimeline.frameSvgs?.[frameIndex];
   if (src) referenceFrameImage.src = `/${src}`;
   referenceName.textContent = `${assetTimeline.scene}`;
   const label = frameLabel(assetTimeline, frameIndex);
   referenceFrameMeta.textContent = `Frame ${frameIndex}${label ? ` - ${label}` : ""}`;
-}
-
-export function syncAssetStageScale() {
-  const rect = assetWrap.getBoundingClientRect();
-  const scale = Math.min(rect.width / 640, rect.height / 480);
-  assetStage.style.setProperty("--stage-scale", String(scale));
 }
 
 export function ensureRenderedInstance(depth: number, characterId: number, asset: TimelineAsset, frameIndex: number) {

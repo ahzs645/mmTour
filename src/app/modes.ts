@@ -6,6 +6,7 @@ import {
   frameStageImage, frameStageInline, gsapDisplayLayer, playBtn, renderModeSelect,
 } from "./dom";
 import { gsapDisplayRenderer, playerController, state as appState } from "./state";
+import { applyStageDimensions } from "./stageDimensions";
 
 export function isPlayerMode() {
   return renderModeSelect.value === "player";
@@ -14,6 +15,7 @@ export function isPlayerMode() {
 export function activatePlayerMode() {
   if (!appState.activeAssetTimeline) return;
   appState.timeline?.pause();
+  applyStageDimensions(appState.activeAssetTimeline);
   appState.isGsapPlaying = false;
   appState.directSwfRenderer?.pause();
   directSwfLayer.hidden = true;

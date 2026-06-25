@@ -312,7 +312,7 @@ h2 {
 #diffCanvas {
   display: block;
   width: 100%;
-  aspect-ratio: 4 / 3;
+  aspect-ratio: var(--stage-aspect, 4 / 3);
   background: #111827;
   overflow: hidden;
 }
@@ -325,8 +325,8 @@ h2 {
 
 .asset-stage {
   position: relative;
-  width: 640px;
-  height: 480px;
+  width: var(--stage-width, 640px);
+  height: var(--stage-height, 480px);
   overflow: hidden;
   background: #fff;
   transform: scale(var(--stage-scale, 1));
@@ -350,8 +350,8 @@ h2 {
   position: absolute;
   inset: 0;
   display: block;
-  width: 640px;
-  height: 480px;
+  width: 100%;
+  height: 100%;
   object-fit: fill;
 }
 
@@ -363,8 +363,8 @@ h2 {
   position: absolute;
   inset: 0;
   display: block;
-  width: 640px;
-  height: 480px;
+  width: 100%;
+  height: 100%;
   z-index: 1;
 }
 
@@ -375,8 +375,8 @@ h2 {
 .gsap-display-layer {
   position: absolute;
   inset: 0;
-  width: 640px;
-  height: 480px;
+  width: 100%;
+  height: 100%;
   z-index: 1;
   pointer-events: none;
 }
@@ -388,8 +388,8 @@ h2 {
 .player-layer {
   position: absolute;
   inset: 0;
-  width: 640px;
-  height: 480px;
+  width: 100%;
+  height: 100%;
   z-index: 1;
   pointer-events: none;
 }
@@ -401,8 +401,8 @@ h2 {
 .player-level {
   position: absolute;
   inset: 0;
-  width: 640px;
-  height: 480px;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
 }
 
@@ -427,8 +427,8 @@ h2 {
 .direct-swf-layer {
   position: absolute;
   inset: 0;
-  width: 640px;
-  height: 480px;
+  width: 100%;
+  height: 100%;
   z-index: 1;
   overflow: hidden;
 }
@@ -683,8 +683,8 @@ h2 {
 .external-level-layer {
   position: absolute;
   inset: 0;
-  width: 640px;
-  height: 480px;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
   z-index: 2;
 }
@@ -698,14 +698,14 @@ h2 {
   position: absolute;
   inset: 0;
   display: block;
-  width: 640px;
-  height: 480px;
+  width: 100%;
+  height: 100%;
 }
 
 .inline-frame-svg {
   display: block;
-  width: 640px;
-  height: 480px;
+  width: 100%;
+  height: 100%;
 }
 
 .flash-button-target {
@@ -752,8 +752,8 @@ h2 {
 .awaiting-loop-layer {
   position: absolute;
   inset: 0;
-  width: 640px;
-  height: 480px;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
   z-index: 3;
 }

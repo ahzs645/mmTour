@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 const root = resolve(new URL("..", import.meta.url).pathname);
 const targets = process.argv.slice(2).length
   ? process.argv.slice(2)
-  : ["A-tour.swf", "intro.swf", "nav.swf", "segment1.swf", "segment2.swf", "segment3.swf", "segment4.swf", "segment5.swf"];
+  : ["A-tour.swf", "intro.swf", "nav.swf", "segment1.swf", "segment2.swf", "segment3.swf", "segment4.swf", "segment5.swf", "bnl.swf"];
 
 for (const target of targets) {
   const swfPath = resolveSwfPath(target);

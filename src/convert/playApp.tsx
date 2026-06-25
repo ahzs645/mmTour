@@ -7,7 +7,5 @@ const root = document.getElementById("app");
 if (!root) throw new Error("Missing #app root");
 
 createRoot(root).render(
-  <React.StrictMode>
-    <SwfStudioApp />
-  </React.StrictMode>,
+  <SwfStudioApp />,
 );

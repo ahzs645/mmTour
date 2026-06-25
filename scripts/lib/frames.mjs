@@ -122,6 +122,19 @@ function markOverflowingSprites(assetDefs) {
       asset.overflowsBounds = true;
     }
   }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const asset of Object.values(assetDefs)) {
+      if (asset?.kind !== "sprite" || asset.overflowsBounds || !asset.timeline?.length) continue;
+      const hasLiveChild = asset.timeline.some((frame) =>
+        (frame.instances ?? []).some((ins) => assetDefs[String(ins.characterId)]?.overflowsBounds),
+      );
+      if (!hasLiveChild) continue;
+      asset.overflowsBounds = true;
+      changed = true;
+    }
+  }
 }
 
 export function discoverEntryFrame(frameLabels) {

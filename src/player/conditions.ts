@@ -51,6 +51,10 @@ function evalFactor(expr: string, store: VariableStore): boolean {
 }
 
 function compare(a: VarValue | undefined, b: VarValue | undefined, op: string): boolean {
+  if ((a === null || a === undefined) && (b === null || b === undefined)) {
+    if (op === "==") return true;
+    if (op === "!=") return false;
+  }
   const an = numeric(a);
   const bn = numeric(b);
   if (an !== undefined && bn !== undefined) {
@@ -89,6 +93,7 @@ function resolveValue(token: string, store: VariableStore): VarValue | undefined
   }
   if (t === "true") return true;
   if (t === "false") return false;
+  if (t === "null") return null;
   if (/^-?\d+(\.\d+)?$/.test(t)) return Number(t);
   return store.get(t);
 }
@@ -102,7 +107,7 @@ function singleArgCall(token: string, name: string): string | undefined {
 }
 
 function truthy(v: VarValue | undefined): boolean {
-  return v !== undefined && v !== false && v !== 0 && v !== "" && v !== "0";
+  return v !== undefined && v !== null && v !== false && v !== 0 && v !== "" && v !== "0";
 }
 
 function numeric(v: VarValue | undefined): number | undefined {

@@ -13,7 +13,8 @@
  * `_parent.t_musicOn` resolves the same root-level variable (clip targeting, which
  * IS relative, goes through resolveTarget — not the store).
  */
-export type VarValue = string | number | boolean;
+export type Avm1Object = object;
+export type VarValue = string | number | boolean | null | Avm1Object;
 
 const LEVEL_PREFIX = /^_(?:level\d+|root|parent)\./;
 
@@ -32,7 +33,7 @@ export class VariableStore {
     if (!defaults) return;
     for (const [key, value] of Object.entries(defaults)) {
       const name = normalizeVarName(key);
-      if (!this.values.has(name) && (typeof value === "string" || typeof value === "number" || typeof value === "boolean")) {
+      if (!this.values.has(name) && isStoreValue(value)) {
         this.values.set(name, value);
       }
     }
@@ -54,4 +55,8 @@ export class VariableStore {
   reset() {
     this.values.clear();
   }
+}
+
+function isStoreValue(value: unknown): value is VarValue {
+  return value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean" || typeof value === "object";
 }

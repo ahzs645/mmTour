@@ -123,10 +123,10 @@ export function contextLabel(context) {
 
 export function findFunctionContexts(source) {
   const contexts = [];
-  for (const match of source.matchAll(/function\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/g)) {
+  for (const match of source.matchAll(/function\s+((?:get|set)\s+)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/g)) {
     const bodyStart = (match.index ?? 0) + match[0].length - 1;
     const bodyEnd = findMatchingBrace(source, bodyStart);
-    contexts.push({ type: "function", name: match[1], start: match.index ?? 0, bodyStart, end: bodyEnd });
+    contexts.push({ type: "function", name: `${match[1] ?? ""}${match[2]}`.trim(), start: match.index ?? 0, bodyStart, end: bodyEnd });
   }
   return contexts;
 }
@@ -201,6 +201,50 @@ export function findStatementEnd(source, i) {
   return source.length;
 }
 
+function switchCaseGroups(block) {
+  const entries = [];
+  const re = /\b(case\s+([\s\S]*?)|default)\s*:/g;
+  let match;
+  while ((match = re.exec(block)) !== null) {
+    entries.push({
+      label: match[1] === "default" ? "default" : match[2].trim(),
+      labelStart: match.index,
+      bodyStart: re.lastIndex,
+    });
+  }
+  const groups = [];
+  let labels = [];
+  for (let i = 0; i < entries.length; i += 1) {
+    const entry = entries[i];
+    const nextStart = entries[i + 1]?.labelStart ?? block.length;
+    const rawBody = block.slice(entry.bodyStart, nextStart);
+    labels.push(entry.label);
+    const breakAt = topLevelBreakIndex(rawBody);
+    if (breakAt >= 0) {
+      groups.push({ labels: [...labels], body: rawBody.slice(0, breakAt) });
+      labels = [];
+    } else if (rawBody.trim()) {
+      groups.push({ labels: [...labels], body: rawBody });
+      labels = [];
+    }
+  }
+  return groups;
+}
+
+function topLevelBreakIndex(source) {
+  let depth = 0;
+  let quote = "";
+  for (let i = 0; i < source.length; i += 1) {
+    const c = source[i];
+    if (quote) { if (c === quote && source[i - 1] !== "\\") quote = ""; continue; }
+    if (c === '"' || c === "'") quote = c;
+    else if (c === "{" || c === "(" || c === "[") depth += 1;
+    else if (c === "}" || c === ")" || c === "]") depth -= 1;
+    else if (depth === 0 && /\bbreak\s*;/.test(source.slice(i, i + 8))) return i;
+  }
+  return -1;
+}
+
 export /**
  * Parse an ActionScript function/frame body into an ordered list of statements,
  * each tagged with the combined if/else branch condition under which it runs. The
@@ -223,6 +267,8 @@ function parseStatements(src, keepSelfTimeline = false) {
       if (i >= code.length) break;
       const rest = code.slice(i);
       if (/^if\s*\(/.test(rest)) { i = parseIf(code, i, condStack); continue; }
+      if (/^while\s*\(/.test(rest)) { i = parseWhile(code, i, condStack); continue; }
+      if (/^switch\s*\(/.test(rest)) { i = parseSwitch(code, i, condStack); continue; }
       const fn = /^function\b[^{]*\{/.exec(rest);
       if (fn) { i = findMatchingBrace(code, i + fn[0].length - 1) + 1; continue; }
       if (code[i] === "{") { const e = findMatchingBrace(code, i); parseBlock(code.slice(i + 1, e), condStack); i = e + 1; continue; }
@@ -255,6 +301,34 @@ function parseStatements(src, keepSelfTimeline = false) {
       break;
     }
     return i;
+  }
+
+  function parseWhile(code, start, condStack) {
+    const m = /^while\s*\(/.exec(code.slice(start));
+    if (!m) return start + 1;
+    const condOpen = start + m[0].length - 1;
+    const condClose = matchParenFrom(code, condOpen);
+    const [block, after] = readBlock(code, condClose + 1);
+    const condition = code.slice(condOpen + 1, condClose).trim();
+    const branchCondition = condStack.length ? condStack.map((c) => `(${c})`).join(" && ") : undefined;
+    out.push(compactObject({ kind: "call", functionName: "while", arguments: `${condition})\n{\n${block}\n}`, branchCondition }));
+    return after;
+  }
+
+  function parseSwitch(code, start, condStack) {
+    const m = /^switch\s*\(/.exec(code.slice(start));
+    if (!m) return start + 1;
+    const exprOpen = start + m[0].length - 1;
+    const exprClose = matchParenFrom(code, exprOpen);
+    const expr = code.slice(exprOpen + 1, exprClose).trim();
+    const [block, after] = readBlock(code, exprClose + 1);
+    for (const group of switchCaseGroups(block)) {
+      const caseCondition = group.labels.includes("default")
+        ? group.labels.length === 1 ? "true" : group.labels.filter((label) => label !== "default").map((label) => `${expr} == ${label}`).join(" || ") || "true"
+        : group.labels.map((label) => `${expr} == ${label}`).join(" || ");
+      parseBlock(group.body, [...condStack, caseCondition]);
+    }
+    return after;
   }
 
   function readBlock(code, from) {

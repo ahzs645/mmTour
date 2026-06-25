@@ -24,14 +24,16 @@ import {
 } from "./historyDb.ts";
 import { downloadBytes, exportArchiveForScenes, importArchiveScenes } from "./exportBundle.ts";
 import { applyInheritedGlobalDefaults, collectInheritableGlobalDefaults } from "./inheritedDefaults.ts";
+import type { ConversionLabHandle } from "../main";
 
 setAssetSource("pack");
 setPackNetworkFallback(false);
 
-const SAMPLES = ["A-tour", "intro", "nav", "segment1", "segment4", "segment5"];
+const SAMPLES = ["A-tour", "intro", "nav", "segment1", "segment4", "segment5", "bnl"];
 const THEME_KEY = "mmtour-theme";
 
 type Theme = "light" | "dark";
+type WorkspaceTab = "library" | "compare";
 type DepStatus = "pending" | "compiling" | "linking" | "done" | "missing";
 
 type CardView =
@@ -58,6 +60,7 @@ type HistGroup = { key: string; root: ConvertRecord; children: ConvertRecord[] }
 
 export function SwfStudioApp() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("library");
   const [cards, setCards] = useState<Record<string, CardView>>({});
   const [history, setHistory] = useState<ConvertRecord[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -71,8 +74,12 @@ export function SwfStudioApp() {
   const fileInput = useRef<HTMLInputElement | null>(null);
   const playerWrap = useRef<HTMLDivElement | null>(null);
   const playerEl = useRef<HTMLDivElement | null>(null);
+  const labMount = useRef<HTMLDivElement | null>(null);
+  const labMounted = useRef(false);
+  const labHandle = useRef<ConversionLabHandle | null>(null);
   const activePlayer = useRef<TourPlayer | null>(null);
   const compiledScenes = useRef(new Map<string, CompiledScene>());
+  const originalSwfUrls = useRef(new Map<string, string>());
   const inFlight = useRef(new Map<string, Promise<CompiledScene>>());
   const dependencyLoads = useRef(new Map<string, Promise<void>>());
 
@@ -86,6 +93,16 @@ export function SwfStudioApp() {
     document.body.dataset.theme = theme;
     localStorage.setItem(THEME_KEY, theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (workspaceTab !== "compare" || labMounted.current || !labMount.current) return;
+    labMounted.current = true;
+    void import("../main").then(({ mountConversionLab }) => {
+      if (labMount.current) void mountConversionLab(labMount.current, { includeHeader: false }).then((mounted) => {
+        labHandle.current = mounted;
+      });
+    });
+  }, [workspaceTab]);
 
   const refreshHistory = useCallback(async () => {
     setHistory(await listConverts());
@@ -113,7 +130,13 @@ export function SwfStudioApp() {
       const rows = await listConverts();
       if (cancelled) return;
       for (const rec of [...rows].reverse()) {
-        if (rec.compiled && isCompiledCurrent(rec.compiled)) acceptCompiled(rec.name, reviveCompiled(rec.compiled));
+        if (rec.compiled && isCompiledCurrent(rec.compiled)) {
+          const compiled = reviveCompiled(rec.compiled);
+          acceptCompiled(rec.name, compiled);
+          if ((rec.sourceType ?? "swf") === "swf" && rec.swf.size) {
+            rememberOriginalSwfBlobUrl(originalSwfUrls.current, compiled.scene, rec.swf);
+          }
+        }
       }
       if (!cancelled) setHistory(rows);
     })();
@@ -121,6 +144,7 @@ export function SwfStudioApp() {
       cancelled = true;
       window.clearTimeout(toastTimer.current);
       activePlayer.current?.destroy();
+      for (const url of originalSwfUrls.current.values()) URL.revokeObjectURL(url);
     };
   }, [acceptCompiled]);
 
@@ -205,6 +229,7 @@ export function SwfStudioApp() {
       const bytes = new Uint8Array(await response.arrayBuffer());
       if (!isSwfBytes(bytes)) throw new Error("not a SWF");
       const compiled = await compile(bytes, dep.swf);
+      rememberOriginalSwfUrl(originalSwfUrls.current, compiled.scene, bytes);
       await persistCompiled(dep.swf, bytes, compiled);
       return compiled;
     } catch {
@@ -363,12 +388,34 @@ export function SwfStudioApp() {
   const convertFile = useCallback(async (name: string, bytes: Uint8Array) => {
     try {
       const compiled = await compile(bytes, name, { force: true });
+      rememberOriginalSwfUrl(originalSwfUrls.current, compiled.scene, bytes);
       await persistCompiled(name, bytes, compiled);
       await ensureDependencies(compiled);
     } catch (error) {
       showToast(`Convert failed: ${(error as Error).message}`);
     }
   }, [compile, ensureDependencies, persistCompiled, showToast]);
+
+  const compareCompiled = useCallback(async (name: string, compiled: CompiledScene) => {
+    const ruffleUrl = originalSwfUrls.current.get(compiled.scene);
+    if (!ruffleUrl) {
+      showToast("Compare needs the original SWF. Re-convert the SWF file to load it into Ruffle.");
+      return;
+    }
+    setWorkspaceTab("compare");
+    let mounted = labHandle.current;
+    if (!mounted && labMount.current) {
+      labMounted.current = true;
+      const { mountConversionLab } = await import("../main");
+      mounted = await mountConversionLab(labMount.current, { includeHeader: false });
+      labHandle.current = mounted;
+    }
+    if (!mounted) {
+      showToast("Compare workspace is not ready yet");
+      return;
+    }
+    await mounted.compareCompiledSwf({ name, compiled, ruffleUrl });
+  }, [showToast]);
 
   const handleFiles = useCallback(async (files: Iterable<File>) => {
     for (const file of files) {
@@ -433,6 +480,7 @@ export function SwfStudioApp() {
         await refreshHistory();
       } else {
         compiled = await compile(bytes, full.name);
+        rememberOriginalSwfUrl(originalSwfUrls.current, compiled.scene, bytes);
         await persistCompiled(full.name, bytes, compiled, { replaceId: recordId });
       }
     } else if (full.compiled) {
@@ -441,14 +489,48 @@ export function SwfStudioApp() {
     } else {
       return;
     }
+    if (full.swf.size && compiled && full.sourceType !== "pack") {
+      rememberOriginalSwfUrl(originalSwfUrls.current, compiled.scene, new Uint8Array(await full.swf.arrayBuffer()));
+    }
     void ensureDependencies(compiled);
     await play(compiled.scene, compiled, full.name);
   }, [acceptCompiled, compile, ensureDependencies, persistCompiled, play]);
+
+  const compareHistory = useCallback(async (record: ConvertRecord) => {
+    const recordId = record.id;
+    if (recordId === undefined) return;
+    const full = await getConvert(recordId);
+    if (!full) return;
+    if ((full.sourceType ?? "swf") !== "swf") {
+      showToast("Imported packs do not include an original SWF for Ruffle comparison.");
+      return;
+    }
+    let compiled = full.compiled && isCompiledCurrent(full.compiled)
+      ? reviveCompiled(full.compiled)
+      : compiledScenes.current.get(full.scene ?? canonical(full.name));
+    if (!compiled && full.swf.size) {
+      const bytes = new Uint8Array(await full.swf.arrayBuffer());
+      if (!isSwfBytes(bytes)) {
+        showToast("Compare needs an original SWF source.");
+        return;
+      }
+      compiled = await compile(bytes, full.name);
+      await persistCompiled(full.name, bytes, compiled, { replaceId: recordId });
+    }
+    if (!compiled) return;
+    acceptCompiled(full.name, compiled);
+    if (full.swf.size) rememberOriginalSwfBlobUrl(originalSwfUrls.current, compiled.scene, full.swf);
+    void ensureDependencies(compiled);
+    await compareCompiled(full.name, compiled);
+  }, [acceptCompiled, compareCompiled, compile, ensureDependencies, persistCompiled, showToast]);
 
   const removeScene = useCallback((scene: string) => {
     unregisterPackedScene(scene);
     clearTimelineCache();
     compiledScenes.current.delete(scene);
+    const originalUrl = originalSwfUrls.current.get(scene);
+    if (originalUrl) URL.revokeObjectURL(originalUrl);
+    originalSwfUrls.current.delete(scene);
     setCards((prev) => {
       const next = { ...prev };
       delete next[scene];
@@ -484,6 +566,8 @@ export function SwfStudioApp() {
     clearPackedScenes();
     clearTimelineCache();
     compiledScenes.current.clear();
+    for (const url of originalSwfUrls.current.values()) URL.revokeObjectURL(url);
+    originalSwfUrls.current.clear();
     inFlight.current.clear();
     dependencyLoads.current.clear();
     setCards({});
@@ -503,23 +587,48 @@ export function SwfStudioApp() {
         <div className="topbar">
           <div>
             <h1>SWF Studio</h1>
-            <p>Convert, play, and export embeddable Flash tours — entirely in your browser.</p>
+            <p>Convert, inspect, compare, play, and export embeddable Flash tours in one workspace.</p>
           </div>
-          <button
-            className="theme-toggle"
-            type="button"
-            aria-label={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
-            aria-pressed={theme === "dark"}
-            title={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
-            onClick={() => setTheme((value) => value === "light" ? "dark" : "light")}
-          >
-            <span className="sun" aria-hidden="true">☼</span>
-            <span className="moon" aria-hidden="true">☾</span>
-          </button>
+          <div className="topbar-actions">
+            <button
+              className="theme-toggle"
+              type="button"
+              aria-label={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
+              aria-pressed={theme === "dark"}
+              title={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
+              onClick={() => setTheme((value) => value === "light" ? "dark" : "light")}
+            >
+              <span className="sun" aria-hidden="true">☼</span>
+              <span className="moon" aria-hidden="true">☾</span>
+            </button>
+          </div>
         </div>
       </header>
 
-      <div className="layout">
+      <nav className="workspace-tabs" aria-label="SWF Studio workspaces">
+        <button
+          type="button"
+          className={workspaceTab === "library" ? "active" : ""}
+          aria-pressed={workspaceTab === "library"}
+          onClick={() => setWorkspaceTab("library")}
+        >
+          Convert
+        </button>
+        <button
+          type="button"
+          className={workspaceTab === "compare" ? "active" : ""}
+          aria-pressed={workspaceTab === "compare"}
+          onClick={() => setWorkspaceTab("compare")}
+        >
+          Compare
+        </button>
+      </nav>
+
+      <section className="compare-workspace" aria-label="Ruffle comparison workspace" hidden={workspaceTab !== "compare"}>
+        <div ref={labMount} className="lab-mount" />
+      </section>
+
+      <div className="layout" hidden={workspaceTab !== "library"}>
         <main>
           <div
             id="drop"
@@ -562,6 +671,7 @@ export function SwfStudioApp() {
                 onToggleCollapse={toggleCollapse}
                 onToggleDetail={toggleDetail}
                 onPlay={play}
+                onCompare={compareCompiled}
                 onExport={exportBundle}
               />
             )) : (
@@ -585,6 +695,7 @@ export function SwfStudioApp() {
                 open={histOpen.has(group.key)}
                 onToggle={() => toggleHist(group.key)}
                 onPlay={(record) => void playHistory(record)}
+                onCompare={(record) => void compareHistory(record)}
                 onDelete={(record) => void deleteHistoryItem(record)}
               />
             )) : <div className="empty">No converts yet.</div>}
@@ -659,6 +770,7 @@ function SceneNode({
   onToggleCollapse,
   onToggleDetail,
   onPlay,
+  onCompare,
   onExport,
 }: {
   node: TreeNode;
@@ -669,6 +781,7 @@ function SceneNode({
   onToggleCollapse: (key: string) => void;
   onToggleDetail: (key: string) => void;
   onPlay: (scene: string, compiled: CompiledScene, name: string) => Promise<void>;
+  onCompare: (name: string, compiled: CompiledScene) => Promise<void>;
   onExport: (compiled: CompiledScene) => void;
 }) {
   const card = cards[node.key];
@@ -694,6 +807,7 @@ function SceneNode({
           onToggleCollapse={() => onToggleCollapse(node.key)}
           onToggleDetail={() => onToggleDetail(node.key)}
           onPlay={onPlay}
+          onCompare={onCompare}
           onExport={onExport}
         />
       )}
@@ -710,6 +824,7 @@ function SceneNode({
               onToggleCollapse={onToggleCollapse}
               onToggleDetail={onToggleDetail}
               onPlay={onPlay}
+              onCompare={onCompare}
               onExport={onExport}
             />
           ))}
@@ -728,6 +843,7 @@ function TreeRow({
   onToggleCollapse,
   onToggleDetail,
   onPlay,
+  onCompare,
   onExport,
 }: {
   card: CardView;
@@ -738,6 +854,7 @@ function TreeRow({
   onToggleCollapse: () => void;
   onToggleDetail: () => void;
   onPlay: (scene: string, compiled: CompiledScene, name: string) => Promise<void>;
+  onCompare: (name: string, compiled: CompiledScene) => Promise<void>;
   onExport: (compiled: CompiledScene) => void;
 }) {
   const ready = card.status === "ready" ? card : null;
@@ -774,6 +891,7 @@ function TreeRow({
         {ready && compiled && (
           <span className="rowacts">
             <button className="play" type="button" onClick={() => void onPlay(compiled.scene, compiled, card.name)}>Play</button>
+            <button className="compare" type="button" onClick={() => void onCompare(card.name, compiled)}>Compare</button>
             <button className="export" type="button" onClick={() => onExport(compiled)}>Export</button>
           </span>
         )}
@@ -850,12 +968,14 @@ function HistoryGroup({
   open,
   onToggle,
   onPlay,
+  onCompare,
   onDelete,
 }: {
   group: HistGroup;
   open: boolean;
   onToggle: () => void;
   onPlay: (record: ConvertRecord) => void;
+  onCompare: (record: ConvertRecord) => void;
   onDelete: (record: ConvertRecord) => void;
 }) {
   const { root, children } = group;
@@ -868,6 +988,7 @@ function HistoryGroup({
         open={open}
         onToggle={children.length ? onToggle : undefined}
         onPlay={() => onPlay(root)}
+        onCompare={() => onCompare(root)}
         onDelete={() => onDelete(root)}
       />
       {open && children.map((child) => (
@@ -875,6 +996,7 @@ function HistoryGroup({
           key={child.id ?? `${child.scene}-${child.createdAt}`}
           record={child}
           onPlay={() => onPlay(child)}
+          onCompare={() => onCompare(child)}
           onDelete={() => onDelete(child)}
         />
       ))}
@@ -889,6 +1011,7 @@ function HistRow({
   open = false,
   onToggle,
   onPlay,
+  onCompare,
   onDelete,
 }: {
   record: ConvertRecord;
@@ -897,6 +1020,7 @@ function HistRow({
   open?: boolean;
   onToggle?: () => void;
   onPlay: () => void;
+  onCompare: () => void;
   onDelete: () => void;
 }) {
   const s = record.stats;
@@ -925,6 +1049,7 @@ function HistRow({
       </div>
       <div className="acts">
         <button type="button" onClick={onPlay} aria-label={`Play ${record.name}`}>Play</button>
+        {sourceType === "swf" && <button type="button" onClick={onCompare} aria-label={`Compare ${record.name}`}>Compare</button>}
         <button type="button" onClick={onDelete} aria-label={`Delete ${record.name}`}>Delete</button>
       </div>
     </div>
@@ -1161,4 +1286,16 @@ function unique<T>(items: T[]): T[] {
 
 function transparentPixel() {
   return "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+}
+
+function rememberOriginalSwfUrl(urls: Map<string, string>, scene: string, bytes: Uint8Array) {
+  const existing = urls.get(scene);
+  if (existing) URL.revokeObjectURL(existing);
+  urls.set(scene, URL.createObjectURL(new Blob([bytes.slice().buffer], { type: "application/x-shockwave-flash" })));
+}
+
+function rememberOriginalSwfBlobUrl(urls: Map<string, string>, scene: string, blob: Blob) {
+  const existing = urls.get(scene);
+  if (existing) URL.revokeObjectURL(existing);
+  urls.set(scene, URL.createObjectURL(blob));
 }

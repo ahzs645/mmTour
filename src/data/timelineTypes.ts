@@ -147,7 +147,13 @@ export type ButtonState = { src: string; origin: Origin };
 export type TimelineAsset = {
   id: number;
   kind: AssetKind;
+  /** ExportAssets linkage names, used by AVM1 attachMovie(linkageName, ...). */
+  linkageNames?: string[];
   src?: string;
+  /** Embedded font metadata, when this asset is a font. */
+  fontName?: string;
+  fontLoadable?: boolean;
+  byteLength?: number;
   /** Baked per-frame SVGs for a sprite symbol, one entry per internal sprite frame. */
   frames?: string[];
   /**
@@ -354,6 +360,8 @@ export type TimelineControl = {
   frameActions?: FrameActionRecord[];
   spriteActions?: Array<{ spriteId: number; frame: number; source?: string; actions: ControlAction[] }>;
   definedFunctions?: Record<string, DefinedFunction>;
+  /** AVM1 Object.registerClass(linkageName, classPath) mappings for class-backed symbols. */
+  registeredClasses?: Record<string, string>;
   soundLibrary?: Record<string, unknown>;
   /** Explicit sound/voice timing table recovered from AVM1 arrays such as sndTimeLib.push(["id", ms]). */
   soundTimings?: Record<string, { durationMs: number }>;

@@ -2,6 +2,7 @@ export type TourScene = {
   swf: string;
   label: string;
   length: number;
+  ruffleUrl?: string;
 };
 
 export const scenes: TourScene[] = [
@@ -13,6 +14,7 @@ export const scenes: TourScene[] = [
   { swf: "segment3.swf", label: "Segment 3", length: 13.47 },
   { swf: "segment4.swf", label: "Segment 4", length: 9.47 },
   { swf: "segment5.swf", label: "Basics", length: 4.2 },
+  { swf: "bnl.swf", label: "Buy n Large", length: 0.1 },
 ];
 
 export function sceneNameFromSwf(swf: string): string {

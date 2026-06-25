@@ -18,7 +18,7 @@ import {
 const root = resolve(new URL("..", import.meta.url).pathname);
 const targets = process.argv.slice(2).length
   ? process.argv.slice(2)
-  : ["A-tour.swf", "intro.swf", "nav.swf", "segment1.swf", "segment2.swf", "segment3.swf", "segment4.swf", "segment5.swf"];
+  : ["A-tour.swf", "intro.swf", "nav.swf", "segment1.swf", "segment2.swf", "segment3.swf", "segment4.swf", "segment5.swf", "bnl.swf"];
 
 for (const target of targets) {
   const swfPath = resolveSwfPath(target);
@@ -96,18 +96,10 @@ function resolveSwfPath(target) {
 
 function mergeBytecodeFallbacks(control = {}, bytecodeControl = {}) {
   const merged = { ...control };
-  if (!hasItems(merged.stopFrames) && hasItems(bytecodeControl.stopFrames)) {
-    merged.stopFrames = [...new Set(bytecodeControl.stopFrames)].sort((a, b) => a - b);
-  }
-  if (!hasItems(merged.spriteStopFrames) && hasItems(bytecodeControl.spriteStopFrames)) {
-    merged.spriteStopFrames = bytecodeControl.spriteStopFrames;
-  }
-  if (!hasItems(merged.frameActions) && hasItems(bytecodeControl.frameActions)) {
-    merged.frameActions = withBytecodeSources(bytecodeControl.frameActions, "root");
-  }
-  if (!hasItems(merged.spriteActions) && hasItems(bytecodeControl.spriteActions)) {
-    merged.spriteActions = withBytecodeSources(bytecodeControl.spriteActions, "sprite");
-  }
+  merged.stopFrames = mergeNumberList(merged.stopFrames, bytecodeControl.stopFrames);
+  merged.spriteStopFrames = mergeSpriteStopFrames(merged.spriteStopFrames, bytecodeControl.spriteStopFrames);
+  merged.frameActions = mergeActionRecords(merged.frameActions, withBytecodeSources(bytecodeControl.frameActions, "root"), (record) => String(record.frame));
+  merged.spriteActions = mergeActionRecords(merged.spriteActions, withBytecodeSources(bytecodeControl.spriteActions, "sprite"), (record) => `${record.spriteId}:${record.frame}`);
   if (!hasItems(merged.definedFunctions) && hasItems(bytecodeControl.definedFunctions)) {
     merged.definedFunctions = bytecodeControl.definedFunctions;
   }
@@ -115,6 +107,76 @@ function mergeBytecodeFallbacks(control = {}, bytecodeControl = {}) {
     merged.buttonActions = bytecodeControl.buttonActions;
   }
   return merged;
+}
+
+function mergeNumberList(primary = [], fallback = []) {
+  if (!hasItems(primary)) return hasItems(fallback) ? [...new Set(fallback)].sort((a, b) => a - b) : primary;
+  if (!hasItems(fallback)) return primary;
+  return [...new Set([...primary, ...fallback])].sort((a, b) => a - b);
+}
+
+function mergeSpriteStopFrames(primary = {}, fallback = {}) {
+  if (!hasItems(primary)) return hasItems(fallback) ? fallback : primary;
+  if (!hasItems(fallback)) return primary;
+  const merged = { ...primary };
+  for (const [spriteId, frames] of Object.entries(fallback)) {
+    merged[spriteId] = mergeNumberList(merged[spriteId] ?? [], frames);
+  }
+  return Object.fromEntries(
+    Object.entries(merged)
+      .filter(([, frames]) => hasItems(frames))
+      .sort(([a], [b]) => Number(a) - Number(b)),
+  );
+}
+
+function mergeActionRecords(primary = [], fallback = [], keyFor) {
+  if (!hasItems(primary)) return hasItems(fallback) ? fallback : primary;
+  if (!hasItems(fallback)) return primary;
+  const byKey = new Map();
+  for (const record of primary) {
+    byKey.set(keyFor(record), { ...record, actions: [...(record.actions ?? [])] });
+  }
+  for (const record of fallback) {
+    const key = keyFor(record);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, record);
+      continue;
+    }
+    existing.actions = mergeActions(existing.actions, record.actions ?? []);
+    if (!existing.actionBytes && record.actionBytes) existing.actionBytes = record.actionBytes;
+    if (!existing.source && record.source) existing.source = record.source;
+  }
+  return [...byKey.values()].sort((a, b) =>
+    (Number(a.spriteId ?? -1) - Number(b.spriteId ?? -1)) || (Number(a.frame ?? 0) - Number(b.frame ?? 0)),
+  );
+}
+
+function mergeActions(primary = [], fallback = []) {
+  const seen = new Set(primary.map(actionIdentity));
+  const merged = [...primary];
+  for (const action of fallback) {
+    const key = actionIdentity(action);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(action);
+  }
+  return merged;
+}
+
+function actionIdentity(action) {
+  return JSON.stringify({
+    command: action.command,
+    target: action.target,
+    frame: action.frame,
+    label: action.label,
+    value: action.value,
+    rawValue: action.rawValue,
+    branchCondition: action.branchCondition,
+    functionName: action.functionName,
+    functionCalls: action.functionCalls,
+    soundAction: action.soundAction,
+  });
 }
 
 function withBytecodeSources(records = [], scope) {

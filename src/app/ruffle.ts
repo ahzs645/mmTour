@@ -11,7 +11,7 @@ export async function loadRuffle(scene: TourScene) {
   appState.rufflePlayer.setAttribute("width", "640");
   appState.rufflePlayer.setAttribute("height", "480");
   ruffleMount.replaceChildren(appState.rufflePlayer);
-  const url = `/${scene.swf}`;
+  const url = scene.ruffleUrl ?? `/${scene.swf}`;
   if (appState.rufflePlayer.ruffle) {
     await appState.rufflePlayer.ruffle().load({ url });
   } else if (appState.rufflePlayer.load) {

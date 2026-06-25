@@ -69,6 +69,13 @@ button {
   color: var(--muted);
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+
 .theme-toggle {
   width: 52px;
   height: 30px;
@@ -127,8 +134,68 @@ body[data-theme="dark"] .theme-toggle .sun {
   color: var(--muted);
 }
 
+.workspace-tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 22px;
+  border-bottom: 1px solid var(--line);
+}
+
+.workspace-tabs button {
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+.workspace-tabs button:hover {
+  color: var(--accent);
+}
+
+.workspace-tabs button.active {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--ink);
+  font-weight: 600;
+  margin-bottom: -1px;
+  padding-bottom: 9px;
+}
+
 body[data-theme="dark"] .theme-toggle .moon {
   color: #ffffff;
+}
+
+.compare-workspace {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+  overflow: hidden;
+}
+
+.compare-workspace[hidden],
+.layout[hidden] {
+  display: none;
+}
+
+.lab-mount {
+  width: 100%;
+  background: #ffffff;
+  overflow: auto;
+}
+
+.lab-mount .shell {
+  max-width: none;
+  min-height: auto;
+  padding: 18px;
+}
+
+.lab-mount .native-info-btn {
+  float: right;
+  margin: 0 0 10px 12px;
 }
 
 .layout {
@@ -445,6 +512,16 @@ aside {
 
 .rowacts .play:hover {
   background: #0957bd;
+}
+
+.rowacts .compare {
+  background: var(--panel-2);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent), var(--line) 35%);
+}
+
+.rowacts .compare:hover {
+  background: color-mix(in srgb, var(--accent), var(--panel) 88%);
 }
 
 .rowacts .export {

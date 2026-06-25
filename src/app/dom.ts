@@ -3,18 +3,17 @@
 
 import "../styles.css";
 
-function must<T extends Element>(selector: string): T {
-  const element = document.querySelector<T>(selector);
+function must<T extends Element>(root: ParentNode, selector: string): T {
+  const element = root.querySelector<T>(selector);
   if (!element) throw new Error(`Missing ${selector}`);
   return element;
 }
 
-const app = document.querySelector<HTMLDivElement>("#app");
-if (!app) throw new Error("Missing #app root");
-
-app.innerHTML = `
+export function mountConversionLabDom(container: HTMLElement, options: { includeHeader?: boolean } = {}) {
+  const includeHeader = options.includeHeader ?? true;
+  container.innerHTML = `
   <main class="shell">
-    <header class="topbar">
+    ${includeHeader ? `<header class="topbar">
       <div>
         <h1>Windows XP Tour Conversion Lab</h1>
         <p>Ruffle reference playback beside a GSAP renderer driven by FFDec-extracted SWF assets and timeline matrices.</p>
@@ -23,7 +22,7 @@ app.innerHTML = `
         <button id="infoBtn" class="info-btn" type="button" aria-haspopup="dialog" title="About this lab — pipeline &amp; scope notes">i</button>
         <div class="source-mark">640 x 480 Flash 5</div>
       </div>
-    </header>
+    </header>` : `<button id="infoBtn" class="info-btn native-info-btn" type="button" aria-haspopup="dialog" title="About the comparison renderer">i</button>`}
 
     <section class="controls" aria-label="Playback controls">
       <label>
@@ -137,42 +136,83 @@ app.innerHTML = `
   </main>
 `;
 
-export const select = must<HTMLSelectElement>("#sceneSelect");
-export const ruffleMount = must<HTMLDivElement>("#ruffleMount");
-export const assetStage = must<HTMLDivElement>("#assetStage");
-export const assetWrap = assetStage.parentElement as HTMLDivElement;
-export const frameStageImage = must<HTMLImageElement>("#frameStageImage");
-export const frameStageInline = must<HTMLDivElement>("#frameStageInline");
-export const gsapDisplayLayer = must<HTMLDivElement>("#gsapDisplayLayer");
-export const directSwfLayer = must<HTMLDivElement>("#directSwfLayer");
-export const externalLevelLayer = must<HTMLDivElement>("#externalLevelLayer");
-export const awaitingLoopLayer = must<HTMLDivElement>("#awaitingLoopLayer");
-export const emptyMessage = must<HTMLDivElement>("#emptyMessage");
-export const status = must<HTMLSpanElement>("#status");
-export const restartBtn = must<HTMLButtonElement>("#restartBtn");
-export const playBtn = must<HTMLButtonElement>("#playBtn");
-export const frameScrubber = must<HTMLInputElement>("#frameScrubber");
-export const renderModeSelect = must<HTMLSelectElement>("#renderMode");
-export const assetSourceSelect = must<HTMLSelectElement>("#assetSource");
-export const ruffleName = must<HTMLSpanElement>("#ruffleName");
-export const assetName = must<HTMLSpanElement>("#assetName");
-export const referenceName = must<HTMLSpanElement>("#referenceName");
-export const referenceFrameImage = must<HTMLImageElement>("#referenceFrameImage");
-export const referenceFrameMeta = must<HTMLDivElement>("#referenceFrameMeta");
-export const debugSummary = must<HTMLSpanElement>("#debugSummary");
-export const debugList = must<HTMLDivElement>("#debugList");
-export const playerLayer = must<HTMLDivElement>("#playerLayer");
-export const infoBtn = must<HTMLButtonElement>("#infoBtn");
-export const infoModal = must<HTMLDialogElement>("#infoModal");
-export const liveFilters = must<HTMLDivElement>("#liveFilters");
-export const liveSearch = must<HTMLInputElement>("#liveSearch");
-export const liveKind = must<HTMLSelectElement>("#liveKind");
-export const liveHideEmpty = must<HTMLInputElement>("#liveHideEmpty");
-export const liveFreeze = must<HTMLInputElement>("#liveFreeze");
-export const liveLevelChips = must<HTMLSpanElement>("#liveLevelChips");
-export const liveDetail = must<HTMLElement>("#liveDetail");
-export const traceBar = must<HTMLDivElement>("#traceBar");
-export const traceRecord = must<HTMLButtonElement>("#traceRecord");
-export const traceClear = must<HTMLButtonElement>("#traceClear");
-export const traceCopy = must<HTMLButtonElement>("#traceCopy");
-export const traceStatus = must<HTMLSpanElement>("#traceStatus");
+  select = must<HTMLSelectElement>(container, "#sceneSelect");
+  ruffleMount = must<HTMLDivElement>(container, "#ruffleMount");
+  assetStage = must<HTMLDivElement>(container, "#assetStage");
+  assetWrap = assetStage.parentElement as HTMLDivElement;
+  frameStageImage = must<HTMLImageElement>(container, "#frameStageImage");
+  frameStageInline = must<HTMLDivElement>(container, "#frameStageInline");
+  gsapDisplayLayer = must<HTMLDivElement>(container, "#gsapDisplayLayer");
+  directSwfLayer = must<HTMLDivElement>(container, "#directSwfLayer");
+  externalLevelLayer = must<HTMLDivElement>(container, "#externalLevelLayer");
+  awaitingLoopLayer = must<HTMLDivElement>(container, "#awaitingLoopLayer");
+  emptyMessage = must<HTMLDivElement>(container, "#emptyMessage");
+  status = must<HTMLSpanElement>(container, "#status");
+  restartBtn = must<HTMLButtonElement>(container, "#restartBtn");
+  playBtn = must<HTMLButtonElement>(container, "#playBtn");
+  frameScrubber = must<HTMLInputElement>(container, "#frameScrubber");
+  renderModeSelect = must<HTMLSelectElement>(container, "#renderMode");
+  assetSourceSelect = must<HTMLSelectElement>(container, "#assetSource");
+  ruffleName = must<HTMLSpanElement>(container, "#ruffleName");
+  assetName = must<HTMLSpanElement>(container, "#assetName");
+  referenceName = must<HTMLSpanElement>(container, "#referenceName");
+  referenceFrameImage = must<HTMLImageElement>(container, "#referenceFrameImage");
+  referenceFrameMeta = must<HTMLDivElement>(container, "#referenceFrameMeta");
+  debugSummary = must<HTMLSpanElement>(container, "#debugSummary");
+  debugList = must<HTMLDivElement>(container, "#debugList");
+  playerLayer = must<HTMLDivElement>(container, "#playerLayer");
+  infoBtn = must<HTMLButtonElement>(container, "#infoBtn");
+  infoModal = must<HTMLDialogElement>(container, "#infoModal");
+  liveFilters = must<HTMLDivElement>(container, "#liveFilters");
+  liveSearch = must<HTMLInputElement>(container, "#liveSearch");
+  liveKind = must<HTMLSelectElement>(container, "#liveKind");
+  liveHideEmpty = must<HTMLInputElement>(container, "#liveHideEmpty");
+  liveFreeze = must<HTMLInputElement>(container, "#liveFreeze");
+  liveLevelChips = must<HTMLSpanElement>(container, "#liveLevelChips");
+  liveDetail = must<HTMLElement>(container, "#liveDetail");
+  traceBar = must<HTMLDivElement>(container, "#traceBar");
+  traceRecord = must<HTMLButtonElement>(container, "#traceRecord");
+  traceClear = must<HTMLButtonElement>(container, "#traceClear");
+  traceCopy = must<HTMLButtonElement>(container, "#traceCopy");
+  traceStatus = must<HTMLSpanElement>(container, "#traceStatus");
+}
+
+export let select!: HTMLSelectElement;
+export let ruffleMount!: HTMLDivElement;
+export let assetStage!: HTMLDivElement;
+export let assetWrap!: HTMLDivElement;
+export let frameStageImage!: HTMLImageElement;
+export let frameStageInline!: HTMLDivElement;
+export let gsapDisplayLayer!: HTMLDivElement;
+export let directSwfLayer!: HTMLDivElement;
+export let externalLevelLayer!: HTMLDivElement;
+export let awaitingLoopLayer!: HTMLDivElement;
+export let emptyMessage!: HTMLDivElement;
+export let status!: HTMLSpanElement;
+export let restartBtn!: HTMLButtonElement;
+export let playBtn!: HTMLButtonElement;
+export let frameScrubber!: HTMLInputElement;
+export let renderModeSelect!: HTMLSelectElement;
+export let assetSourceSelect!: HTMLSelectElement;
+export let ruffleName!: HTMLSpanElement;
+export let assetName!: HTMLSpanElement;
+export let referenceName!: HTMLSpanElement;
+export let referenceFrameImage!: HTMLImageElement;
+export let referenceFrameMeta!: HTMLDivElement;
+export let debugSummary!: HTMLSpanElement;
+export let debugList!: HTMLDivElement;
+export let playerLayer!: HTMLDivElement;
+export let infoBtn!: HTMLButtonElement;
+export let infoModal!: HTMLDialogElement;
+export let liveFilters!: HTMLDivElement;
+export let liveSearch!: HTMLInputElement;
+export let liveKind!: HTMLSelectElement;
+export let liveHideEmpty!: HTMLInputElement;
+export let liveFreeze!: HTMLInputElement;
+export let liveLevelChips!: HTMLSpanElement;
+export let liveDetail!: HTMLElement;
+export let traceBar!: HTMLDivElement;
+export let traceRecord!: HTMLButtonElement;
+export let traceClear!: HTMLButtonElement;
+export let traceCopy!: HTMLButtonElement;
+export let traceStatus!: HTMLSpanElement;

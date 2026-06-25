@@ -3,12 +3,12 @@
 
 import { ctx } from "./extractContext.mjs";
 import { chooseExitNavigationTarget, discoverFunctionAssignments, discoverFunctionBodyCalls, discoverFunctionCallActions, resolveSound } from "./asActions.mjs";
-import { actionContextAt, contextLabel, discoverFunctionCalls, findBranchContexts, findFunctionContexts, findMatchingBrace, findTellTargetContexts, parseStatements, resolveFrameExpression, runtimeCanExecuteBranchCommand, stringLiteral, withActionContext } from "./asParse.mjs";
+import { actionContextAt, contextLabel, discoverFunctionCalls, findBranchContexts, findFunctionContexts, findMatchingBrace, findTellTargetContexts, parseActionScriptLiteral, parseStatements, resolveFrameExpression, runtimeCanExecuteBranchCommand, stringLiteral, withActionContext } from "./asParse.mjs";
 import { relativeExtractedPath, walkFiles } from "./fileUtils.mjs";
 import { evaluateGeneratedCondition, resolveVariableSource } from "./sceneVars.mjs";
 import { compactObject, escapeRegExp } from "./util.mjs";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 let movieTargetLevelCache;
 
@@ -561,9 +561,12 @@ export function discoverDefinedFunctions() {
   for (const filePath of walkFiles(scriptsDir).filter((path) => path.endsWith(".as"))) {
     const source = readFileSync(filePath, "utf8");
     const sourcePath = relativeExtractedPath(filePath);
-    for (const match of source.matchAll(/function\s+([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*\{/g)) {
+    const className = basename(filePath, ".as");
+    const classDefaults = discoverClassFieldInitializers(source);
+    for (const match of source.matchAll(/function\s+((?:get|set)\s+)?([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*\{/g)) {
       const sprite = sourcePath.match(/^scripts\/DefineSprite_(\d+)(?:_|\/)/);
-      const key = `${sourcePath}:${match[1]}`;
+      const functionName = `${match[1] ?? ""}${match[2]}`.trim();
+      const key = `${sourcePath}:${functionName}`;
       if (seen.has(key)) continue;
       seen.add(key);
       const bodyStart = (match.index ?? 0) + match[0].length - 1;
@@ -576,14 +579,16 @@ export function discoverDefinedFunctions() {
       // For sprite functions keep self-gotos too — a control's over()/out() reveal is just
       // `if(!musicOn)gotoAndPlay(28);else gotoAndPlay(5)`, and the runtime needs the branch.
       const statements = parseStatements(body, Boolean(sprite));
+      const bodyStatements = functionName === className ? [...classDefaults, ...statements] : statements;
+      const assignmentStatements = functionName === className ? [...classDefaults, ...assignments] : assignments;
       functions.push(compactObject({
-        functionName: match[1],
-        parameters: match[2].split(",").map((param) => param.trim()).filter(Boolean),
+        functionName,
+        parameters: match[3].split(",").map((param) => param.trim()).filter(Boolean),
         scope: sprite ? "sprite" : "root",
         ...(sprite ? { spriteId: Number(sprite[1]) } : {}),
-        ...(assignments.length ? { assignments } : {}),
+        ...(assignmentStatements.length ? { assignments: assignmentStatements } : {}),
         ...(calls.length ? { calls } : {}),
-        ...(statements.length ? { body: statements } : {}),
+        ...(bodyStatements.length ? { body: bodyStatements } : {}),
         source: sourcePath,
       }));
     }
@@ -592,4 +597,36 @@ export function discoverDefinedFunctions() {
   return functions.sort((a, b) => (
     a.source.localeCompare(b.source) || a.functionName.localeCompare(b.functionName)
   ));
+}
+
+export function discoverRegisteredClasses() {
+  const scriptsDir = join(ctx.extractedDir, "scripts");
+  if (!existsSync(scriptsDir)) return {};
+
+  const classes = {};
+  for (const filePath of walkFiles(scriptsDir).filter((path) => path.endsWith(".as"))) {
+    const source = readFileSync(filePath, "utf8");
+    for (const match of source.matchAll(/Object\.registerClass\s*\(\s*["']([^"']+)["']\s*,\s*([A-Za-z0-9_.$]+)\s*\)/g)) {
+      const linkageName = match[1].trim();
+      const className = match[2].trim();
+      if (!linkageName || !className) continue;
+      classes[linkageName] = className;
+    }
+  }
+  return Object.fromEntries(Object.entries(classes).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+function discoverClassFieldInitializers(source) {
+  const firstFunction = source.search(/\bfunction\b/);
+  const header = firstFunction >= 0 ? source.slice(0, firstFunction) : source;
+  const out = [];
+  for (const match of header.matchAll(/\bvar\s+([A-Za-z_$][\w$]*)\s*=\s*([^;]+);/g)) {
+    out.push({
+      kind: "assign",
+      target: `this.${match[1]}`,
+      value: parseActionScriptLiteral(match[2]),
+      rawValue: match[2].trim(),
+    });
+  }
+  return out;
 }

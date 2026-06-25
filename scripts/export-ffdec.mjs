@@ -12,7 +12,7 @@ if (!existsSync(ffdecJar)) {
 
 const targets = swfs.length > 0
   ? swfs
-  : ["A-tour.swf", "intro.swf", "nav.swf", "segment1.swf", "segment2.swf", "segment3.swf", "segment4.swf", "segment5.swf"];
+  : ["A-tour.swf", "intro.swf", "nav.swf", "segment1.swf", "segment2.swf", "segment3.swf", "segment4.swf", "segment5.swf", "bnl.swf"];
 
 for (const target of targets) {
   const swfPath = resolveSwfPath(target);

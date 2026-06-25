@@ -211,7 +211,6 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
 
   // --- timeline (display list) ---
   const frames = buildFrames(tags);
-  const controlledSprites = controlledSpriteIds(control);
   const spriteTimelines = new Map<string, any[]>();
 
   // Sprite assets so the runtime can instantiate nested MovieClips. Some SWFs
@@ -219,10 +218,9 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
   // tags but no visual PlaceObject tags, so preserve their empty timelines too.
   for (const t of tags) {
     if (t.type !== "DefineSpriteTag" || !t.spriteId) continue;
+    if (!asArray(t.subTags?.item).length) continue;
     const id = String(t.spriteId);
     const spriteFrames = buildFrames(asArray(t.subTags?.item));
-    const hasDisplayList = spriteFrames.some((frame: any) => frame.instances?.length);
-    if (!hasDisplayList && !controlledSprites.has(id)) continue;
     assets[id] ??= { id: Number(t.spriteId), kind: "sprite", origin: zero() };
     if (spriteFrames.length) spriteTimelines.set(id, spriteTimelineFrames(spriteFrames));
   }
@@ -762,17 +760,6 @@ function span(values: number[]): number {
 
 function normalizeBindingName(name: string): string {
   return String(name).replace(/^_root\./, "").split(".").pop() ?? String(name);
-}
-
-function controlledSpriteIds(control: ExtractedControl): Set<string> {
-  const ids = new Set<string>(Object.keys(control.spriteStopFrames ?? {}));
-  for (const record of control.spriteActions ?? []) {
-    if (typeof record.spriteId === "number") ids.add(String(record.spriteId));
-  }
-  for (const def of Object.values(control.definedFunctions ?? {})) {
-    if (def.scope === "sprite" && def.spriteId !== undefined) ids.add(String(def.spriteId));
-  }
-  return ids;
 }
 
 function spriteTimelineFrames(frames: any[]): any[] {

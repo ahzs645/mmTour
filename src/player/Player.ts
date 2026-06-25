@@ -4,12 +4,14 @@ import type {
   ButtonActionRecord,
   ControlAction,
   DefinedFunction,
+  DynamicText,
   TimelineAsset,
   TimelineFrame,
 } from "../data/timelineTypes";
+import { assetUrl } from "../data/TimelineLoader";
 import { collectExplicitSoundTimings } from "../data/soundTimings";
 import type { DomRenderer } from "../render/DomRenderer";
-import { isLocalVar, localizeCondition, splitTopLevelArgs } from "./avm1";
+import { isLocalVar, localizeCondition, normalizeAvm1PropertyName, splitTopLevelArgs } from "./avm1";
 import {
   buttonNode,
   composeRenderColorTransform,
@@ -24,11 +26,12 @@ import { ClipInstance } from "./ClipInstance";
 import { evalCondition } from "./conditions";
 import { IDENTITY, multiplyMatrix } from "./matrix";
 import { Ticker } from "./Ticker";
-import { clamp, type RenderNode } from "./types";
+import { clamp, type RenderNode, type RenderPlacementMetadata } from "./types";
 import { normalizeVarName } from "./VariableStore";
 import type { VariableStore, VarValue } from "./VariableStore";
 
-export type ButtonEvent = "rollOver" | "rollOut" | "press" | "release";
+export type ButtonEvent = "rollOver" | "rollOut" | "press" | "release" | "releaseOutside";
+type ButtonActionEvent = Exclude<ButtonEvent, "releaseOutside">;
 
 /** A user-defined AVM1 function: gated self-timeline actions (frameActions) plus a
  *  branch-aware body (assignments + method-calls), parameterised by `parameters`. */
@@ -36,6 +39,7 @@ type FunctionDef = {
   parameters: string[];
   actions: ControlAction[];
   body: BodyStatement[];
+  calls: NonNullable<DefinedFunction["calls"]>;
 };
 
 /** Local parameter bindings for the currently-executing function call. */
@@ -43,6 +47,10 @@ type Locals = Record<string, VarValue | undefined>;
 type SoundBinding = { sound: string; soundSrc?: string; soundDurationMs?: number };
 type SoundLibraryEntry = { name?: string; src?: string; durationMs?: number; aliases?: string[] };
 type SoundActionMetadata = NonNullable<ControlAction["soundAction"]>;
+type RuntimeTimerId = ReturnType<typeof setTimeout>;
+type DragState = { clip: ClipInstance; left?: number; top?: number; right?: number; bottom?: number };
+type TextOverride = Partial<DynamicText> & { text?: string; html?: boolean };
+type RuntimeControl = "break" | "continue" | undefined;
 
 /** Timeline commands that, with a target, are clip controls (vs function calls). */
 const TIMELINE_COMMANDS = new Set(["gotoAndPlay", "gotoAndStop", "play", "stop", "nextFrame", "prevFrame"]);
@@ -51,6 +59,8 @@ const WAITER_FUNCTIONS = new Set(["waitForVal", "startTimer"]);
 /** Timing-only VO marker helpers. */
 const SOUND_MARKER_FUNCTIONS = new Set(["markSnd", "markSndSegment"]);
 const NON_ROOT_LEVEL_TARGET = /^_level[1-9]\d*\b/i;
+const AVM1_OWNER_CLIP = "__avm1OwnerClip";
+const AVM1_OWNER_PROPERTY = "__avm1OwnerProperty";
 
 export type PlayerOptions = {
   onFrame?: (rootFrame: number, playing: boolean) => void;
@@ -68,6 +78,10 @@ export type PlayerOptions = {
   /** Host hook: fired when the movie issues an AVM1 `fscommand(command, args)` (e.g. the
    *  tour's quit button → `fscommand("quit")`). The host decides what it means. */
   onFsCommand?: (command: string, args: string) => void;
+  /** Host hook: fired when AVM1 asks the player to open/navigate to a URL. */
+  onGetURL?: (url: string, target?: string) => void;
+  /** Resolve a SWF loaded into a MovieClipLoader target to its extracted timeline, if available. */
+  loadTimeline?: (swf: string) => Promise<AssetTimeline | null>;
   /** Shared tour variable store (seeded from control.globalDefaults). */
   store?: VariableStore;
   /** Dispatch a function call whose target is another level (`_levelN[.path].fn`). */
@@ -88,6 +102,7 @@ export type PlayerOptions = {
 
 const ROOT_ID = -1;
 const MAX_GOTO_DEPTH = 24;
+const MAX_FUNCTION_REENTRY = 8;
 /** A root `gotoAndPlay(self, current-N)` with N ≤ this is a voice-over hold-loop
  *  (`if(!sndDonePlaying())…`); a larger backward jump is a section/end loop. */
 const VO_HOLD_DELTA = 3;
@@ -108,6 +123,8 @@ export class Player {
   private readonly ticker: Ticker;
 
   private readonly assets: Record<string, TimelineAsset>;
+  private readonly linkageAssetIds = new Map<string, number>();
+  private readonly linkageClassKeys = new Map<string, string>();
   private readonly rootFrames: TimelineFrame[];
   private readonly startFrame: number;
 
@@ -116,12 +133,15 @@ export class Player {
   private readonly spriteActions = new Map<string, ControlAction[]>();
   private readonly spriteStop = new Map<number, Set<number>>();
   private readonly functions = new Map<string, FunctionDef>();
+  private readonly methodFunctions = new Map<string, FunctionDef>();
   /** Sprite-scoped functions (e.g. a button/fade clip's `doFade`), by characterId → name. */
   private readonly spriteFunctions = new Map<number, Map<string, FunctionDef>>();
   private readonly store?: VariableStore;
   /** Text-field variables loaded via loadVariables() (key → value), keyed by the
    *  field's normalized variableName (e.g. `skipIntro`, `h_Segment4`). */
   private readonly textVars = new Map<string, string>();
+  private readonly textOverrides = new Map<number, TextOverride>();
+  private readonly clipTextOverrides = new WeakMap<ClipInstance, Map<string, TextOverride>>();
   /** Normalized variable names that back a dynamic text field, so a frame-script
    *  assignment to one (e.g. the music control's `t_music = _parent.t_musicOn`) is
    *  mirrored into textVars and the bound field re-renders with the new value. */
@@ -148,12 +168,23 @@ export class Player {
   private root: ClipInstance;
   private clipByPath = new Map<string, ClipInstance>();
   private lastNodes: RenderNode[] = [];
+  private readonly functionReentry = new Map<string, number>();
+  private readonly runtimeTimers = new Set<RuntimeTimerId>();
+  private activeDrag: DragState | undefined;
 
   constructor(timeline: AssetTimeline, renderer: DomRenderer, options: PlayerOptions = {}) {
     this.timeline = timeline;
     this.renderer = renderer;
     this.options = options;
     this.assets = timeline.assets ?? {};
+    for (const asset of Object.values(this.assets)) {
+      for (const name of asset.linkageNames ?? []) this.linkageAssetIds.set(normalizeLinkageName(name), asset.id);
+    }
+    for (const [linkageName, classPath] of Object.entries(timeline.control?.registeredClasses ?? {})) {
+      const className = classPath.split(".").pop() ?? classPath;
+      const sourceKey = normalizeMethodKey(className);
+      if (sourceKey) this.linkageClassKeys.set(normalizeLinkageName(linkageName), sourceKey);
+    }
     // Collect every dynamic-text field's bound variable name (from the asset's own
     // text binding and any dynamicTexts override) so frame-script assignments to one
     // refresh the displayed field — see the setVariable handler in runScript.
@@ -238,6 +269,7 @@ export class Player {
   seekRootFrame(frame: number) {
     this.ticker.pause();
     this.voWaiting = false;
+    this.clearRuntimeTimers();
     this.buttonVisualStates.clear();
     this.root = this.buildRoot(clamp(frame, 0, this.frameCount - 1));
     this.render();
@@ -251,6 +283,7 @@ export class Player {
 
   destroy() {
     this.ticker.destroy();
+    this.clearRuntimeTimers();
     this.buttonVisualStates.clear();
     this.renderer.clear();
   }
@@ -275,6 +308,7 @@ export class Player {
       }
     }
     if (!action) {
+      this.dispatchMovieClipPointerEvent(owner, event);
       this.render();
       return;
     }
@@ -338,7 +372,18 @@ export class Player {
     this.render();
   }
 
+  handlePointerDrag(dx: number, dy: number) {
+    const drag = this.activeDrag;
+    if (!drag) return;
+    const nextX = clamp(Number(drag.clip.x ?? 0) + dx, drag.left ?? Number.NEGATIVE_INFINITY, drag.right ?? Number.POSITIVE_INFINITY);
+    const nextY = clamp(Number(drag.clip.y ?? 0) + dy, drag.top ?? Number.NEGATIVE_INFINITY, drag.bottom ?? Number.POSITIVE_INFINITY);
+    if (Number.isFinite(nextX)) drag.clip.x = nextX;
+    if (Number.isFinite(nextY)) drag.clip.y = nextY;
+    this.render();
+  }
+
   private buttonActionFor(owner: ClipInstance, characterId: number, event: ButtonEvent): ControlAction | undefined {
+    if (event === "releaseOutside") return undefined;
     const direct = this.timeline.control?.buttonActions?.[String(characterId)]?.[event];
     if (direct) return direct;
 
@@ -369,7 +414,7 @@ export class Player {
   }
 
   private companionButtonActions(owner: ClipInstance, characterId: number, event: ButtonEvent): Array<{ owner: ClipInstance; characterId: number; action: ControlAction }> {
-    if (event === "release") return [];
+    if (event === "release" || event === "releaseOutside") return [];
     const groups = this.timeline.control?.buttonActions ?? {};
     const group = groups[String(characterId)];
     const releaseKey = buttonReleaseKey(group?.release);
@@ -379,11 +424,12 @@ export class Player {
     for (const [candidateId, candidateGroup] of Object.entries(groups)) {
       const id = Number(candidateId);
       if (!Number.isFinite(id) || id === characterId) continue;
-      const candidateAction = candidateGroup[event];
+      const actionEvent = event as ButtonActionEvent;
+      const candidateAction = candidateGroup[actionEvent];
       if (!candidateAction) continue;
       if (buttonReleaseKey(candidateGroup.release) !== releaseKey) continue;
       if (!buttonOwnerGroupsOverlap(group, candidateGroup)) continue;
-      if (!buttonTimelineActionsMatch(group[event], candidateAction)) continue;
+      if (!buttonTimelineActionsMatch(group[actionEvent], candidateAction)) continue;
       const candidateOwner = this.findButtonOwnerClip(scope, id) ?? this.findButtonOwnerClip(this.root, id);
       if (!candidateOwner || candidateOwner === owner) continue;
       out.push({ owner: candidateOwner, characterId: id, action: candidateAction });
@@ -451,6 +497,7 @@ export class Player {
       case "release":
         this.buttonVisualStates.set(key, "over");
         break;
+      case "releaseOutside":
       case "rollOut":
         this.buttonVisualStates.delete(key);
         break;
@@ -476,7 +523,7 @@ export class Player {
     const control = this.timeline.control as
       | { definedFunctions?: DefinedFunction[] | Record<string, DefinedFunction>; frameActions?: { actions?: ControlAction[] }[] }
       | undefined;
-    const newDef = (): FunctionDef => ({ parameters: [], actions: [], body: [] });
+    const newDef = (): FunctionDef => ({ parameters: [], actions: [], body: [], calls: [] });
     for (const def of Object.values(control?.definedFunctions ?? {})) {
       const name = def?.functionName;
       if (!name) continue;
@@ -484,7 +531,18 @@ export class Player {
       if (def.parameters?.length) entry.parameters = def.parameters;
       if (def.actions?.length) entry.actions.push(...def.actions);
       if (def.body?.length) entry.body.push(...def.body);
+      if (def.calls?.length) entry.calls.push(...def.calls);
       this.functions.set(name, entry);
+      const sourceKey = methodSourceKey(def.source);
+      if (sourceKey) {
+        const methodKey = methodFunctionKey(sourceKey, name);
+        const methodEntry = this.methodFunctions.get(methodKey) ?? newDef();
+        if (def.parameters?.length) methodEntry.parameters = def.parameters;
+        if (def.actions?.length) methodEntry.actions.push(...def.actions);
+        if (def.body?.length) methodEntry.body.push(...def.body);
+        if (def.calls?.length) methodEntry.calls.push(...def.calls);
+        this.methodFunctions.set(methodKey, methodEntry);
+      }
     }
     for (const record of control?.frameActions ?? []) {
       for (const action of record.actions ?? []) {
@@ -562,7 +620,22 @@ export class Player {
   callFunction(name: string, argsRaw?: string, callerLocals?: Locals): boolean {
     const def = this.functions.get(name);
     if (!def) return false;
-    const locals = this.bindParams(def.parameters, argsRaw, callerLocals);
+    return this.callFunctionDef(name, def, argsRaw, callerLocals, this.root);
+  }
+
+  private callFunctionDef(
+    key: string,
+    def: FunctionDef,
+    argsRaw: string | undefined,
+    callerLocals: Locals | undefined,
+    scope: ClipInstance,
+    argScope: ClipInstance = scope,
+  ): boolean {
+    const reentry = this.functionReentry.get(key) ?? 0;
+    if (reentry >= MAX_FUNCTION_REENTRY) return false;
+    this.functionReentry.set(key, reentry + 1);
+    try {
+    const locals = this.bindParams(def.parameters, argsRaw, callerLocals, argScope);
     // The function's frame-tagged actions are an if/else chain (initMusic's per-section music,
     // startNavEntrance's Pro/Per goto). Decide them GROUP-WISE and localized — same semantics as
     // runScript/callClipFunction: a bare `else` arm evaluated alone reads as true
@@ -578,12 +651,23 @@ export class Player {
     // so the nav jumps PAST its entrance cascade. When the body already issues a call, let the
     // body decide it (below) and skip the lossy action duplicate. Sound actions need the same
     // treatment now that body-form Sound.attachSound/start/stop calls are executable.
-    const bodyDecisions = this.functionBodyDecisions(def.body, locals);
-    const firedBodyCalls = new Set(
+    const bodyDecisions = this.functionBodyDecisions(def.body, locals, scope);
+    const bodyConstructors = new Set(
       def.body
+        .filter((s, i) => bodyDecisions[i] && s.kind === "assign")
+        .map((s) => constructorCallName((s as Extract<BodyStatement, { kind: "assign" }>).rawValue))
+        .filter((name): name is string => Boolean(name)),
+    );
+    const firedBodyCalls = new Set<string | undefined>([
+      ...bodyConstructors,
+      ...def.body
         .filter((s, i) => bodyDecisions[i] && s.kind === "call")
         .map((s) => (s as { functionName?: string }).functionName),
-    );
+    ]);
+    for (const call of def.calls) {
+      if (firedBodyCalls.has(call.functionName)) continue;
+      this.runFunctionCall(call, scope, locals);
+    }
     const firedBodySoundKeys = new Set(
       def.body
         .filter((s, i) => bodyDecisions[i] && s.kind === "call")
@@ -596,11 +680,15 @@ export class Player {
       if (action.command === "callFunctions" && calls.length > 0 && calls.every((c) => firedBodyCalls.has(c.functionName))) return;
       const soundKey = actionSoundKey(action);
       if (soundKey && firedBodySoundKeys.has(soundKey)) return;
-      this.runFunctionAction(action, locals);
+      this.runFunctionAction(action, locals, scope);
     });
-    this.runFunctionBody(def.body, locals, bodyDecisions);
+    this.runFunctionBody(def.body, locals, bodyDecisions, scope);
     this.render();
     return true;
+    } finally {
+      if (reentry) this.functionReentry.set(key, reentry);
+      else this.functionReentry.delete(key);
+    }
   }
 
   /** Decide which of a function's frame-tagged actions fire, group-wise (cf. runScript). A run of
@@ -627,17 +715,17 @@ export class Player {
   }
 
   /** Bind a call's raw argument string to a function's parameter names. */
-  private bindParams(parameters: string[], argsRaw?: string, callerLocals?: Locals): Locals {
+  private bindParams(parameters: string[], argsRaw?: string, callerLocals?: Locals, scope: ClipInstance = this.root): Locals {
     const locals: Locals = {};
     if (!parameters.length) return locals;
-    const values = this.parseArgs(argsRaw, callerLocals);
+    const values = this.parseArgs(argsRaw, callerLocals, scope);
     parameters.forEach((param, i) => { locals[param] = values[i]; });
     return locals;
   }
 
   /** Split a raw arg string on top-level commas and resolve each to a value. */
-  private parseArgs(argsRaw: string | undefined, locals?: Locals): (VarValue | undefined)[] {
-    return splitTopLevelArgs(argsRaw).map((p) => this.resolveExpr(p.trim(), locals));
+  private parseArgs(argsRaw: string | undefined, locals?: Locals, scope: ClipInstance = this.root): (VarValue | undefined)[] {
+    return splitTopLevelArgs(argsRaw).map((p) => this.resolveExpr(p.trim(), locals, scope));
   }
 
   /** Milliseconds since page start — AVM1 `getTimer()`. Absolute, so it's consistent
@@ -647,20 +735,214 @@ export class Player {
   }
 
   /** Resolve an assignment RHS / argument expression to a value (param refs → locals). */
-  private resolveExpr(raw: string, locals?: Locals): VarValue | undefined {
-    const e = raw.trim();
+  private resolveExpr(raw: string, locals?: Locals, scope: ClipInstance = this.root): VarValue | undefined {
+    let e = raw.trim();
     if (e === "") return undefined;
+    while (e.startsWith("(") && matchingParenRuntime(e) === e.length - 1) e = e.slice(1, -1).trim();
+    if (e === "undefined") return undefined;
+    if (e === "null") return null;
+    if (e === "_global.Infinity" || e === "Infinity") return Number.POSITIVE_INFINITY;
+    if (e === "NaN") return Number.NaN;
+    const ternary = splitTopLevelTernary(e);
+    if (ternary) return this.resolveExpr(this.evalRuntimeCondition(ternary.condition, locals ?? {}, scope) ? ternary.whenTrue : ternary.whenFalse, locals, scope);
     if (e === "getTimer()") return this.getTimer();
+    if (e === "Math.random()") return Math.random();
+    if (e === "new Object()") return {};
+    if (e === "new Array()" || e === "[]") return [];
+    if (e === "new MovieClipLoader()") return { __avm1Type: "MovieClipLoader", listeners: [] };
+    const newArrayArgs = singleArgCall(e, "new Array");
+    if (newArrayArgs !== undefined) return this.parseArgs(newArrayArgs, locals, scope);
+    if (e.startsWith("{") && e.endsWith("}")) return this.resolveObjectLiteral(e, locals, scope);
+    const parseIntArg = singleArgCall(e, "parseInt");
+    if (parseIntArg !== undefined) {
+      const value = this.resolveExpr(parseIntArg, locals, scope);
+      const parsed = Number.parseInt(String(value ?? ""), 10);
+      return Number.isFinite(parsed) ? parsed : undefined;
+    }
+    const parseFloatArg = singleArgCall(e, "parseFloat");
+    if (parseFloatArg !== undefined) {
+      const value = this.resolveExpr(parseFloatArg, locals, scope);
+      const parsed = Number.parseFloat(String(value ?? ""));
+      return Number.isFinite(parsed) ? parsed : undefined;
+    }
+    const numberArg = singleArgCall(e, "Number");
+    if (numberArg !== undefined) return Number(this.resolveExpr(numberArg, locals, scope) ?? 0);
+    const stringArg = singleArgCall(e, "String");
+    if (stringArg !== undefined) return String(this.resolveExpr(stringArg, locals, scope) ?? "");
+    const booleanArg = singleArgCall(e, "Boolean");
+    if (booleanArg !== undefined) return avm1Boolean(this.resolveExpr(booleanArg, locals, scope) ?? false);
+    const floorArg = singleArgCall(e, "Math.floor");
+    if (floorArg !== undefined) return Math.floor(Number(this.resolveExpr(floorArg, locals, scope) ?? 0));
+    const ceilArg = singleArgCall(e, "Math.ceil");
+    if (ceilArg !== undefined) return Math.ceil(Number(this.resolveExpr(ceilArg, locals, scope) ?? 0));
+    const roundArg = singleArgCall(e, "Math.round");
+    if (roundArg !== undefined) return Math.round(Number(this.resolveExpr(roundArg, locals, scope) ?? 0));
+    const absArg = singleArgCall(e, "Math.abs");
+    if (absArg !== undefined) return Math.abs(Number(this.resolveExpr(absArg, locals, scope) ?? 0));
+    if (e.startsWith("typeof ")) return avm1Typeof(this.resolveExpr(e.slice(7).trim(), locals, scope));
+    const xpath = parseXPathCall(e);
+    if (xpath) {
+      const [context, path] = this.parseArgs(xpath.arguments, locals, scope);
+      return xpath.name === "selectNodes" ? selectXmlNodes(context, String(path ?? "")) : selectXmlNodes(context, String(path ?? ""))[0];
+    }
+    const xpathMember = parseXPathMemberCall(e);
+    if (xpathMember) {
+      const [context, path] = this.parseArgs(xpathMember.arguments, locals, scope);
+      let current: unknown = xpathMember.name === "selectNodes" ? selectXmlNodes(context, String(path ?? "")) : selectXmlNodes(context, String(path ?? ""))[0];
+      for (const token of objectPathTokens(xpathMember.memberPath)) {
+        if (current instanceof ClipInstance) current = this.resolveClipMember(current, token);
+        else if (Array.isArray(current)) current = token === "length" ? current.length : current[Number(this.resolveExpr(token, locals, scope) ?? token)];
+        else if (isXmlNode(current)) current = readXmlNodeProperty(current, token);
+        else if (isAvm1Object(current)) current = current[token];
+        else return undefined;
+      }
+      return isVarValue(current) ? current : undefined;
+    }
+    const delegate = parseDelegateCreate(e);
+    if (delegate) {
+      return {
+        __avm1Delegate: true,
+        target: this.resolveValueTarget(scope, delegate.target, locals),
+        method: delegate.method.split(".").pop() ?? delegate.method,
+      };
+    }
+    if (e === "new XML()") return { __avm1Type: "XML" };
+    const tween = parseNewTween(e);
+    if (tween) return this.createTweenObject(tween.arguments, locals, scope);
+    const intervalArgs = singleArgCall(e, "setInterval");
+    if (intervalArgs !== undefined) return this.createInterval(intervalArgs, locals, scope);
+    const constructed = this.constructObject(e, locals, scope);
+    if (constructed) return constructed;
+    const upper = parseMethodCall(e, "toUpperCase");
+    if (upper) {
+      const target = upper.target ? this.resolveValueTarget(scope, upper.target, locals) : undefined;
+      return target === undefined ? undefined : String(target).toUpperCase();
+    }
+    const split = parseMethodCall(e, "split");
+    if (split) {
+      const target = split.target ? this.resolveValueTarget(scope, split.target, locals) : undefined;
+      const [separator] = this.parseArgs(split.arguments, locals, scope);
+      return target === undefined ? undefined : String(target).split(String(separator ?? ""));
+    }
+    const substring = parseMethodCall(e, "substring");
+    if (substring) {
+      const target = substring.target ? this.resolveValueTarget(scope, substring.target, locals) : undefined;
+      const [start, end] = this.parseArgs(substring.arguments, locals, scope);
+      return target === undefined ? undefined : String(target).substring(Number(start ?? 0), end === undefined ? undefined : Number(end));
+    }
+    const substr = parseMethodCall(e, "substr");
+    if (substr) {
+      const target = substr.target ? this.resolveValueTarget(scope, substr.target, locals) : undefined;
+      const [start, length] = this.parseArgs(substr.arguments, locals, scope);
+      return target === undefined ? undefined : String(target).substr(Number(start ?? 0), length === undefined ? undefined : Number(length));
+    }
+    const charCodeAt = parseMethodCall(e, "charCodeAt");
+    if (charCodeAt) {
+      const target = charCodeAt.target ? this.resolveValueTarget(scope, charCodeAt.target, locals) : undefined;
+      const [index] = this.parseArgs(charCodeAt.arguments, locals, scope);
+      return target === undefined ? undefined : String(target).charCodeAt(Number(index ?? 0));
+    }
+    const indexOf = parseMethodCall(e, "indexOf");
+    if (indexOf) {
+      const target = indexOf.target ? this.resolveValueTarget(scope, indexOf.target, locals) : undefined;
+      const [needle, start] = this.parseArgs(indexOf.arguments, locals, scope);
+      return target === undefined ? undefined : String(target).indexOf(String(needle ?? ""), start === undefined ? undefined : Number(start));
+    }
+    const join = parseMethodCall(e, "join");
+    if (join) {
+      const target = join.target ? this.resolveValueTarget(scope, join.target, locals) : undefined;
+      const [separator] = this.parseArgs(join.arguments, locals, scope);
+      return Array.isArray(target) ? target.map((value) => value === null || value === undefined ? "" : String(value)).join(String(separator ?? ",")) : undefined;
+    }
+    const splice = parseMethodCall(e, "splice");
+    if (splice) {
+      const target = splice.target ? this.resolveValueTarget(scope, splice.target, locals) : undefined;
+      const [start, deleteCount, ...items] = this.parseArgs(splice.arguments, locals, scope);
+      return Array.isArray(target) ? target.splice(Number(start ?? 0), deleteCount === undefined ? target.length : Number(deleteCount), ...items) : undefined;
+    }
+    const pop = parseMethodCall(e, "pop");
+    if (pop) {
+      const target = pop.target ? this.resolveValueTarget(scope, pop.target, locals) : undefined;
+      return Array.isArray(target) ? target.pop() : undefined;
+    }
+    const reverse = parseMethodCall(e, "reverse");
+    if (reverse) {
+      const target = reverse.target ? this.resolveValueTarget(scope, reverse.target, locals) : undefined;
+      return Array.isArray(target) ? target.reverse() : undefined;
+    }
+    const concat = parseMethodCall(e, "concat");
+    if (concat) {
+      const target = concat.target ? this.resolveValueTarget(scope, concat.target, locals) : undefined;
+      const values = this.parseArgs(concat.arguments, locals, scope);
+      if (Array.isArray(target)) return target.concat(...values);
+      return target === undefined ? undefined : String(target).concat(...values.map((value) => String(value ?? "")));
+    }
+    const toString = parseMethodCall(e, "toString");
+    if (toString) {
+      const target = toString.target ? this.resolveValueTarget(scope, toString.target, locals) : undefined;
+      return target === undefined ? undefined : String(target);
+    }
+    const attach = parseMethodCall(e, "attachMovie");
+    if (attach) {
+      const target = attach.target ? this.resolveValueTarget(scope, attach.target, locals) : scope;
+      return target instanceof ClipInstance ? this.attachMovie(target, attach.arguments, locals) : undefined;
+    }
+    const emptyClip = parseMethodCall(e, "createEmptyMovieClip");
+    if (emptyClip) {
+      const target = emptyClip.target ? this.resolveValueTarget(scope, emptyClip.target, locals) : scope;
+      return target instanceof ClipInstance ? this.createEmptyMovieClip(target, emptyClip.arguments, locals) : undefined;
+    }
+    const depthTarget = singleArgCall(e, "getNextHighestDepth");
+    if (depthTarget !== undefined) return this.nextHighestDepth(scope);
+    if (/\.getNextHighestDepth\s*\(\s*\)$/.test(e)) {
+      const owner = e.replace(/\.getNextHighestDepth\s*\(\s*\)$/, "");
+      const target = this.resolveValueTarget(scope, owner, locals);
+      return target instanceof ClipInstance ? this.nextHighestDepth(target) : undefined;
+    }
+    const parts = splitTopLevelOperator(e, "+");
+    if (parts.length > 1) {
+      const values = parts.map((part) => this.resolveExpr(part, locals, scope));
+      if (values.some((value) => typeof value === "string")) return values.map((value) => value === undefined ? "" : String(value)).join("");
+      const sum = values.reduce<number>((total, value) => total + Number(value ?? 0), 0);
+      return Number.isFinite(sum) ? sum : undefined;
+    }
+    if (e.startsWith("-") && !/^-?\d+(\.\d+)?$/.test(e)) {
+      const value = Number(this.resolveExpr(e.slice(1), locals, scope) ?? 0);
+      return Number.isFinite(value) ? -value : undefined;
+    }
+    if (!e.startsWith("-")) {
+      const minusParts = splitTopLevelOperator(e, "-");
+      if (minusParts.length > 1) {
+        const [first, ...rest] = minusParts.map((part) => Number(this.resolveExpr(part, locals, scope) ?? 0));
+        const value = rest.reduce((total, item) => total - item, first);
+        return Number.isFinite(value) ? value : undefined;
+      }
+    }
+    for (const op of ["*", "/", "%"]) {
+      const mathParts = splitTopLevelOperator(e, op);
+      if (mathParts.length <= 1) continue;
+      const numbers = mathParts.map((part) => Number(this.resolveExpr(part, locals, scope) ?? 0));
+      const value = numbers.slice(1).reduce((total, item) => {
+        if (op === "*") return total * item;
+        if (op === "/") return item === 0 ? Number.NaN : total / item;
+        return item === 0 ? Number.NaN : total % item;
+      }, numbers[0]);
+      return Number.isFinite(value) ? value : undefined;
+    }
     const evalArg = singleArgCall(e, "eval");
     if (evalArg !== undefined) {
-      const name = this.resolveExpr(evalArg, locals);
+      const name = this.resolveExpr(evalArg, locals, scope);
       return name === undefined ? undefined : this.store?.get(String(name)) ?? this.textVars.get(normalizeVarName(String(name))) ?? undefined;
     }
     if ((e.startsWith('"') && e.endsWith('"')) || (e.startsWith("'") && e.endsWith("'"))) return e.slice(1, -1);
     if (e === "true") return true;
     if (e === "false") return false;
+    if (e === "null") return null;
     if (/^-?\d+(\.\d+)?$/.test(e)) return Number(e);
     if (locals && e in locals) return locals[e];
+    const scoped = this.resolveObjectPath(scope, e, locals);
+    if (scoped !== undefined) return scoped;
+    if (looksLikeObjectPath(e)) return undefined;
     // A bare identifier/path is a variable read (e.g. a flag), then a loadVariables()
     // text var (the music control's `_parent.t_musicOn`, which lives in textVars not the store).
     if (/^[A-Za-z_$][\w$.]*$/.test(e)) return this.store?.get(e) ?? this.textVars.get(normalizeVarName(e)) ?? undefined;
@@ -670,6 +952,7 @@ export class Player {
   /** Read a variable in a clip's scope: a clip-local timeline var first, else the shared store. */
   private scopeGet(clip: ClipInstance, name: string): VarValue | undefined {
     if (isLocalVar(name) && name in clip.locals) return clip.locals[name];
+    if (name in clip.props) return clip.props[name];
     return this.store?.get(name);
   }
 
@@ -713,9 +996,9 @@ export class Player {
   }
 
   /** Evaluate a body statement's if/else guard, substituting local parameters. */
-  private branchPasses(condition: string | undefined, locals: Locals): boolean {
-    if (!condition || !this.store) return condition ? false : true;
-    return evalCondition(localizeCondition(condition, locals), this.store);
+  private branchPasses(condition: string | undefined, locals: Locals, scope: ClipInstance = this.root): boolean {
+    if (!condition) return true;
+    return this.evalRuntimeCondition(condition, locals, scope);
   }
 
   /**
@@ -724,69 +1007,261 @@ export class Player {
    * but self-blocking guards such as `if(!blnDisableSkip){ blnDisableSkip = 1; ... }`
    * must not cause later statements from the same original block to skip themselves.
    */
-  private functionBodyDecisions(body: BodyStatement[], locals: Locals): boolean[] {
-    const guardLocals = this.functionGuardLocals(body, locals);
-    return body.map((statement) => this.branchPasses(statement.branchCondition, guardLocals));
+  private functionBodyDecisions(body: BodyStatement[], locals: Locals, scope: ClipInstance = this.root): boolean[] {
+    const guardLocals = this.functionGuardLocals(body, locals, scope);
+    return body.map((statement) => this.branchPasses(statement.branchCondition, guardLocals, scope));
   }
 
-  private runFunctionBody(body: BodyStatement[], locals: Locals, decisions = this.functionBodyDecisions(body, locals)) {
+  private runFunctionBody(body: BodyStatement[], locals: Locals, decisions: boolean[] | undefined = undefined, scope: ClipInstance = this.root) {
+    decisions ??= this.functionBodyDecisions(body, locals, scope);
     body.forEach((statement, i) => {
-      if (decisions[i]) this.runBodyStatement(statement, locals);
+      if (decisions[i]) this.runBodyStatement(statement, locals, scope);
     });
   }
 
-  private functionGuardLocals(body: BodyStatement[], locals: Locals): Locals {
+  private functionGuardLocals(body: BodyStatement[], locals: Locals, scope: ClipInstance): Locals {
     const guardLocals: Locals = { ...locals };
     for (const statement of body) {
       if (statement.kind !== "assign") continue;
       if (conditionReferencesTarget(statement.branchCondition, statement.target)) continue;
-      if (!this.branchPasses(statement.branchCondition, guardLocals)) continue;
-      const value = this.resolveExpr(statement.rawValue, guardLocals);
+      if (!this.branchPasses(statement.branchCondition, guardLocals, scope)) continue;
+      const value = this.resolveGuardExpr(statement.rawValue, guardLocals);
       if (value !== undefined) guardLocals[statement.target] = value;
     }
     return guardLocals;
   }
 
-  private runBodyStatement(statement: BodyStatement, locals: Locals) {
+  private resolveGuardExpr(raw: string | undefined, locals: Locals): VarValue | undefined {
+    const e = raw?.trim() ?? "";
+    if (!e) return undefined;
+    if ((e.startsWith('"') && e.endsWith('"')) || (e.startsWith("'") && e.endsWith("'"))) return e.slice(1, -1);
+    if (e === "true") return true;
+    if (e === "false") return false;
+    if (e === "null") return null;
+    if (/^-?\d+(\.\d+)?$/.test(e)) return Number(e);
+    if (e in locals) return locals[e];
+    if (/^[A-Za-z_$][\w$.]*$/.test(e)) return this.store?.get(e) ?? undefined;
+    return undefined;
+  }
+
+  private runBodyStatement(statement: BodyStatement, locals: Locals, scope: ClipInstance) {
     if (statement.kind === "assign") {
-      const value = this.resolveExpr(statement.rawValue, locals);
+      const value = this.resolveExpr(statement.rawValue, locals, scope);
       this.trackSoundObject(statement.target, statement.rawValue);
+      if (isLocalVar(statement.target) && value !== undefined) locals[statement.target] = value;
+      if (value !== undefined && this.applyPropertyAssignment(scope, statement.target, value, locals)) return;
+      if (value !== undefined && this.assignObjectPath(scope, statement.target, value, locals)) return;
       if (this.store && value !== undefined) this.store.set(statement.target, value);
       return;
     }
-    this.runBodyCall(statement, locals);
+    this.runBodyCall(statement, locals, scope);
   }
 
   /** Dispatch a body call: a waiter, a clip command, or a (possibly cross-level) function call. */
-  private runBodyCall(call: Extract<BodyStatement, { kind: "call" }>, locals: Locals) {
+  private runBodyCall(call: Extract<BodyStatement, { kind: "call" }>, locals: Locals, scope: ClipInstance) {
     const fn = call.functionName;
     const target = call.target;
-    if (this.runMovieLoadCall(fn, call.arguments, locals)) return;
-    if (this.runMovieUnloadCall(fn, call.arguments, locals)) return;
+    if (fn === "while") {
+      this.runWhileBody(call.arguments, locals, scope);
+      return;
+    }
+    if (fn === "Tween" && target === "mx.transitions") {
+      this.createTweenObject(call.arguments, locals, scope);
+      return;
+    }
+    if (fn === "addEventListener" && target) {
+      const owner = this.resolveValueTarget(scope, target, locals);
+      const [eventName, listener] = this.parseArgs(call.arguments, locals, scope);
+      if (owner instanceof ClipInstance && typeof eventName === "string" && isDelegate(listener)) {
+        this.addEventListener(owner, eventName, listener);
+      }
+      return;
+    }
+    if (fn === "removeEventListener" && target) {
+      const owner = this.resolveValueTarget(scope, target, locals);
+      const [eventName, listener] = this.parseArgs(call.arguments, locals, scope);
+      if (owner instanceof ClipInstance && typeof eventName === "string" && isDelegate(listener)) {
+        this.removeEventListener(owner, eventName, listener);
+      }
+      return;
+    }
+    if (fn === "addListener" && target) {
+      const owner = this.resolveValueTarget(scope, target, locals);
+      const [listener] = this.parseArgs(call.arguments, locals, scope);
+      if (isMovieClipLoader(owner) && isAvm1Object(listener)) {
+        const listeners = movieClipLoaderListeners(owner);
+        if (!listeners.includes(listener)) listeners.push(listener);
+      }
+      return;
+    }
+    if (fn === "loadClip" && target) {
+      const owner = this.resolveValueTarget(scope, target, locals);
+      const [url, clip] = this.parseArgs(call.arguments, locals, scope);
+      if (isMovieClipLoader(owner) && clip instanceof ClipInstance) {
+        this.loadClipInto(owner, String(url ?? ""), clip);
+      }
+      return;
+    }
+    if (fn === "getURL") {
+      const [url, targetWindow] = this.parseArgs(call.arguments, locals, scope);
+      if (url !== undefined) this.options.onGetURL?.(String(url), targetWindow === undefined ? undefined : String(targetWindow));
+      return;
+    }
+    if (fn === "dispatchEvent") {
+      const owner = target ? this.resolveValueTarget(scope, target, locals) : scope;
+      const [event] = this.parseArgs(call.arguments, locals, scope);
+      if (owner instanceof ClipInstance && isAvm1Object(event)) {
+        this.dispatchEvent(owner, event);
+      }
+      return;
+    }
+    if (fn === "setTextFormat" && target) {
+      const textTarget = this.resolveTextTarget(scope, target, locals);
+      const [format] = this.parseArgs(call.arguments, locals, scope);
+      if (textTarget && isAvm1Object(format)) {
+        Object.assign(this.textOverrideFor(textTarget), dynamicTextFromTextFormat(format));
+      }
+      return;
+    }
+    if (fn === "getNextHighestDepth") return;
+    if (fn === "attachMovie") {
+      const owner = target ? this.resolveValueTarget(scope, target, locals) : scope;
+      if (owner instanceof ClipInstance) {
+        this.attachMovie(owner, call.arguments, locals);
+      }
+      return;
+    }
+    if (fn === "createEmptyMovieClip") {
+      const owner = target ? this.resolveValueTarget(scope, target, locals) : scope;
+      if (owner instanceof ClipInstance) {
+        this.createEmptyMovieClip(owner, call.arguments, locals);
+      }
+      return;
+    }
+    if (fn === "swapDepths" && target) {
+      const owner = this.resolveValueTarget(scope, target, locals);
+      const [depth] = this.parseArgs(call.arguments, locals, scope);
+      if (owner instanceof ClipInstance) this.swapDepths(owner, depth);
+      return;
+    }
+    if (fn === "setMask" && target) {
+      const owner = this.resolveValueTarget(scope, target, locals);
+      const [mask] = this.parseArgs(call.arguments, locals, scope);
+      if (owner instanceof ClipInstance) owner.maskClip = mask instanceof ClipInstance ? mask : undefined;
+      return;
+    }
+    if (fn === "startDrag") {
+      const owner = target ? this.resolveValueTarget(scope, target, locals) : scope;
+      if (owner instanceof ClipInstance) this.startDrag(owner, call.arguments, locals, scope);
+      return;
+    }
+    if (fn === "stopDrag") {
+      const owner = target ? this.resolveValueTarget(scope, target, locals) : this.activeDrag?.clip;
+      if (!owner || owner === this.activeDrag?.clip) this.activeDrag = undefined;
+      return;
+    }
+    if (fn === "push") {
+      const owner = target ? this.resolveValueTarget(scope, target, locals) : undefined;
+      if (Array.isArray(owner)) owner.push(...this.parseArgs(call.arguments, locals, scope));
+      return;
+    }
+    if (fn === "reverse") {
+      const owner = target ? this.resolveValueTarget(scope, target, locals) : undefined;
+      if (Array.isArray(owner)) owner.reverse();
+      return;
+    }
+    if (fn === "pop") {
+      const owner = target ? this.resolveValueTarget(scope, target, locals) : undefined;
+      if (Array.isArray(owner)) owner.pop();
+      return;
+    }
+    if (fn === "shift") {
+      const owner = target ? this.resolveValueTarget(scope, target, locals) : undefined;
+      if (Array.isArray(owner)) owner.shift();
+      return;
+    }
+    if (fn === "unshift") {
+      const owner = target ? this.resolveValueTarget(scope, target, locals) : undefined;
+      if (Array.isArray(owner)) owner.unshift(...this.parseArgs(call.arguments, locals, scope));
+      return;
+    }
+    if (fn === "splice") {
+      const owner = target ? this.resolveValueTarget(scope, target, locals) : undefined;
+      const [start, deleteCount, ...items] = this.parseArgs(call.arguments, locals, scope);
+      if (Array.isArray(owner)) owner.splice(Number(start ?? 0), deleteCount === undefined ? owner.length : Number(deleteCount), ...items);
+      return;
+    }
+    if (fn === "setInterval") {
+      this.createInterval(call.arguments, locals, scope);
+      return;
+    }
+    if (fn === "clearInterval") {
+      const [id] = this.parseArgs(call.arguments, locals, scope);
+      this.clearRuntimeTimer(id);
+      return;
+    }
+    if (fn === "setTimeout") {
+      this.createTimeout(call.arguments, locals, scope);
+      return;
+    }
+    if (fn === "removeMovieClip" && target) {
+      const owner = this.resolveValueTarget(scope, target, locals);
+      if (owner instanceof ClipInstance) this.removeMovieClip(owner);
+      return;
+    }
+    if (fn === "unloadMovie" && target) {
+      const owner = this.resolveValueTarget(scope, target, locals);
+      if (owner instanceof ClipInstance) this.unloadMovieClip(owner);
+      return;
+    }
+    if (fn === "load" && target) {
+      const owner = this.resolveValueTarget(scope, target, locals);
+      const [url] = this.parseArgs(call.arguments, locals, scope);
+      if (isAvm1Object(owner)) this.loadXmlObject(owner, String(url ?? ""));
+      return;
+    }
+    if (this.runMovieLoadCall(fn, call.arguments, locals, scope)) return;
+    if (this.runMovieUnloadCall(fn, call.arguments, locals, scope)) return;
     if (this.runSoundMethod(target, fn, call.arguments, locals)) return;
     if (WAITER_FUNCTIONS.has(fn)) {
-      this.options.onWaiter?.(fn, this.parseArgs(call.arguments, locals));
+      this.options.onWaiter?.(fn, this.parseArgs(call.arguments, locals, scope));
       return;
     }
     if (SOUND_MARKER_FUNCTIONS.has(fn)) {
-      const segment = this.parseArgs(call.arguments, locals)[0];
+      const segment = this.parseArgs(call.arguments, locals, scope)[0];
       if (segment !== undefined) this.runSoundMarker(target, String(segment), call.arguments);
       return;
     }
     if (TIMELINE_COMMANDS.has(fn) && target) {
-      const frame = this.parseArgs(call.arguments, locals)[0] ?? 0;
+      const frame = this.parseArgs(call.arguments, locals, scope)[0] ?? 0;
       if (/^_level\d+/i.test(target)) this.options.onClipCommand?.(target, fn, frame);
-      else this.runNamedClipCommand(this.root, target, fn, frame);
+      else this.runNamedClipCommand(scope, target, fn, frame);
       return;
     }
+    if (target && !/^_level\d+/i.test(target)) {
+      const objectTarget = this.resolveValueTarget(scope, target, locals);
+      if (objectTarget instanceof ClipInstance && objectTarget !== scope) {
+        const method = this.methodFunctionForClip(objectTarget, fn);
+        if (method) {
+          this.callFunctionDef(method.key, method.def, call.arguments, locals, objectTarget, scope);
+          return;
+        }
+      }
+    }
     if (!target || target === "self" || target === "this" || target === "_root" || target === "_level0") {
-      this.callFunction(fn, call.arguments, locals);
+      const method = target === "self" || target === "this" ? this.methodFunctionForClip(scope, fn) : undefined;
+      if (method) this.callFunctionDef(method.key, method.def, call.arguments, locals, scope);
+      else this.callFunction(fn, call.arguments, locals);
     } else if (/^_level\d+/i.test(target)) {
       this.options.onCallFunction?.(target, fn, this.resolveArgsString(call.arguments, locals));
     } else {
-      const clip = this.resolveTarget(this.root, target) ?? this.findClipByName(this.root, target);
+      const clip = this.resolveTarget(scope, target) ?? this.findClipByName(scope, target);
       if (clip === this.root) this.callFunction(fn, call.arguments, locals);
-      else if (clip) this.callClipFunction(clip, fn);
+      else if (clip) {
+        const method = this.methodFunctionForClip(clip, fn);
+        if (method) this.callFunctionDef(method.key, method.def, call.arguments, locals, clip, scope);
+        else this.callClipFunction(clip, fn);
+      }
     }
   }
 
@@ -807,9 +1282,9 @@ export class Player {
     }
   }
 
-  private runMovieLoadCall(fn: string, argsRaw: string | undefined, locals?: Locals): boolean {
+  private runMovieLoadCall(fn: string, argsRaw: string | undefined, locals?: Locals, scope: ClipInstance = this.root): boolean {
     if (fn !== "loadMovieNum" && fn !== "loadMovie") return false;
-    const args = this.parseArgs(argsRaw, locals);
+    const args = this.parseArgs(argsRaw, locals, scope);
     const swf = args[0] === undefined ? "" : String(args[0]);
     if (!swf) return true;
     this.options.onNavigate?.({
@@ -821,9 +1296,9 @@ export class Player {
     return true;
   }
 
-  private runMovieUnloadCall(fn: string, argsRaw: string | undefined, locals?: Locals): boolean {
+  private runMovieUnloadCall(fn: string, argsRaw: string | undefined, locals?: Locals, scope: ClipInstance = this.root): boolean {
     if (fn !== "unloadMovieNum" && fn !== "unloadMovie") return false;
-    const args = this.parseArgs(argsRaw, locals);
+    const args = this.parseArgs(argsRaw, locals, scope);
     this.options.onNavigate?.({
       command: fn,
       level: levelFromValue(args[0], firstRawArg(argsRaw, 0)),
@@ -903,7 +1378,7 @@ export class Player {
 
     if (fn === "setVolume") {
       const value = this.parseArgs(argsRaw, locals)[0];
-      this.options.onSound?.({ command: "setVolume", target, value: typeof value === "boolean" ? Number(value) : value, executionContext: "function" });
+      this.options.onSound?.({ command: "setVolume", target, value: primitiveValue(typeof value === "boolean" ? Number(value) : value), executionContext: "function" });
       return true;
     }
 
@@ -1029,17 +1504,17 @@ export class Player {
     return Number.isFinite(n) ? Math.max(0, n - 1) : -1;
   }
 
-  private runFunctionAction(action: ControlAction, locals?: Locals) {
+  private runFunctionAction(action: ControlAction, locals?: Locals, scope: ClipInstance = this.root) {
     switch (action.command) {
       case "stop":
-        if (isSelfTimelineTarget(action.target)) this.root.playing = false;
+        if (isSelfTimelineTarget(action.target)) scope.playing = false;
         break;
       case "play":
-        if (isSelfTimelineTarget(action.target)) this.root.playing = true;
+        if (isSelfTimelineTarget(action.target)) scope.playing = true;
         break;
       case "gotoAndPlay":
       case "gotoAndStop": {
-        const target = this.resolveTarget(this.root, action.target);
+        const target = this.resolveTarget(scope, action.target);
         const frame = this.resolveFrame(action, target);
         if (target && frame >= 0) {
           target.playing = action.command === "gotoAndPlay";
@@ -1083,14 +1558,15 @@ export class Player {
         const value = this.resolveExpr(action.rawValue ?? String(action.value ?? ""));
         this.trackSoundObject(action.target, action.rawValue);
         if (this.store && action.target && value !== undefined) {
-          this.scopeSet(this.root, action.target, value);
+          if (this.applyPropertyAssignment(scope, action.target, value, locals)) break;
+          this.scopeSet(scope, action.target, value);
           const norm = normalizeVarName(action.target);
           if (this.boundTextVars.has(norm)) this.textVars.set(norm, String(value));
         }
         break;
       }
       case "callFunctions":
-        this.runCallFunctions(action, this.root, locals);
+        this.runCallFunctions(action, scope, locals);
         break;
       default:
         break;
@@ -1134,7 +1610,8 @@ export class Player {
       // Prefer a sprite-scoped function on the owning clip (a control's over()/out() label
       // reveal lives on its own sprite); fall back to a root/global function.
       if (target !== "_root" && this.spriteFunctions.get(clip.characterId)?.has(fn)) return this.callClipFunction(clip, fn);
-      return this.callFunction(fn, call.arguments);
+      const method = target !== "_root" ? this.methodFunctionForClip(clip, fn) : undefined;
+      return method ? this.callFunctionDef(method.key, method.def, call.arguments, locals, clip) : this.callFunction(fn, call.arguments);
     }
     if (/^_level\d+/i.test(target)) {
       // Absolute level targets (`_level6`, `_level0.x`) are routed to the
@@ -1152,8 +1629,40 @@ export class Player {
       ?? this.findClipByName(clip, name)
       ?? (fallbackClip ? (this.resolveTarget(fallbackClip, target) ?? this.findClipByName(fallbackClip, name)) : null);
     if (targetClip === this.root) return this.callFunction(fn, call.arguments, locals);
-    if (targetClip) return this.callClipFunction(targetClip, fn);
+    if (targetClip) {
+      const method = this.methodFunctionForClip(targetClip, fn);
+      if (method) return this.callFunctionDef(method.key, method.def, call.arguments, locals, targetClip, clip);
+      return this.callClipFunction(targetClip, fn);
+    }
+    if (this.functions.has(fn) && shouldFallbackToGlobalFunction(target, fn)) return this.callFunction(fn, call.arguments, locals);
     return false;
+  }
+
+  private methodFunctionForClip(clip: ClipInstance, functionName: string): { key: string; def: FunctionDef } | undefined {
+    const sourceKey = clip.scriptKey ?? this.clipSourceKey(this.getAsset(clip.characterId), clip.name);
+    if (!sourceKey) return undefined;
+    const key = methodFunctionKey(sourceKey, functionName);
+    const def = this.methodFunctions.get(key);
+    return def ? { key, def } : undefined;
+  }
+
+  private constructorFunctionForClip(clip: ClipInstance): { key: string; def: FunctionDef } | undefined {
+    const sourceKey = clip.scriptKey ?? this.clipSourceKey(this.getAsset(clip.characterId), clip.name);
+    if (!sourceKey) return undefined;
+    for (const [key, def] of this.methodFunctions) {
+      if (!key.startsWith(`${sourceKey}:`)) continue;
+      const functionName = key.slice(sourceKey.length + 1);
+      if (normalizeMethodKey(functionName) === sourceKey) return { key, def };
+    }
+    return undefined;
+  }
+
+  private runClipConstructor(clip: ClipInstance) {
+    if (clip.constructorRun) return;
+    const constructor = this.constructorFunctionForClip(clip);
+    if (!constructor) return;
+    clip.constructorRun = true;
+    this.callFunctionDef(constructor.key, constructor.def, undefined, undefined, clip);
   }
 
   private runSoundMetadataFallback(soundAction: SoundActionMetadata) {
@@ -1238,7 +1747,7 @@ export class Player {
         // A clip-function assignment (hideMe's `labelHidden = 1`) — into the clip's scope.
         const value = this.resolveExpr(action.rawValue ?? String(action.value ?? ""));
         this.trackSoundObject(action.target, action.rawValue);
-        if (action.target && value !== undefined) this.scopeSet(clip, action.target, value);
+        if (action.target && value !== undefined && !this.applyPropertyAssignment(clip, action.target, value)) this.scopeSet(clip, action.target, value);
         break;
       }
       default:
@@ -1267,6 +1776,7 @@ export class Player {
 
   private buildRoot(frame: number): ClipInstance {
     const root = new ClipInstance(ROOT_ID, "_root", null);
+    this.root = root;
     this.enterFrame(root, frame, 0);
     return root;
   }
@@ -1280,6 +1790,7 @@ export class Player {
   }
 
   private tickClip(clip: ClipInstance) {
+    this.tickLoadedTimeline(clip);
     const frameCount = this.frameCountFor(clip);
     if (clip.playing && frameCount > 1) {
       const next = clip.currentFrame + 1 >= frameCount ? 0 : clip.currentFrame + 1;
@@ -1287,7 +1798,16 @@ export class Player {
     } else if (clip.enteredFrame < 0) {
       this.enterFrame(clip, clip.currentFrame, 0);
     }
+    this.runAssignedEnterFrame(clip);
     for (const child of clip.childClips.values()) this.tickClip(child);
+  }
+
+  private tickLoadedTimeline(clip: ClipInstance) {
+    const timeline = clip.loadedTimeline;
+    if (!timeline || !clip.loadedPlaying) return;
+    const frameCount = Math.max(1, timeline.frameCount ?? timeline.frames?.length ?? timeline.frameSvgs?.length ?? 1);
+    if (frameCount <= 1) return;
+    clip.loadedFrame = clip.loadedFrame + 1 >= frameCount ? 0 : clip.loadedFrame + 1;
   }
 
   /** Move a clip to a frame: reconcile children, then run the frame's entry scripts.
@@ -1309,7 +1829,7 @@ export class Player {
   private reconcile(clip: ClipInstance) {
     const frames = this.framesFor(clip);
     if (!frames) return; // leaf-rendered sprite (baked frames only) — no children
-    const instances = frames[clip.currentFrame]?.instances ?? [];
+    const instances = this.instancesForFrame(clip, frames[clip.currentFrame]);
 
     const live = new Set<number>();
     for (const instance of instances) {
@@ -1321,8 +1841,12 @@ export class Player {
       const existing = clip.childClips.get(instance.depth);
       if (!existing || existing.characterId !== instance.characterId) {
         const child = new ClipInstance(instance.characterId, instanceName, clip);
+        child.scriptKey = this.clipSourceKey(asset, instanceName);
+        child.placedX = instance.matrix.tx;
+        child.placedY = instance.matrix.ty;
         clip.childClips.set(instance.depth, child);
         this.enterFrame(child, 0, 0);
+        this.runClipConstructor(child);
         // A command that arrived before this clip existed (e.g. the nav's proToolbar hide, issued by
         // a segment on load) is applied now, on creation, instead of being lost.
         const pendingKey = instanceName ? this.pendingClipCommandKey(instanceName) : undefined;
@@ -1337,6 +1861,12 @@ export class Player {
         // already-known name. Keep the live clip addressable so extracted AVM1
         // paths such as `_parent.<name>.gotoAndPlay(...)` continue to resolve.
         existing.name = instanceName;
+        existing.scriptKey = existing.scriptKey ?? this.clipSourceKey(asset, instanceName);
+      }
+      const child = clip.childClips.get(instance.depth);
+      if (child) {
+        child.placedX = instance.matrix.tx;
+        child.placedY = instance.matrix.ty;
       }
     }
     for (const [depth] of clip.childClips) {
@@ -1455,6 +1985,7 @@ export class Player {
           const value = this.resolveExpr(action.rawValue ?? String(action.value ?? ""));
           this.trackSoundObject(action.target, action.rawValue);
           if (this.store && action.target && value !== undefined) {
+            if (this.applyPropertyAssignment(clip, action.target, value)) break;
             this.scopeSet(clip, action.target, value);
             // If the assigned variable backs a dynamic text field, mirror it into the display
             // cache the field reads (the music control's `t_music` status label flips to its
@@ -1478,6 +2009,9 @@ export class Player {
     let node: ClipInstance | null = clip;
     for (let i = 0; i < parts.length; i += 1) {
       const name = parts[i];
+      if (i === 0 && (name === "this" || name === "self")) {
+        continue;
+      }
       if (i === 0 && (name === "_root" || name === "_level0" || name === "root")) {
         node = this.root;
         continue;
@@ -1499,6 +2033,706 @@ export class Player {
     return node;
   }
 
+  private applyPropertyAssignment(scope: ClipInstance, target: string | undefined, value: VarValue, locals?: Locals): boolean {
+    const parsed = splitPropertyTarget(target);
+    if (!parsed) return false;
+    if (parsed.property === "text" || parsed.property === "htmlText") {
+      const textTarget = this.resolveTextTarget(scope, parsed.owner, locals);
+      if (!textTarget) return false;
+      const override = this.textOverrideFor(textTarget);
+      override.text = String(value);
+      override.html = parsed.property === "htmlText";
+      return true;
+    }
+    const owner = this.resolveValueTarget(scope, parsed.owner, locals);
+    if (owner instanceof ClipInstance) return setClipProperty(owner, parsed.property, value);
+    const leaf = this.resolveLeafTarget(scope, parsed.owner, locals);
+    if (leaf) {
+      leaf.props[parsed.property] = value;
+      return true;
+    }
+    return false;
+  }
+
+  private resolveTextTarget(scope: ClipInstance, target: string, locals?: Locals): { id: number; owner?: ClipInstance; name?: string } | undefined {
+    const parts = target.split(".").filter(Boolean);
+    let node: ClipInstance | null = scope;
+    for (let i = 0; i < parts.length; i += 1) {
+      const name = parts[i];
+      if (i === 0 && (name === "this" || name === "self")) continue;
+      if (i === 0 && locals && name in locals) {
+        const local = locals[name];
+        node = local instanceof ClipInstance ? local : null;
+        continue;
+      }
+      if (i === 0 && (name === "_root" || name === "_level0" || name === "root")) {
+        node = this.root;
+        continue;
+      }
+      if (name === "_parent") {
+        node = node?.parent ?? node;
+        continue;
+      }
+      if (!node) return undefined;
+      const isLast = i === parts.length - 1;
+      if (isLast) {
+        const textId = this.findTextChildByName(node, name);
+        if (textId !== undefined) return { id: textId, owner: node, name };
+      }
+      node = findChildByName(node, name) ?? this.findClipByName(node, name);
+    }
+    return undefined;
+  }
+
+  private textOverrideFor(target: { id: number; owner?: ClipInstance; name?: string }): TextOverride {
+    if (target.owner && target.name) {
+      let scoped = this.clipTextOverrides.get(target.owner);
+      if (!scoped) {
+        scoped = new Map();
+        this.clipTextOverrides.set(target.owner, scoped);
+      }
+      let override = scoped.get(target.name);
+      if (!override) {
+        override = {};
+        scoped.set(target.name, override);
+      }
+      return override;
+    }
+    let override = this.textOverrides.get(target.id);
+    if (!override) {
+      override = {};
+      this.textOverrides.set(target.id, override);
+    }
+    return override;
+  }
+
+  private findTextChildByName(clip: ClipInstance, name: string): number | undefined {
+    const frame = this.framesFor(clip)?.[clip.currentFrame];
+    for (const instance of frame?.instances ?? []) {
+      if (instance.name !== name) continue;
+      const asset = this.getAsset(instance.characterId);
+      if (asset?.kind === "text") return asset.id;
+    }
+    return undefined;
+  }
+
+  private resolveLeafTarget(scope: ClipInstance, target: string, locals?: Locals): { owner: ClipInstance; name: string; props: Record<string, VarValue | undefined> } | undefined {
+    const parts = target.split(".").filter(Boolean);
+    if (!parts.length) return undefined;
+    const leafName = parts[parts.length - 1];
+    const ownerPath = parts.slice(0, -1).join(".") || "this";
+    const owner = this.resolveValueTarget(scope, ownerPath, locals);
+    if (!(owner instanceof ClipInstance)) return undefined;
+    if (!this.findLeafChild(owner, leafName)) return undefined;
+    return { owner, name: leafName, props: this.leafDisplayProps(owner, leafName) };
+  }
+
+  private attachMovie(owner: ClipInstance, argsRaw: string | undefined, locals?: Locals): ClipInstance | undefined {
+    const [linkageValue, nameValue, depthValue] = this.parseArgs(argsRaw, locals, owner);
+    const linkage = String(linkageValue ?? "").trim();
+    const characterId = this.linkageAssetIds.get(normalizeLinkageName(linkage));
+    if (!characterId || !this.getAsset(characterId)) return undefined;
+    const depth = Number(depthValue ?? this.nextHighestDepth(owner));
+    if (!Number.isFinite(depth)) return undefined;
+    const name = String(nameValue ?? `instance${depth}`);
+    const instance = {
+      depth,
+      characterId,
+      placedFrame: owner.currentFrame,
+      matrix: { ...IDENTITY },
+      opacity: 1,
+      name,
+    };
+    owner.dynamicInstances.set(depth, instance);
+    owner.depthNames.set(depth, name);
+    const child = new ClipInstance(characterId, name, owner);
+    child.scriptKey = this.clipSourceKey(this.getAsset(characterId), name);
+    child.placedX = instance.matrix.tx;
+    child.placedY = instance.matrix.ty;
+    owner.childClips.set(depth, child);
+    this.enterFrame(child, 0, 0);
+    this.runClipConstructor(child);
+    return child;
+  }
+
+  private createEmptyMovieClip(owner: ClipInstance, argsRaw: string | undefined, locals?: Locals): ClipInstance | undefined {
+    const [nameValue, depthValue] = this.parseArgs(argsRaw, locals, owner);
+    const depth = Number(depthValue ?? this.nextHighestDepth(owner));
+    if (!Number.isFinite(depth)) return undefined;
+    const name = String(nameValue ?? `instance${depth}`);
+    owner.dynamicInstances.set(depth, {
+      depth,
+      characterId: 0,
+      placedFrame: owner.currentFrame,
+      matrix: { ...IDENTITY },
+      opacity: 1,
+      name,
+    });
+    owner.depthNames.set(depth, name);
+    const child = new ClipInstance(0, name, owner);
+    child.placedX = 0;
+    child.placedY = 0;
+    owner.childClips.set(depth, child);
+    return child;
+  }
+
+  private clipSourceKey(asset: TimelineAsset | undefined, name: string): string | undefined {
+    for (const linkageName of asset?.linkageNames ?? []) {
+      const registered = this.linkageClassKeys.get(normalizeLinkageName(linkageName));
+      if (registered) return registered;
+    }
+    return clipSourceKey(asset, name);
+  }
+
+  private constructObject(raw: string, locals: Locals | undefined, scope: ClipInstance): VarValue | undefined {
+    const match = raw.match(/^new\s+([\w$.]+)\s*\((.*)\)$/s);
+    if (!match) return undefined;
+    const classPath = match[1];
+    const constructorName = classPath.split(".").pop() ?? classPath;
+    const scriptKey = normalizeMethodKey(constructorName);
+    if (!scriptKey) return undefined;
+    const def = this.methodFunctions.get(methodFunctionKey(scriptKey, constructorName)) ?? this.functions.get(constructorName);
+    if (!def) return { __avm1Class: classPath };
+    const instance = new ClipInstance(ROOT_ID, constructorName, null);
+    instance.scriptKey = scriptKey;
+    this.callFunctionDef(methodFunctionKey(scriptKey, constructorName), def, match[2], locals, instance, scope);
+    return instance;
+  }
+
+  private loadXmlObject(xml: Record<string, VarValue | undefined>, url: string) {
+    if (!url || typeof fetch === "undefined" || typeof DOMParser === "undefined") return;
+    const src = url.startsWith("/") ? url : `/${url}`;
+    fetch(src)
+      .then((response) => response.ok ? response.text() : "")
+      .then((text) => {
+        if (!text) return;
+        const doc = new DOMParser().parseFromString(text, "application/xml");
+        xml.document = doc;
+        xml.documentElement = doc.documentElement;
+        const onLoad = xml.onLoad;
+        if (isDelegate(onLoad) && onLoad.target instanceof ClipInstance) {
+          if (!isCurrentOwnedObject(xml, onLoad.target)) return;
+          const method = this.methodFunctionForClip(onLoad.target, onLoad.method);
+          if (method) this.callFunctionDef(method.key, method.def, "true", undefined, onLoad.target);
+        }
+        this.render();
+      })
+      .catch(() => {});
+  }
+
+  private loadClipInto(loader: Record<string, VarValue | undefined>, url: string, clip: ClipInstance) {
+    const src = normalizeRuntimeAssetUrl(url);
+    if (!src) return;
+    this.dispatchMovieClipLoader(loader, "onLoadStart", clip);
+    if (isSwfUrl(src) && this.options.loadTimeline) {
+      this.options.loadTimeline(src)
+        .then((timeline) => {
+          if (!timeline) {
+            this.fetchLoadedClip(loader, src, clip);
+            return;
+          }
+          clip.loadedTimeline = timeline;
+          clip.loadedFrame = clamp(timeline.entryFrame ?? 0, 0, Math.max(0, (timeline.frameCount ?? 1) - 1));
+          clip.loadedPlaying = true;
+          clip.props.__loadedSrc = src;
+          clip.props.__loadedWidth = timeline.dimensions.width;
+          clip.props.__loadedHeight = timeline.dimensions.height;
+          this.dispatchMovieClipLoader(loader, "onLoadComplete", clip);
+          this.dispatchMovieClipLoader(loader, "onLoadInit", clip);
+          this.render();
+        })
+        .catch(() => this.fetchLoadedClip(loader, src, clip));
+      return;
+    }
+    this.fetchLoadedClip(loader, src, clip);
+  }
+
+  private fetchLoadedClip(loader: Record<string, VarValue | undefined>, src: string, clip: ClipInstance) {
+    if (isImageUrl(src) && typeof Image !== "undefined") {
+      const image = new Image();
+      image.onload = () => {
+        clip.props.__loadedSrc = src;
+        clip.props.__loadedWidth = image.naturalWidth || image.width || 0;
+        clip.props.__loadedHeight = image.naturalHeight || image.height || 0;
+        this.dispatchMovieClipLoader(loader, "onLoadComplete", clip);
+        this.dispatchMovieClipLoader(loader, "onLoadInit", clip);
+        this.render();
+      };
+      image.onerror = () => {
+        this.dispatchMovieClipLoader(loader, "onLoadError", clip);
+      };
+      image.src = assetUrl(src);
+      return;
+    }
+    if (typeof fetch === "undefined") {
+      this.dispatchMovieClipLoader(loader, "onLoadError", clip);
+      return;
+    }
+    fetch(assetUrl(src), { method: "GET" })
+      .then((response) => {
+        if (!response.ok) {
+          this.dispatchMovieClipLoader(loader, "onLoadError", clip);
+          return;
+        }
+        clip.props.__loadedSrc = src;
+        clip.props.__loadedWidth = 0;
+        clip.props.__loadedHeight = 0;
+        this.dispatchMovieClipLoader(loader, "onLoadComplete", clip);
+        this.dispatchMovieClipLoader(loader, "onLoadInit", clip);
+        this.render();
+      })
+      .catch(() => {
+      this.dispatchMovieClipLoader(loader, "onLoadError", clip);
+    });
+  }
+
+  private dispatchMovieClipLoader(loader: Record<string, VarValue | undefined>, eventName: string, clip: ClipInstance) {
+    for (const listener of movieClipLoaderListeners(loader)) {
+      const handler = listener[eventName];
+      if (isDelegate(handler) && handler.target instanceof ClipInstance) {
+        const method = this.methodFunctionForClip(handler.target, handler.method);
+        if (method) this.callFunctionDef(method.key, method.def, "__loadedClip", { __loadedClip: clip }, handler.target);
+      }
+    }
+  }
+
+  private createTweenObject(argsRaw: string | undefined, locals: Locals | undefined, scope: ClipInstance): Record<string, VarValue | undefined> {
+    const [target, propertyValue, , begin, finish, durationValue, useSecondsValue] = this.parseArgs(argsRaw, locals, scope);
+    const property = typeof propertyValue === "string" ? normalizeAvm1PropertyName(propertyValue) : "";
+    const tween: Record<string, VarValue | undefined> = {
+      __avm1Type: "Tween",
+      target: target as VarValue,
+      property,
+      begin: begin as VarValue,
+      finish: finish as VarValue,
+      duration: durationValue as VarValue,
+    };
+    const ms = tweenDurationMs(durationValue, useSecondsValue, this.timeline.fps || 30);
+    const timer = setTimeout(() => {
+      this.runtimeTimers.delete(timer);
+      if (target instanceof ClipInstance && property) setClipProperty(target, property, finish as VarValue);
+      const callback = tween.onMotionFinished;
+      if (isDelegate(callback) && callback.target instanceof ClipInstance) {
+        const method = this.methodFunctionForClip(callback.target, callback.method);
+        if (method) this.callFunctionDef(method.key, method.def, "__tween", { __tween: tween as VarValue }, callback.target);
+      }
+      this.render();
+    }, ms);
+    this.runtimeTimers.add(timer);
+    return tween;
+  }
+
+  private createInterval(argsRaw: string | undefined, locals: Locals | undefined, scope: ClipInstance): VarValue | undefined {
+    const [target, methodValue, delayValue] = this.parseArgs(argsRaw, locals, scope);
+    if (!(target instanceof ClipInstance)) return undefined;
+    const method = typeof methodValue === "string" ? methodValue : "";
+    if (!method) return undefined;
+    const delay = Number(delayValue);
+    const ms = Number.isFinite(delay) && delay > 0 ? delay : 1;
+    const timer = setInterval(() => {
+      const def = this.methodFunctionForClip(target, method);
+      if (def) this.callFunctionDef(def.key, def.def, undefined, undefined, target);
+    }, ms);
+    this.runtimeTimers.add(timer);
+    return Number(timer);
+  }
+
+  private createTimeout(argsRaw: string | undefined, locals: Locals | undefined, scope: ClipInstance): VarValue | undefined {
+    const [target, methodValue, delayValue] = this.parseArgs(argsRaw, locals, scope);
+    if (!(target instanceof ClipInstance)) return undefined;
+    const method = typeof methodValue === "string" ? methodValue : "";
+    if (!method) return undefined;
+    const delay = Number(delayValue);
+    const ms = Number.isFinite(delay) && delay >= 0 ? delay : 1;
+    const timer = setTimeout(() => {
+      this.runtimeTimers.delete(timer);
+      const def = this.methodFunctionForClip(target, method);
+      if (def) this.callFunctionDef(def.key, def.def, undefined, undefined, target);
+    }, ms);
+    this.runtimeTimers.add(timer);
+    return Number(timer);
+  }
+
+  private clearRuntimeTimer(value: VarValue | undefined) {
+    const id = Number(value);
+    if (!Number.isFinite(id)) return;
+    for (const timer of this.runtimeTimers) {
+      if (Number(timer) !== id) continue;
+      clearTimeout(timer);
+      clearInterval(timer);
+      this.runtimeTimers.delete(timer);
+      return;
+    }
+  }
+
+  private clearRuntimeTimers() {
+    for (const timer of this.runtimeTimers) {
+      clearTimeout(timer);
+      clearInterval(timer);
+    }
+    this.runtimeTimers.clear();
+  }
+
+  private removeMovieClip(clip: ClipInstance) {
+    const parent = clip.parent;
+    if (!parent) return;
+    for (const [depth, child] of parent.childClips) {
+      if (child !== clip) continue;
+      parent.childClips.delete(depth);
+      parent.dynamicInstances.delete(depth);
+      parent.depthNames.delete(depth);
+      return;
+    }
+    clip.visible = false;
+  }
+
+  private swapDepths(clip: ClipInstance, depthOrClip: VarValue | undefined) {
+    const parent = clip.parent;
+    if (!parent) return;
+    const currentDepth = this.depthOfChild(parent, clip);
+    if (currentDepth === undefined) return;
+    if (depthOrClip instanceof ClipInstance) {
+      const otherDepth = this.depthOfChild(parent, depthOrClip);
+      if (otherDepth === undefined) return;
+      clip.depthOverride = effectiveDepthForChild(parent, otherDepth);
+      depthOrClip.depthOverride = effectiveDepthForChild(parent, currentDepth);
+      return;
+    }
+    const targetDepth = Number(depthOrClip);
+    if (!Number.isFinite(targetDepth)) return;
+    const dynamic = parent.dynamicInstances.get(currentDepth);
+    if (dynamic && parent.childClips.get(currentDepth) === clip) {
+      parent.dynamicInstances.delete(currentDepth);
+      parent.childClips.delete(currentDepth);
+      dynamic.depth = targetDepth;
+      parent.dynamicInstances.set(targetDepth, dynamic);
+      parent.childClips.set(targetDepth, clip);
+      clip.depthOverride = undefined;
+      return;
+    }
+    clip.depthOverride = targetDepth;
+  }
+
+  private startDrag(clip: ClipInstance, argsRaw: string | undefined, locals: Locals | undefined, scope: ClipInstance) {
+    const [, left, top, right, bottom] = this.parseArgs(argsRaw, locals, scope);
+    const bounds = [left, top, right, bottom].map((value) => Number(value));
+    clip.x = clip.x ?? clip.placedX;
+    clip.y = clip.y ?? clip.placedY;
+    this.activeDrag = {
+      clip,
+      left: Number.isFinite(bounds[0]) ? bounds[0] : undefined,
+      top: Number.isFinite(bounds[1]) ? bounds[1] : undefined,
+      right: Number.isFinite(bounds[2]) ? bounds[2] : undefined,
+      bottom: Number.isFinite(bounds[3]) ? bounds[3] : undefined,
+    };
+  }
+
+  private depthOfChild(parent: ClipInstance, child: ClipInstance): number | undefined {
+    for (const [depth, candidate] of parent.childClips) {
+      if (candidate === child) return depth;
+    }
+    return undefined;
+  }
+
+  private unloadMovieClip(clip: ClipInstance) {
+    clip.childClips.clear();
+    clip.dynamicInstances.clear();
+    clip.depthNames.clear();
+    clip.loadedTimeline = undefined;
+    clip.loadedFrame = 0;
+    clip.loadedPlaying = false;
+    clip.visible = false;
+  }
+
+  private nextHighestDepth(owner: ClipInstance): number {
+    let max = -1;
+    const frames = this.framesFor(owner);
+    for (const instance of frames?.[owner.currentFrame]?.instances ?? []) max = Math.max(max, instance.depth);
+    for (const depth of owner.dynamicInstances.keys()) max = Math.max(max, depth);
+    return max + 1;
+  }
+
+  private resolveValueTarget(scope: ClipInstance, target: string, locals?: Locals): unknown {
+    const text = target.trim();
+    if (!text || text === "this" || text === "self") return scope;
+    if (locals && text in locals) return locals[text];
+    const clip = this.resolveTarget(scope, text);
+    if (clip) return clip;
+    return this.resolveObjectPath(scope, text, locals);
+  }
+
+  private resolveObjectPath(scope: ClipInstance, path: string, locals?: Locals): VarValue | undefined {
+    if (!/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])*$/.test(path)) return undefined;
+    const tokens = objectPathTokens(path);
+    if (!tokens.length) return undefined;
+    let current: unknown;
+    const [first] = tokens;
+    if (first === "this" || first === "self") current = scope;
+    else if (first === "_root" || first === "_level0" || first === "root") current = this.root;
+    else if (locals && first in locals) current = locals[first];
+    else if (first in scope.props) current = scope.props[first];
+    else current = this.store?.get(first);
+    for (const token of tokens.slice(1)) {
+      if (current instanceof ClipInstance) current = this.resolveClipMember(current, token);
+      else if (Array.isArray(current)) current = token === "length" ? current.length : current[Number(this.resolveExpr(token, locals, scope) ?? token)];
+      else if (isXmlNode(current)) current = readXmlNodeProperty(current, token);
+      else if (isAvm1Object(current)) current = current[token];
+      else return undefined;
+    }
+    return isVarValue(current) ? current : undefined;
+  }
+
+  private assignObjectPath(scope: ClipInstance, path: string | undefined, value: VarValue, locals?: Locals): boolean {
+    const tokens = objectPathTokens(path ?? "");
+    if (tokens.length < 2) return false;
+    const property = tokens[tokens.length - 1];
+    const ownerPath = tokens.slice(0, -1).join(".");
+    const owner = this.resolveValueTarget(scope, ownerPath, locals);
+    if (owner instanceof ClipInstance) {
+      const setter = this.methodFunctionForClip(owner, `set ${property}`);
+      if (setter) {
+        this.callFunctionDef(setter.key, setter.def, "__setterValue", { __setterValue: value }, owner, scope);
+      }
+      owner.props[property] = value;
+      markOwnedObject(value, owner, property);
+      return true;
+    }
+    if (isAvm1Object(owner)) {
+      owner[property] = value;
+      return true;
+    }
+    return false;
+  }
+
+  private resolveClipMember(clip: ClipInstance, member: string): unknown {
+    const displayProperty = readClipProperty(clip, member, this.getAsset(clip.characterId));
+    if (displayProperty !== undefined) return displayProperty;
+    if (member in clip.props) return clip.props[member];
+    const child = this.findClipByName(clip, member);
+    if (child) return child;
+    return this.namedLeafObject(clip, member);
+  }
+
+  private namedLeafObject(clip: ClipInstance, name: string): VarValue | undefined {
+    const frame = this.framesFor(clip)?.[clip.currentFrame];
+    for (const instance of this.instancesForFrame(clip, frame)) {
+      if (instance.name !== name) continue;
+      const asset = this.getAsset(instance.characterId);
+      if (!asset) continue;
+      const text = asset.kind === "text" ? this.resolveTextField(asset.id, asset, clip, name) : undefined;
+      const props = this.leafDisplayProps(clip, name);
+      if (props._width === undefined) props._width = text ? measuredTextWidth(text.text ?? "", text.fontHeight, asset.text?.width ?? asset.origin.width ?? 0) : (asset.text?.width ?? asset.origin.width ?? 0);
+      if (props._height === undefined) props._height = text ? Math.max(text.height ?? 0, text.fontHeight + (text.leading ?? 0)) : (asset.text?.height ?? asset.origin.height ?? 0);
+      if (props._x === undefined) props._x = instance.matrix.tx;
+      if (props._y === undefined) props._y = instance.matrix.ty;
+      return props;
+    }
+    return undefined;
+  }
+
+  private findLeafChild(clip: ClipInstance, name: string): TimelineFrame["instances"][number] | undefined {
+    const frame = this.framesFor(clip)?.[clip.currentFrame];
+    for (const instance of this.instancesForFrame(clip, frame)) {
+      if (instance.name !== name) continue;
+      const asset = this.getAsset(instance.characterId);
+      if (asset && asset.kind !== "sprite" && asset.kind !== "button") return instance;
+    }
+    return undefined;
+  }
+
+  private leafDisplayProps(clip: ClipInstance, name: string): Record<string, VarValue | undefined> {
+    let props = clip.leafProps.get(name);
+    if (!props) {
+      props = {};
+      clip.leafProps.set(name, props);
+    }
+    return props;
+  }
+
+  private resolveObjectLiteral(raw: string, locals: Locals | undefined, scope: ClipInstance): Record<string, VarValue | undefined> {
+    const object: Record<string, VarValue | undefined> = {};
+    for (const part of splitTopLevelArgs(raw.slice(1, -1))) {
+      const at = part.indexOf(":");
+      if (at < 0) continue;
+      const key = part.slice(0, at).trim().replace(/^["']|["']$/g, "");
+      if (!key) continue;
+      object[key] = this.resolveExpr(part.slice(at + 1), locals, scope);
+    }
+    return object;
+  }
+
+  private addEventListener(owner: ClipInstance, eventName: string, listener: { target: unknown; method: string }) {
+    const listeners = eventListeners(owner);
+    const list = listeners[eventName] ?? (listeners[eventName] = []);
+    if (list.some((item) => item.target === listener.target && item.method === listener.method)) return;
+    list.push(listener);
+  }
+
+  private removeEventListener(owner: ClipInstance, eventName: string, listener: { target: unknown; method: string }) {
+    const listeners = eventListeners(owner);
+    const list = listeners[eventName];
+    if (!list?.length) return;
+    listeners[eventName] = list.filter((item) => item.target !== listener.target || item.method !== listener.method);
+  }
+
+  private dispatchEvent(owner: ClipInstance, event: Record<string, unknown>) {
+    const type = String(event.type ?? "");
+    if (!type) return;
+    for (const listener of eventListeners(owner)[type] ?? []) {
+      if (!(listener.target instanceof ClipInstance)) continue;
+      const method = this.methodFunctionForClip(listener.target, listener.method);
+      if (!method) continue;
+      this.callFunctionDef(method.key, method.def, "__event", { __event: event as VarValue }, listener.target);
+    }
+  }
+
+  private dispatchMovieClipPointerEvent(owner: ClipInstance, event: ButtonEvent) {
+    const type = movieClipEventName(event);
+    const direct = directMovieClipHandlerName(event);
+    const eventObject = { target: owner, type };
+    if (direct) {
+      const handler = owner.props[direct];
+      if (isDelegate(handler) && handler.target instanceof ClipInstance) {
+        const method = this.methodFunctionForClip(handler.target, handler.method);
+        if (method) this.callFunctionDef(method.key, method.def, "__event", { __event: eventObject as VarValue }, handler.target);
+      }
+    }
+    this.dispatchEvent(owner, eventObject);
+  }
+
+  private runAssignedEnterFrame(owner: ClipInstance) {
+    const handler = owner.props.onEnterFrame;
+    if (isDelegate(handler) && handler.target instanceof ClipInstance) {
+      const method = this.methodFunctionForClip(handler.target, handler.method);
+      if (method) this.callFunctionDef(method.key, method.def, "__event", { __event: { target: owner, type: "enterFrame" } as VarValue }, handler.target);
+      return;
+    }
+    if (typeof handler === "string") {
+      const method = this.methodFunctionForClip(owner, handler);
+      if (method) this.callFunctionDef(method.key, method.def, undefined, undefined, owner);
+    }
+  }
+
+  private runWhileBody(raw: string | undefined, locals: Locals, scope: ClipInstance) {
+    const parsed = parseWhileBlob(raw);
+    if (!parsed) return;
+    for (let i = 0; i < 100 && this.evalSimpleCondition(parsed.condition, locals, scope); i += 1) {
+      const control = this.runRuntimeStatements(parsed.body, locals, scope);
+      if (control === "break") return;
+      if (control === "continue") continue;
+    }
+  }
+
+  private evalSimpleCondition(condition: string, locals: Locals, scope: ClipInstance): boolean {
+    for (const op of ["<=", ">=", "==", "!=", "<", ">"]) {
+      const parts = splitTopLevelOperator(condition, op);
+      if (parts.length !== 2) continue;
+      const left = this.resolveExpr(parts[0], locals, scope);
+      const right = this.resolveExpr(parts[1], locals, scope);
+      const ln = Number(left);
+      const rn = Number(right);
+      switch (op) {
+        case "<=": return ln <= rn;
+        case ">=": return ln >= rn;
+        case "==": return String(left ?? "") === String(right ?? "");
+        case "!=": return String(left ?? "") !== String(right ?? "");
+        case "<": return ln < rn;
+        case ">": return ln > rn;
+      }
+    }
+    return avm1Boolean(this.resolveExpr(condition, locals, scope) ?? false);
+  }
+
+  private evalRuntimeCondition(condition: string, locals: Locals, scope: ClipInstance): boolean {
+    let e = condition.trim();
+    if (!e || e === "else" || e === "true") return true;
+    if (e === "false") return false;
+    while (e.startsWith("(") && matchingParenRuntime(e) === e.length - 1) e = e.slice(1, -1).trim();
+    const orParts = splitTopLevelOperator(e, "||");
+    if (orParts.length > 1) return orParts.some((part) => this.evalRuntimeCondition(part, locals, scope));
+    const andParts = splitTopLevelOperator(e, "&&");
+    if (andParts.length > 1) return andParts.every((part) => this.evalRuntimeCondition(part, locals, scope));
+    if (e.startsWith("!")) return !this.evalRuntimeCondition(e.slice(1), locals, scope);
+    const instanceofParts = splitTopLevelWordOperator(e, "instanceof");
+    if (instanceofParts.length === 2) {
+      return avm1InstanceOf(this.resolveExpr(instanceofParts[0], locals, scope), instanceofParts[1]);
+    }
+    for (const op of ["<=", ">=", "==", "!=", "<", ">"]) {
+      const parts = splitTopLevelOperator(e, op);
+      if (parts.length !== 2) continue;
+      return compareRuntimeValues(this.resolveExpr(parts[0], locals, scope), this.resolveExpr(parts[1], locals, scope), op);
+    }
+    return avm1Boolean(this.resolveExpr(e, locals, scope) ?? false);
+  }
+
+  private runRuntimeStatements(body: string, locals: Locals, scope: ClipInstance): RuntimeControl {
+    for (const statement of splitRuntimeStatements(body)) {
+      const control = this.runRuntimeStatement(statement, locals, scope);
+      if (control) return control;
+    }
+    return undefined;
+  }
+
+  private runRuntimeStatement(statement: string, locals: Locals, scope: ClipInstance): RuntimeControl {
+    const s = statement.trim();
+    if (!s || s.startsWith("trace(")) return undefined;
+    if (s === "break" || s === "break;") return "break";
+    if (s === "continue" || s === "continue;") return "continue";
+    if (s.startsWith("var ")) return this.runRuntimeStatement(s.slice(4).trim(), locals, scope);
+    const incDec = s.match(/^(.+?)(\+\+|--)$/s);
+    if (incDec) {
+      const target = incDec[1].trim();
+      const current = Number(this.resolveExpr(target, locals, scope) ?? 0);
+      this.assignRuntimeValue(target, current + (incDec[2] === "++" ? 1 : -1), locals, scope);
+      return undefined;
+    }
+    const conditional = parseRuntimeIfBlock(s);
+    if (conditional) {
+      const body = this.evalRuntimeCondition(conditional.condition, locals, scope) ? conditional.thenBody : conditional.elseBody;
+      const control = body === undefined ? undefined : this.runRuntimeStatements(body, locals, scope);
+      if (control) return control;
+      return conditional.tail === undefined ? undefined : this.runRuntimeStatements(conditional.tail, locals, scope);
+    }
+    const nestedWhile = parseWhileBlob(s);
+    if (nestedWhile) {
+      for (let i = 0; i < 100 && this.evalSimpleCondition(nestedWhile.condition, locals, scope); i += 1) {
+        const control = this.runRuntimeStatements(nestedWhile.body, locals, scope);
+        if (control === "break") return undefined;
+        if (control === "continue") continue;
+      }
+      return undefined;
+    }
+    const plusAssign = s.match(/^(.+?)\s*\+=\s*(.+)$/s);
+    if (plusAssign) {
+      const current = this.resolveExpr(plusAssign[1].trim(), locals, scope);
+      const delta = this.resolveExpr(plusAssign[2].trim(), locals, scope);
+      const value = typeof current === "string" || typeof delta === "string"
+        ? `${current ?? ""}${delta ?? ""}`
+        : Number(current ?? 0) + Number(delta ?? 0);
+      this.assignRuntimeValue(plusAssign[1].trim(), value, locals, scope);
+      return undefined;
+    }
+    const assign = s.match(/^(.+?)\s*=\s*(.+)$/s);
+    if (assign && !/[!<>]=?$/.test(assign[1].trim())) {
+      this.assignRuntimeValue(assign[1].trim(), this.resolveExpr(assign[2].trim(), locals, scope), locals, scope);
+      return undefined;
+    }
+    if (parseNewTween(s)) {
+      this.resolveExpr(s, locals, scope);
+      return undefined;
+    }
+    const call = parseRuntimeCall(s);
+    if (call) this.runBodyCall({ kind: "call", target: call.target, functionName: call.name, arguments: call.arguments }, locals, scope);
+    return undefined;
+  }
+
+  private assignRuntimeValue(target: string, value: VarValue | undefined, locals: Locals, scope: ClipInstance) {
+    if (value === undefined) return;
+    if (isLocalVar(target)) locals[target] = value;
+    if (this.applyPropertyAssignment(scope, target, value, locals)) return;
+    if (this.assignObjectPath(scope, target, value, locals)) return;
+    this.scopeSet(scope, target, value);
+  }
 
   private resolveFrame(action: ControlAction, target: ClipInstance | null): number {
     if (action.label) {
@@ -1547,6 +2781,18 @@ export class Player {
     return this.spriteActions.get(`${clip.characterId}:${clip.currentFrame}`) ?? [];
   }
 
+  private instancesForFrame(clip: ClipInstance, frame: TimelineFrame | undefined): TimelineFrame["instances"] {
+    const dynamic = [...clip.dynamicInstances.values()];
+    if (!frame) return dynamic.sort((a, b) => effectiveDepthForInstance(clip, a) - effectiveDepthForInstance(clip, b));
+    const hasDepthOverrides = [...clip.childClips.values()].some((child) => child.depthOverride !== undefined);
+    if (!dynamic.length && !hasDepthOverrides) return frame.instances;
+    const dynamicDepths = new Set(dynamic.map((instance) => instance.depth));
+    return [
+      ...frame.instances.filter((instance) => !dynamicDepths.has(instance.depth)),
+      ...dynamic,
+    ].sort((a, b) => effectiveDepthForInstance(clip, a) - effectiveDepthForInstance(clip, b));
+  }
+
 
   /** Resolve a placed character; buttons are stored under a `button:<id>` key. */
   private getAsset(characterId: number): TimelineAsset | undefined {
@@ -1578,10 +2824,59 @@ export class Player {
     out: RenderNode[],
   ) {
     const frames = this.framesFor(clip);
-    if (!frames) return;
-    const frame = frames[clip.currentFrame];
-    if (!frame) return;
-    const occupiedDepths = new Set(frame.instances.map((instance) => instance.depth));
+    const frame = frames?.[clip.currentFrame];
+    const instances = this.instancesForFrame(clip, frame);
+    const loadedSrc = primitiveValue(clip.props.__loadedSrc);
+    if (typeof loadedSrc === "string" && isImageUrl(loadedSrc)) {
+      out.push({
+        key: `${path}#loaded`,
+        order: order.n++,
+        characterId: 0,
+        kind: "image",
+        name: clip.name,
+        src: loadedSrc,
+        origin: {
+          x: 0,
+          y: 0,
+          width: Number(clip.props.__loadedWidth ?? 0),
+          height: Number(clip.props.__loadedHeight ?? 0),
+        },
+        matrix: world,
+        opacity: worldOpacity * clipAlpha(clip),
+        colorTransform: worldColorTransform,
+      });
+    }
+    if (clip.loadedTimeline) {
+      const frameIndex = clamp(clip.loadedFrame, 0, Math.max(0, (clip.loadedTimeline.frameCount ?? 1) - 1));
+      const src = clip.loadedTimeline.frameSvgs?.[frameIndex]
+        ?? (clip.loadedTimeline.frameSvgsOmitted ? "" : `generated/${clip.loadedTimeline.scene}/frames/${frameIndex + 1}.svg`);
+      if (src) {
+        out.push({
+          key: `${path}#loaded-swf`,
+          order: order.n++,
+          characterId: 0,
+          kind: "sprite",
+          name: clip.name,
+          src,
+          origin: {
+            x: 0,
+            y: 0,
+            width: clip.loadedTimeline.dimensions.width,
+            height: clip.loadedTimeline.dimensions.height,
+          },
+          matrix: world,
+          opacity: worldOpacity * clipAlpha(clip),
+          colorTransform: worldColorTransform,
+          spriteFrame: frameIndex,
+        });
+      }
+    }
+    if (!instances.length) return;
+    const occupiedDepths = new Set(instances.map((instance) => instance.depth));
+    const runtimeMaskClips = new Set<ClipInstance>();
+    for (const candidate of clip.childClips.values()) {
+      if (candidate.maskClip) runtimeMaskClips.add(candidate.maskClip);
+    }
 
     // Active masks (SWF clipDepth): a mask collects the instances at depths it
     // clips, and is emitted as one alpha-masked SVG group once its range ends.
@@ -1593,15 +2888,28 @@ export class Player {
       }
     };
 
-    for (const instance of frame.instances) {
+    for (const instance of instances) {
       flushMasks(instance.depth);
       const asset = this.getAsset(instance.characterId);
-      if (!asset) continue;
-      const matrix = multiplyMatrix(world, instance.matrix);
-      const opacity = worldOpacity * instance.opacity;
+      const child = clip.childClips.get(instance.depth);
+      if (child && runtimeMaskClips.has(child)) continue;
+      if (child?.visible === false) continue;
+      const matrix = multiplyMatrix(world, applyClipMatrixOverrides(instance.matrix, child));
+      const opacity = worldOpacity * instance.opacity * clipAlpha(child);
       const colorTransform = composeRenderColorTransform(worldColorTransform, instance.colorTransform);
       const key = `${path}/${instance.depth}`;
-      const child = clip.childClips.get(instance.depth);
+      if (!asset) {
+        if (child) this.flatten(child, matrix, opacity, colorTransform, key, order, out);
+        continue;
+      }
+
+      if (child?.maskClip) {
+        const group = this.runtimeMaskGroup(clip, child, world, matrix, opacity, colorTransform, key, order);
+        if (group) {
+          out.push(group);
+          continue;
+        }
+      }
 
       // A mask: capture its shape, then clip the instances below it (up to clipDepth).
       if (instance.clipDepth) {
@@ -1632,7 +2940,8 @@ export class Player {
       if (asset.kind === "sprite" && asset.frames?.length && !asset.overflowsBounds) {
         const frameIndex = child ? clamp(child.currentFrame, 0, asset.frames.length - 1) : 0;
         out.push(spriteNode(key, order.n++, asset, asset.frames[frameIndex], matrix, opacity, instance, child?.currentFrame, colorTransform));
-        if (child && asset.timeline?.length) this.collectButtons(child, matrix, colorTransform, key, order, out);
+        if (child && asset.timeline?.length) this.collectButtons(child, matrix, colorTransform, key, order, out, opacity);
+        if (child && this.clipHasPointerEvents(child)) out.push(this.movieClipHitNode(`${key}#hit`, order.n++, asset, matrix, instance, key, colorTransform));
         continue;
       }
 
@@ -1641,6 +2950,7 @@ export class Player {
       // render from the display-list tree so the moving content isn't clipped/dropped.
       if (asset.kind === "sprite" && asset.timeline?.length && child && child.characterId === asset.id) {
         this.clipByPath.set(key, child);
+        if (this.clipHasPointerEvents(child)) out.push(this.movieClipHitNode(`${key}#hit`, order.n++, asset, matrix, instance, key, colorTransform));
         this.flatten(child, matrix, opacity, colorTransform, key, order, out);
         continue;
       }
@@ -1655,7 +2965,9 @@ export class Player {
         continue;
       }
 
-      out.push(this.leafNode(key, order.n++, asset, asset.src ?? "", matrix, opacity, instance, colorTransform));
+      const leafProps = instance.name ? clip.leafProps.get(instance.name) : undefined;
+      if (leafProps?._visible === false || leafProps?._visible === 0) continue;
+      out.push(this.leafNode(key, order.n++, asset, asset.src ?? "", applyLeafMatrixOverrides(world, instance.matrix, asset, leafProps), opacity * leafAlpha(leafProps), instance, colorTransform, clip, leafProps));
     }
     this.collectLatentButtons(clip, world, worldColorTransform, path, order, out, occupiedDepths, worldOpacity);
     flushMasks(Number.POSITIVE_INFINITY);
@@ -1675,42 +2987,55 @@ export class Player {
     path: string,
     order: { n: number },
     out: RenderNode[],
+    opacity = 1,
   ) {
     this.clipByPath.set(path, clip);
     const frames = this.framesFor(clip);
     if (!frames) return;
     const frame = frames[clip.currentFrame];
     if (!frame) return;
-    const occupiedDepths = new Set(frame.instances.map((instance) => instance.depth));
+    const instances = this.instancesForFrame(clip, frame);
+    const occupiedDepths = new Set(instances.map((instance) => instance.depth));
 
-    for (const instance of frame.instances) {
+    for (const instance of instances) {
       if (instance.clipDepth) continue; // a mask shape — not an overlay leaf
       const asset = this.getAsset(instance.characterId);
       if (!asset) continue;
-      const matrix = multiplyMatrix(world, instance.matrix);
+      const child = clip.childClips.get(instance.depth);
+      if (child?.visible === false) continue;
+      const matrix = multiplyMatrix(world, applyClipMatrixOverrides(instance.matrix, child));
+      const instanceOpacity = opacity * instance.opacity * clipAlpha(child);
       const colorTransform = composeRenderColorTransform(worldColorTransform, instance.colorTransform);
       const key = `${path}/${instance.depth}`;
       if (asset.kind === "button") {
         // Baked path: the button's visual is in the composited frame — just a hit area.
-        out.push(buttonNode(key, order.n++, asset, matrix, instance, path, false, 1, this.buttonVisualStates.get(key), colorTransform));
-        this.collectButtonText(asset, matrix, colorTransform, key, order, out, instance);
+        out.push(buttonNode(key, order.n++, asset, matrix, instance, path, false, instanceOpacity, this.buttonVisualStates.get(key), colorTransform));
+        this.collectButtonText(asset, matrix, colorTransform, key, order, out, instance, instanceOpacity);
       } else if (asset.kind === "text") {
         // editText is stripped from the baked sprite frame (FFDec bakes it mispositioned),
         // so re-draw it here at its own bounds: a loadVariables()-bound field once its value
         // loads, or a static field (e.g. the "Best for Business" nav title) from its own text.
-        const field = this.resolveTextField(asset.id, asset);
+        const field = this.resolveTextField(asset.id, asset, clip, instance.name);
         const show = field?.normalizedVariableName
           ? this.textVars.has(field.normalizedVariableName)
           : Boolean(field?.text && String(field.text).trim());
         if (show) {
-          out.push(this.leafNode(key, order.n++, asset, asset.src ?? "", matrix, instance.opacity, instance, colorTransform));
+          const leafProps = instance.name ? clip.leafProps.get(instance.name) : undefined;
+          if (leafProps?._visible === false || leafProps?._visible === 0) continue;
+          out.push(this.leafNode(key, order.n++, asset, asset.src ?? "", applyLeafMatrixOverrides(world, instance.matrix, asset, leafProps), instanceOpacity * leafAlpha(leafProps), instance, colorTransform, clip, leafProps));
         }
       } else if (asset.kind === "sprite") {
-        const child = clip.childClips.get(instance.depth);
-        if (child) this.collectButtons(child, matrix, colorTransform, key, order, out);
+        if (child) {
+          if (clip.dynamicInstances.has(instance.depth) && asset.frames?.length) {
+            const frameIndex = clamp(child.currentFrame, 0, asset.frames.length - 1);
+            out.push(spriteNode(key, order.n++, asset, asset.frames[frameIndex], matrix, instanceOpacity, instance, child.currentFrame, colorTransform));
+          }
+          if (this.clipHasPointerEvents(child)) out.push(this.movieClipHitNode(`${key}#hit`, order.n++, asset, matrix, instance, key, colorTransform));
+          this.collectButtons(child, matrix, colorTransform, key, order, out, instanceOpacity);
+        }
       }
     }
-    this.collectLatentButtons(clip, world, worldColorTransform, path, order, out, occupiedDepths);
+    this.collectLatentButtons(clip, world, worldColorTransform, path, order, out, occupiedDepths, opacity);
   }
 
   private collectLatentButtons(
@@ -1759,6 +3084,71 @@ export class Player {
     return placements;
   }
 
+  private runtimeMaskGroup(
+    parent: ClipInstance,
+    target: ClipInstance,
+    parentWorld: RenderNode["matrix"],
+    targetWorld: RenderNode["matrix"],
+    opacity: number,
+    colorTransform: RenderNode["colorTransform"],
+    key: string,
+    order: { n: number },
+  ): RenderNode | undefined {
+    const maskClip = target.maskClip;
+    if (!maskClip) return undefined;
+    const maskPlacement = this.placementForChild(parent, maskClip);
+    if (!maskPlacement) return undefined;
+    const maskAsset = this.getAsset(maskPlacement.characterId);
+    if (!maskAsset) return undefined;
+    const src = visualSrc(maskAsset, maskClip);
+    if (!src) return undefined;
+    const maskMatrix = multiplyMatrix(parentWorld, applyClipMatrixOverrides(maskPlacement.matrix, maskClip));
+    const temp: RenderNode[] = [];
+    this.flatten(target, targetWorld, opacity, colorTransform, key, order, temp);
+    const items = temp
+      .filter((node) => Boolean(node.src) && node.kind !== "button" && !node.maskGroup)
+      .map((node) => ({
+        characterId: node.characterId,
+        src: node.src,
+        origin: node.origin,
+        matrix: node.matrix,
+        opacity: node.opacity,
+        colorTransform: node.colorTransform,
+        ...renderMetadataSubset(node),
+      }));
+    if (!items.length) return undefined;
+    return {
+      key: `${key}#runtime-mask`,
+      order: order.n++,
+      characterId: 0,
+      kind: "shape",
+      name: "",
+      src: "",
+      origin: ZERO_ORIGIN,
+      matrix: parentWorld,
+      opacity: 1,
+      maskGroup: {
+        mask: {
+          characterId: maskAsset.id,
+          src,
+          origin: maskAsset.origin,
+          matrix: maskMatrix,
+          opacity: 1,
+          ...renderMetadataFromInstance(maskPlacement),
+        },
+        items,
+      },
+    };
+  }
+
+  private placementForChild(parent: ClipInstance, child: ClipInstance): TimelineFrame["instances"][number] | undefined {
+    const frame = this.framesFor(parent)?.[parent.currentFrame];
+    for (const instance of this.instancesForFrame(parent, frame)) {
+      if (parent.childClips.get(instance.depth) === child) return instance;
+    }
+    return undefined;
+  }
+
   private buttonControlsOwnerTimeline(characterId: number): boolean {
     const group = this.timeline.control?.buttonActions?.[String(characterId)];
     if (!group) return false;
@@ -1786,6 +3176,7 @@ export class Player {
     order: { n: number },
     out: RenderNode[],
     instance: TimelineFrame["instances"][number],
+    opacity = instance.opacity,
   ) {
     for (const field of asset.textFields ?? []) {
       const fieldAsset = this.getAsset(field.id);
@@ -1794,8 +3185,43 @@ export class Player {
       // Only overlay once a loadVariables() value exists (else the baked frame is authoritative).
       if (!resolved?.normalizedVariableName || !this.textVars.has(resolved.normalizedVariableName)) continue;
       const matrix = multiplyMatrix(buttonMatrix, field.matrix);
-      out.push(this.leafNode(`${key}/txt:${field.id}`, order.n++, fieldAsset, fieldAsset.src ?? "", matrix, instance.opacity, instance, buttonColorTransform));
+      out.push(this.leafNode(`${key}/txt:${field.id}`, order.n++, fieldAsset, fieldAsset.src ?? "", matrix, opacity, instance, buttonColorTransform));
     }
+  }
+
+  private clipHasPointerEvents(clip: ClipInstance): boolean {
+    const listeners = clip.props.__eventListeners;
+    if (isAvm1Object(listeners)) {
+      for (const name of ["release", "releaseoutside", "rollover", "rollout", "press"]) {
+        if (Array.isArray(listeners[name]) && listeners[name].length) return true;
+      }
+    }
+    return isDelegate(clip.props.onRelease) || isDelegate(clip.props.onReleaseOutside) || isDelegate(clip.props.onRollOver) || isDelegate(clip.props.onRollOut) || isDelegate(clip.props.onPress);
+  }
+
+  private movieClipHitNode(
+    key: string,
+    order: number,
+    asset: TimelineAsset,
+    matrix: RenderNode["matrix"],
+    instance: TimelineFrame["instances"][number],
+    ownerPath: string,
+    colorTransform: RenderNode["colorTransform"],
+  ): RenderNode {
+    return {
+      key,
+      order,
+      characterId: asset.id,
+      kind: "button",
+      name: instance.name,
+      src: "",
+      origin: asset.origin,
+      matrix,
+      opacity: 1,
+      colorTransform,
+      ...renderMetadataFromInstance(instance),
+      buttonOwnerPath: ownerPath,
+    };
   }
 
   private leafNode(
@@ -1807,6 +3233,8 @@ export class Player {
     opacity: number,
     instance: TimelineFrame["instances"][number],
     colorTransform: RenderNode["colorTransform"] = instance.colorTransform,
+    parentClip?: ClipInstance,
+    leafProps?: Record<string, VarValue | undefined>,
   ): RenderNode {
     return {
       key,
@@ -1815,13 +3243,13 @@ export class Player {
       kind: asset.kind,
       name: instance.name,
       src,
-      origin: asset.origin,
+      origin: applyLeafOriginOverrides(asset, leafProps),
       matrix,
       opacity,
       colorTransform,
       ...renderMetadataFromInstance(instance),
       clipDepth: instance.clipDepth,
-      text: asset.kind === "text" ? this.resolveTextField(asset.id, asset) : undefined,
+      text: asset.kind === "text" ? this.resolveTextField(asset.id, asset, parentClip, instance.name) : undefined,
     };
   }
 
@@ -1831,10 +3259,14 @@ export class Player {
     this.render();
   }
 
-  private resolveTextField(characterId: number, asset: TimelineAsset) {
+  private resolveTextField(characterId: number, asset: TimelineAsset, owner?: ClipInstance, name?: string) {
     const base = asset.text;
     const dynamic = this.timeline.control?.dynamicTexts?.[String(characterId)];
     const merged = base && dynamic ? { ...base, ...dynamic } : (base ?? dynamic);
+    const scopedOverride = owner && name ? this.clipTextOverrides.get(owner)?.get(name) : undefined;
+    if (scopedOverride && merged) return { ...merged, ...scopedOverride, html: scopedOverride.html ?? merged.html };
+    const override = this.textOverrides.get(characterId);
+    if (override && merged) return { ...merged, ...override, html: override.html ?? merged.html };
     if (!merged) return merged;
     // A field bound to a loadVariables() variable shows that value (these fields
     // are baked empty in their sprite frames).
@@ -1866,6 +3298,271 @@ function isSelfTimelineTarget(target: string | undefined): boolean {
 
 function isEmptyNonRootLevelAssignment(target: string, value: VarValue): boolean {
   return value === "" && NON_ROOT_LEVEL_TARGET.test(target);
+}
+
+function splitPropertyTarget(target: string | undefined): { owner: string; property: string } | null {
+  const text = target?.trim();
+  if (!text) return null;
+  const parts = text.split(".");
+  if (parts.length < 2) return null;
+  const property = normalizeAvm1PropertyName(parts[parts.length - 1]);
+  if (!property) return null;
+  return { owner: parts.slice(0, -1).join(".") || "this", property };
+}
+
+function renderMetadataSubset(node: RenderNode): RenderPlacementMetadata {
+  return {
+    visible: node.visible,
+    blendMode: node.blendMode,
+    filters: node.filters,
+    cacheAsBitmap: node.cacheAsBitmap,
+    className: node.className,
+    clipActions: node.clipActions,
+  };
+}
+
+function dynamicTextFromTextFormat(format: Record<string, VarValue | undefined>): Partial<DynamicText> {
+  const out: Partial<DynamicText> = {};
+  const color = flashColor(format.color);
+  if (color) out.color = color;
+  const leading = Number(format.leading);
+  if (Number.isFinite(leading)) out.leading = leading;
+  const size = Number(format.size);
+  if (Number.isFinite(size) && size > 0) out.fontHeight = size;
+  const align = typeof format.align === "string" ? format.align.toLowerCase() : "";
+  if (align === "left" || align === "right" || align === "center" || align === "justify") out.align = align;
+  return out;
+}
+
+function flashColor(value: VarValue | undefined): string | undefined {
+  if (typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value)) return value;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return undefined;
+  return `#${(Math.max(0, Math.min(0xffffff, Math.round(n))).toString(16).padStart(6, "0"))}`;
+}
+
+function setClipProperty(clip: ClipInstance, property: string, value: VarValue): boolean {
+  switch (property) {
+    case "_name":
+      clip.name = String(value ?? "");
+      return true;
+    case "_visible":
+      clip.visible = avm1Boolean(value);
+      return true;
+    case "_alpha": {
+      const alpha = Number(value);
+      if (!Number.isFinite(alpha)) return false;
+      clip.alpha = alpha;
+      return true;
+    }
+    case "_x": {
+      const x = Number(value);
+      if (!Number.isFinite(x)) return false;
+      clip.x = x;
+      return true;
+    }
+    case "_y": {
+      const y = Number(value);
+      if (!Number.isFinite(y)) return false;
+      clip.y = y;
+      return true;
+    }
+    case "_rotation": {
+      const rotation = Number(value);
+      if (!Number.isFinite(rotation)) return false;
+      clip.rotation = rotation;
+      return true;
+    }
+    case "_width": {
+      const width = Number(value);
+      if (!Number.isFinite(width)) return false;
+      clip.width = width;
+      return true;
+    }
+    case "_height": {
+      const height = Number(value);
+      if (!Number.isFinite(height)) return false;
+      clip.height = height;
+      return true;
+    }
+    case "_xscale": {
+      const xscale = Number(value);
+      if (!Number.isFinite(xscale)) return false;
+      clip.xscale = xscale;
+      return true;
+    }
+    case "_yscale": {
+      const yscale = Number(value);
+      if (!Number.isFinite(yscale)) return false;
+      clip.yscale = yscale;
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+function avm1Boolean(value: VarValue): boolean {
+  if (value === null) return false;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0 && !Number.isNaN(value);
+  if (typeof value === "string") return value !== "" && value !== "0" && value.toLowerCase() !== "false";
+  return true;
+}
+
+function compareRuntimeValues(left: VarValue | undefined, right: VarValue | undefined, op: string): boolean {
+  if ((left === null || left === undefined) && (right === null || right === undefined)) {
+    if (op === "==") return true;
+    if (op === "!=") return false;
+  }
+  const ln = typeof left === "number" || typeof left === "boolean" || (typeof left === "string" && /^-?\d+(\.\d+)?$/.test(left.trim()))
+    ? Number(left)
+    : undefined;
+  const rn = typeof right === "number" || typeof right === "boolean" || (typeof right === "string" && /^-?\d+(\.\d+)?$/.test(right.trim()))
+    ? Number(right)
+    : undefined;
+  if (ln !== undefined && rn !== undefined && Number.isFinite(ln) && Number.isFinite(rn)) {
+    switch (op) {
+      case "==": return ln === rn;
+      case "!=": return ln !== rn;
+      case "<": return ln < rn;
+      case ">": return ln > rn;
+      case "<=": return ln <= rn;
+      case ">=": return ln >= rn;
+    }
+  }
+  const ls = left === undefined ? "" : String(left);
+  const rs = right === undefined ? "" : String(right);
+  switch (op) {
+    case "==": return ls === rs;
+    case "!=": return ls !== rs;
+    case "<": return ls < rs;
+    case ">": return ls > rs;
+    case "<=": return ls <= rs;
+    case ">=": return ls >= rs;
+    default: return false;
+  }
+}
+
+function tweenDurationMs(durationValue: VarValue | undefined, useSecondsValue: VarValue | undefined, fps: number): number {
+  const duration = Number(durationValue);
+  if (!Number.isFinite(duration) || duration <= 0) return 0;
+  return avm1Boolean(useSecondsValue ?? false)
+    ? duration * 1000
+    : duration * (1000 / Math.max(1, fps));
+}
+
+function clipAlpha(clip: ClipInstance | undefined): number {
+  return clip?.alpha === undefined ? 1 : clamp(clip.alpha / 100, 0, 1);
+}
+
+function leafAlpha(props: Record<string, VarValue | undefined> | undefined): number {
+  const alpha = Number(props?._alpha);
+  return Number.isFinite(alpha) ? clamp(alpha / 100, 0, 1) : 1;
+}
+
+function applyClipMatrixOverrides<T extends { a: number; b: number; c: number; d: number; tx: number; ty: number }>(matrix: T, clip: ClipInstance | undefined): T {
+  if (!clip || (clip.x === undefined && clip.y === undefined && clip.rotation === undefined && clip.xscale === undefined && clip.yscale === undefined)) return matrix;
+  const next = { ...matrix };
+  const sx = clip.xscale !== undefined ? clip.xscale / 100 : 1;
+  const sy = clip.yscale !== undefined ? clip.yscale / 100 : 1;
+  if (sx !== 1) {
+    next.a *= sx;
+    next.b *= sx;
+  }
+  if (sy !== 1) {
+    next.c *= sy;
+    next.d *= sy;
+  }
+  if (clip.x !== undefined) next.tx = clip.x;
+  if (clip.y !== undefined) next.ty = clip.y;
+  if (clip.rotation !== undefined) {
+    const radians = clip.rotation * Math.PI / 180;
+    const cos = Math.cos(radians);
+    const sin = Math.sin(radians);
+    const sx = Math.hypot(matrix.a, matrix.b) || 1;
+    const sy = Math.hypot(matrix.c, matrix.d) || 1;
+    next.a = cos * sx;
+    next.b = sin * sx;
+    next.c = -sin * sy;
+    next.d = cos * sy;
+  }
+  return next;
+}
+
+function applyLeafMatrixOverrides<T extends { a: number; b: number; c: number; d: number; tx: number; ty: number }>(
+  world: T,
+  local: T,
+  asset: TimelineAsset,
+  props: Record<string, VarValue | undefined> | undefined,
+): T {
+  if (!props) return multiplyMatrix(world, local) as T;
+  const next = { ...local };
+  const sx = Number(props._xscale) / 100;
+  const sy = Number(props._yscale) / 100;
+  const width = Number(props._width);
+  const height = Number(props._height);
+  const baseWidth = Math.max(1, asset.text?.width ?? asset.origin.width ?? Math.hypot(local.a, local.b));
+  const baseHeight = Math.max(1, asset.text?.height ?? asset.origin.height ?? Math.hypot(local.c, local.d));
+  const scaleX = Number.isFinite(sx) ? sx : Number.isFinite(width) ? width / baseWidth : 1;
+  const scaleY = Number.isFinite(sy) ? sy : Number.isFinite(height) ? height / baseHeight : 1;
+  if (scaleX !== 1) {
+    next.a *= scaleX;
+    next.b *= scaleX;
+  }
+  if (scaleY !== 1) {
+    next.c *= scaleY;
+    next.d *= scaleY;
+  }
+  const x = Number(props._x);
+  const y = Number(props._y);
+  if (Number.isFinite(x)) next.tx = x;
+  if (Number.isFinite(y)) next.ty = y;
+  return multiplyMatrix(world, next) as T;
+}
+
+function applyLeafOriginOverrides(asset: TimelineAsset, props: Record<string, VarValue | undefined> | undefined) {
+  const width = Number(props?._width);
+  const height = Number(props?._height);
+  if (!Number.isFinite(width) && !Number.isFinite(height)) return asset.origin;
+  return {
+    ...asset.origin,
+    width: Number.isFinite(width) ? width : asset.origin.width,
+    height: Number.isFinite(height) ? height : asset.origin.height,
+  };
+}
+
+function effectiveDepthForInstance(parent: ClipInstance, instance: TimelineFrame["instances"][number]): number {
+  return effectiveDepthForChild(parent, instance.depth);
+}
+
+function effectiveDepthForChild(parent: ClipInstance, depth: number): number {
+  return parent.childClips.get(depth)?.depthOverride ?? depth;
+}
+
+function shouldFallbackToGlobalFunction(target: string, functionName: string): boolean {
+  if (!target.includes(".")) return false;
+  return functionName === "main" || functionName === "init" || /^[A-Z]/.test(functionName);
+}
+
+function methodFunctionKey(sourceKey: string, functionName: string): string {
+  return `${sourceKey}:${functionName}`;
+}
+
+function methodSourceKey(source: string | undefined): string | undefined {
+  const file = source?.split("/").pop()?.replace(/\.as$/i, "");
+  return normalizeMethodKey(file);
+}
+
+function clipSourceKey(asset: TimelineAsset | undefined, name: string): string | undefined {
+  const frame = asset?.frames?.[0];
+  const spriteName = frame?.match(/\/DefineSprite_\d+_([^/]+)\//)?.[1];
+  return normalizeMethodKey(spriteName) ?? normalizeMethodKey(name);
+}
+
+function normalizeMethodKey(value: string | undefined): string | undefined {
+  const normalized = value?.replace(/%20/g, " ").replace(/[^A-Za-z0-9]+/g, "").toLowerCase();
+  return normalized || undefined;
 }
 
 function buttonReleaseKey(action: ControlAction | undefined): string {
@@ -1963,6 +3660,11 @@ function soundKey(kind: string, value: VarValue | string | undefined): string | 
   return `${kind}:${String(value)}`;
 }
 
+function constructorCallName(raw: string | undefined): string | undefined {
+  const match = raw?.trim().match(/^new\s+([\w$.]+)\s*\(/);
+  return match?.[1]?.split(".").pop();
+}
+
 function stripQuotes(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
@@ -1989,4 +3691,475 @@ function singleArgCall(token: string, name: string): string | undefined {
     }
   }
   return depth === 0 ? token.slice(prefix.length, -1).trim() : undefined;
+}
+
+function normalizeLinkageName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+function isAvm1Object(value: unknown): value is Record<string, VarValue | undefined> {
+  return typeof value === "object" && value !== null && !(value instanceof ClipInstance);
+}
+
+function isVarValue(value: unknown): value is VarValue {
+  return value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean" || (typeof value === "object" && value !== null);
+}
+
+function primitiveValue(value: VarValue | undefined): string | number | boolean | undefined {
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? value : undefined;
+}
+
+function objectPathTokens(path: string): string[] {
+  const out: string[] = [];
+  let token = "";
+  let bracket = "";
+  let quote = "";
+  for (let i = 0; i < path.length; i += 1) {
+    const c = path[i];
+    if (quote) {
+      if (c === quote && path[i - 1] !== "\\") quote = "";
+      else token += c;
+      continue;
+    }
+    if (bracket) {
+      if (c === '"' || c === "'") quote = c;
+      else if (c === "]") {
+        out.push(token.trim().replace(/^["']|["']$/g, ""));
+        token = "";
+        bracket = "";
+      } else token += c;
+      continue;
+    }
+    if (c === ".") {
+      if (token) out.push(token);
+      token = "";
+    } else if (c === "[") {
+      if (token) out.push(token);
+      token = "";
+      bracket = c;
+    } else token += c;
+  }
+  if (token) out.push(token);
+  return out.filter(Boolean);
+}
+
+function looksLikeObjectPath(expr: string): boolean {
+  return /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])+$/.test(expr.trim());
+}
+
+function splitTopLevelTernary(expr: string): { condition: string; whenTrue: string; whenFalse: string } | undefined {
+  let depth = 0;
+  let quote = "";
+  let q = -1;
+  for (let i = 0; i < expr.length; i += 1) {
+    const c = expr[i];
+    if (quote) {
+      if (c === quote && expr[i - 1] !== "\\") quote = "";
+      continue;
+    }
+    if (c === "\"" || c === "'") quote = c;
+    else if (c === "(" || c === "[") depth += 1;
+    else if (c === ")" || c === "]") depth -= 1;
+    else if (c === "?" && depth === 0) {
+      q = i;
+      break;
+    }
+  }
+  if (q < 0) return undefined;
+  depth = 0;
+  quote = "";
+  for (let i = q + 1; i < expr.length; i += 1) {
+    const c = expr[i];
+    if (quote) {
+      if (c === quote && expr[i - 1] !== "\\") quote = "";
+      continue;
+    }
+    if (c === "\"" || c === "'") quote = c;
+    else if (c === "(" || c === "[") depth += 1;
+    else if (c === ")" || c === "]") depth -= 1;
+    else if (c === ":" && depth === 0) {
+      return {
+        condition: expr.slice(0, q).trim(),
+        whenTrue: expr.slice(q + 1, i).trim(),
+        whenFalse: expr.slice(i + 1).trim(),
+      };
+    }
+  }
+  return undefined;
+}
+
+function parseMethodCall(expr: string, method: string): { target?: string; arguments: string } | undefined {
+  const bare = singleArgCall(expr, method);
+  if (bare !== undefined) return { arguments: bare };
+  const suffix = `.${method}(`;
+  const at = expr.indexOf(suffix);
+  if (at < 0 || !expr.endsWith(")")) return undefined;
+  const wrapped = expr.slice(at + suffix.length - 1);
+  if (matchingParenRuntime(wrapped) !== wrapped.length - 1) return undefined;
+  return { target: expr.slice(0, at), arguments: wrapped.slice(1, -1) };
+}
+
+function parseXPathCall(expr: string): { name: "selectSingleNode" | "selectNodes"; arguments: string } | undefined {
+  const match = expr.match(/^com\.xfactorstudio\.xml\.xpath\.XPath\.(selectSingleNode|selectNodes)\((.*)\)$/s);
+  return match ? { name: match[1] as "selectSingleNode" | "selectNodes", arguments: match[2] } : undefined;
+}
+
+function parseXPathMemberCall(expr: string): { name: "selectSingleNode" | "selectNodes"; arguments: string; memberPath: string } | undefined {
+  const prefix = "com.xfactorstudio.xml.xpath.XPath.";
+  if (!expr.startsWith(prefix)) return undefined;
+  const nameMatch = expr.slice(prefix.length).match(/^(selectSingleNode|selectNodes)\(/);
+  if (!nameMatch) return undefined;
+  const name = nameMatch[1] as "selectSingleNode" | "selectNodes";
+  const callStart = prefix.length + name.length;
+  const callText = expr.slice(callStart);
+  const close = matchingParenRuntime(callText);
+  if (close < 0 || callText[close + 1] !== ".") return undefined;
+  return {
+    name,
+    arguments: callText.slice(1, close),
+    memberPath: callText.slice(close + 2),
+  };
+}
+
+function parseNewTween(expr: string): { arguments: string } | undefined {
+  const match = expr.match(/^new\s+mx\.transitions\.Tween\s*\((.*)\)$/s);
+  return match ? { arguments: match[1] } : undefined;
+}
+
+function parseWhileBlob(raw: string | undefined): { condition: string; body: string } | undefined {
+  if (!raw) return undefined;
+  const open = raw.indexOf("{");
+  if (open < 0) return undefined;
+  const condition = raw.slice(0, open).replace(/\)\s*$/, "").trim();
+  let depth = 0;
+  let quote = "";
+  for (let i = open; i < raw.length; i += 1) {
+    const c = raw[i];
+    if (quote) {
+      if (c === quote && raw[i - 1] !== "\\") quote = "";
+      continue;
+    }
+    if (c === "\"" || c === "'") quote = c;
+    else if (c === "{") depth += 1;
+    else if (c === "}") {
+      depth -= 1;
+      if (depth === 0) return { condition, body: raw.slice(open + 1, i) };
+    }
+  }
+  return undefined;
+}
+
+function parseRuntimeIfBlock(raw: string): { condition: string; thenBody: string; elseBody?: string; tail?: string } | undefined {
+  const text = raw.trim();
+  if (!/^if\s*\(/.test(text)) return undefined;
+  const conditionStart = text.indexOf("(");
+  const conditionEnd = matchingParenRuntime(text.slice(conditionStart));
+  if (conditionEnd < 0) return undefined;
+  const absoluteConditionEnd = conditionStart + conditionEnd;
+  const condition = text.slice(conditionStart + 1, absoluteConditionEnd).trim();
+  const thenStart = text.indexOf("{", absoluteConditionEnd + 1);
+  if (thenStart < 0) return undefined;
+  const thenEnd = matchingBrace(text, thenStart);
+  if (thenEnd < 0) return undefined;
+  const thenBody = text.slice(thenStart + 1, thenEnd);
+  const tail = text.slice(thenEnd + 1).trim();
+  if (!tail) return { condition, thenBody };
+  if (!tail.startsWith("else")) return { condition, thenBody, tail };
+  const elseTail = tail.slice(4).trim();
+  if (elseTail.startsWith("if")) {
+    return { condition, thenBody, elseBody: elseTail };
+  }
+  if (!elseTail.startsWith("{")) return undefined;
+  const elseEnd = matchingBrace(elseTail, 0);
+  if (elseEnd < 0) return undefined;
+  return { condition, thenBody, elseBody: elseTail.slice(1, elseEnd) };
+}
+
+function matchingBrace(text: string, open: number): number {
+  let depth = 0;
+  let quote = "";
+  for (let i = open; i < text.length; i += 1) {
+    const c = text[i];
+    if (quote) {
+      if (c === quote && text[i - 1] !== "\\") quote = "";
+      continue;
+    }
+    if (c === "\"" || c === "'") quote = c;
+    else if (c === "{") depth += 1;
+    else if (c === "}") {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function splitRuntimeStatements(body: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let quote = "";
+  let last = 0;
+  for (let i = 0; i < body.length; i += 1) {
+    const c = body[i];
+    if (quote) {
+      if (c === quote && body[i - 1] !== "\\") quote = "";
+      continue;
+    }
+    if (c === "\"" || c === "'") quote = c;
+    else if (c === "(" || c === "{" || c === "[") depth += 1;
+    else if (c === ")" || c === "}" || c === "]") depth -= 1;
+    else if (c === ";" && depth === 0) {
+      out.push(body.slice(last, i).trim());
+      last = i + 1;
+    }
+  }
+  out.push(body.slice(last).trim());
+  return out.filter(Boolean);
+}
+
+function parseRuntimeCall(statement: string): { target?: string; name: string; arguments: string } | undefined {
+  const match = statement.match(/^(.+?)\s*\((.*)\)$/s);
+  if (!match) return undefined;
+  const callee = match[1].trim();
+  const dot = callee.lastIndexOf(".");
+  return dot >= 0
+    ? { target: callee.slice(0, dot), name: callee.slice(dot + 1), arguments: match[2] }
+    : { name: callee, arguments: match[2] };
+}
+
+function readClipProperty(clip: ClipInstance, property: string, asset: TimelineAsset | undefined): VarValue | undefined {
+  switch (property) {
+    case "_name":
+      return clip.name;
+    case "_currentframe":
+      return clip.currentFrame + 1;
+    case "_totalframes":
+      return Math.max(1, asset?.timeline?.length ?? asset?.frames?.length ?? 1);
+    case "_width":
+      return clip.width ?? asset?.origin.width ?? 0;
+    case "_height":
+      return clip.height ?? asset?.origin.height ?? 0;
+    case "_xscale":
+      return clip.xscale ?? 100;
+    case "_yscale":
+      return clip.yscale ?? 100;
+    case "_x":
+      return clip.x ?? clip.placedX;
+    case "_y":
+      return clip.y ?? clip.placedY;
+    case "_alpha":
+      return clip.alpha ?? 100;
+    case "_visible":
+      return clip.visible ?? true;
+    default:
+      return undefined;
+  }
+}
+
+function measuredTextWidth(text: string, fontHeight: number | undefined, fallback: number): number {
+  const normalized = text.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+  if (!normalized) return fallback;
+  const height = Number(fontHeight);
+  if (!Number.isFinite(height) || height <= 0) return fallback;
+  return Math.max(fallback || 1, normalized.length * height * 0.62);
+}
+
+function parseDelegateCreate(expr: string): { target: string; method: string } | undefined {
+  const args = singleArgCall(expr, "mx.utils.Delegate.create");
+  if (args === undefined) return undefined;
+  const [target, method] = splitTopLevelArgs(args);
+  if (!target || !method) return undefined;
+  return { target: target.trim(), method: method.trim() };
+}
+
+function isDelegate(value: unknown): value is { __avm1Delegate: true; target: unknown; method: string } {
+  return isAvm1Object(value) && value.__avm1Delegate === true && typeof value.method === "string";
+}
+
+function isMovieClipLoader(value: unknown): value is Record<string, VarValue | undefined> {
+  return isAvm1Object(value) && value.__avm1Type === "MovieClipLoader";
+}
+
+function movieClipLoaderListeners(loader: Record<string, VarValue | undefined>): Record<string, VarValue | undefined>[] {
+  if (!Array.isArray(loader.listeners)) loader.listeners = [];
+  return Array.isArray(loader.listeners) ? loader.listeners.filter(isAvm1Object) : [];
+}
+
+function normalizeRuntimeAssetUrl(url: string): string {
+  return url.trim().replace(/^\/+/, "");
+}
+
+function isImageUrl(url: string): boolean {
+  return /\.(?:png|jpe?g|gif|webp)$/i.test(url.split(/[?#]/, 1)[0] ?? "");
+}
+
+function isSwfUrl(url: string): boolean {
+  return /\.swf$/i.test(url.split(/[?#]/, 1)[0] ?? "");
+}
+
+function isXmlNode(value: unknown): value is Element | Document | Node {
+  return typeof Node !== "undefined" && value instanceof Node;
+}
+
+function xmlElementFromContext(context: unknown): ParentNode | undefined {
+  if (isXmlNode(context)) {
+    if (context.nodeType === Node.DOCUMENT_NODE) return context as Document;
+    if (context.nodeType === Node.ELEMENT_NODE) return context as Element;
+  }
+  if (isAvm1Object(context)) {
+    const doc = context.document;
+    if (isXmlNode(doc) && doc.nodeType === Node.DOCUMENT_NODE) return doc as Document;
+    const root = context.documentElement;
+    if (isXmlNode(root) && root.nodeType === Node.ELEMENT_NODE) return root as Element;
+  }
+  return undefined;
+}
+
+function selectXmlNodes(context: unknown, path: string): Element[] {
+  const parent = xmlElementFromContext(context);
+  if (!parent) return [];
+  const name = path.trim().replace(/^\/\//, "").replace(/^\.\//, "").split("/").filter(Boolean).pop();
+  if (!name || !/^[A-Za-z_][\w.-]*$/.test(name)) return [];
+  return Array.from(parent.querySelectorAll(name));
+}
+
+function readXmlNodeProperty(node: Node, property: string): VarValue | undefined {
+  if (property === "firstChild") {
+    const first = node.firstChild;
+    return first ? ({ nodeValue: first.nodeValue ?? "" } as Record<string, unknown>) : undefined;
+  }
+  if (property === "nodeValue") return node.nodeValue ?? "";
+  if (property === "attributes" && node instanceof Element) {
+    return Object.fromEntries(Array.from(node.attributes).map((attr) => [attr.name, attr.value]));
+  }
+  if (property === "length" && "length" in node) return Number((node as unknown as { length?: number }).length);
+  return undefined;
+}
+
+function markOwnedObject(value: VarValue, owner: ClipInstance, property: string) {
+  if (!isAvm1Object(value)) return;
+  try {
+    Object.defineProperty(value, AVM1_OWNER_CLIP, { value: owner, configurable: true });
+    Object.defineProperty(value, AVM1_OWNER_PROPERTY, { value: property, configurable: true });
+  } catch {
+    // Host objects may be non-extensible; ownership is only an async-staleness hint.
+  }
+}
+
+function isCurrentOwnedObject(value: Record<string, VarValue | undefined>, fallbackOwner: ClipInstance): boolean {
+  const owner = (value as Record<string, unknown>)[AVM1_OWNER_CLIP];
+  const property = (value as Record<string, unknown>)[AVM1_OWNER_PROPERTY];
+  if (!(owner instanceof ClipInstance) || typeof property !== "string") return true;
+  if (owner !== fallbackOwner) return true;
+  return owner.props[property] === value;
+}
+
+function eventListeners(owner: ClipInstance): Record<string, Array<{ target: unknown; method: string }>> {
+  const key = "__eventListeners";
+  const existing = owner.props[key];
+  if (isAvm1Object(existing)) return existing as Record<string, Array<{ target: unknown; method: string }>>;
+  const listeners: Record<string, Array<{ target: unknown; method: string }>> = {};
+  owner.props[key] = listeners;
+  return listeners;
+}
+
+function movieClipEventName(event: ButtonEvent): string {
+  switch (event) {
+    case "rollOver": return "rollover";
+    case "rollOut": return "rollout";
+    case "press": return "press";
+    case "release": return "release";
+    case "releaseOutside": return "releaseoutside";
+  }
+}
+
+function directMovieClipHandlerName(event: ButtonEvent): string | undefined {
+  switch (event) {
+    case "rollOver": return "onRollOver";
+    case "rollOut": return "onRollOut";
+    case "press": return "onPress";
+    case "release": return "onRelease";
+    case "releaseOutside": return "onReleaseOutside";
+  }
+}
+
+function splitTopLevelOperator(expr: string, op: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let quote = "";
+  let last = 0;
+  for (let i = 0; i < expr.length; i += 1) {
+    const c = expr[i];
+    if (quote) {
+      if (c === quote && expr[i - 1] !== "\\") quote = "";
+      continue;
+    }
+    if (c === '"' || c === "'") quote = c;
+    else if (c === "(" || c === "[") depth += 1;
+    else if (c === ")" || c === "]") depth -= 1;
+    else if (depth === 0 && expr.startsWith(op, i)) {
+      out.push(expr.slice(last, i).trim());
+      last = i + op.length;
+      i += op.length - 1;
+    }
+  }
+  out.push(expr.slice(last).trim());
+  return out.filter(Boolean);
+}
+
+function splitTopLevelWordOperator(expr: string, op: string): string[] {
+  let depth = 0;
+  let quote = "";
+  for (let i = 0; i < expr.length; i += 1) {
+    const c = expr[i];
+    if (quote) {
+      if (c === quote && expr[i - 1] !== "\\") quote = "";
+      continue;
+    }
+    if (c === '"' || c === "'") quote = c;
+    else if (c === "(" || c === "[") depth += 1;
+    else if (c === ")" || c === "]") depth -= 1;
+    else if (depth === 0 && expr.slice(i, i + op.length) === op) {
+      const before = expr[i - 1] ?? " ";
+      const after = expr[i + op.length] ?? " ";
+      if (!/[\w$]/.test(before) && !/[\w$]/.test(after)) return [expr.slice(0, i).trim(), expr.slice(i + op.length).trim()];
+    }
+  }
+  return [expr];
+}
+
+function avm1Typeof(value: VarValue | undefined): string {
+  if (value === undefined) return "undefined";
+  if (value === null) return "object";
+  if (Array.isArray(value)) return "object";
+  if (value instanceof ClipInstance) return "movieclip";
+  return typeof value;
+}
+
+function avm1InstanceOf(value: VarValue | undefined, classNameRaw: string): boolean {
+  const className = classNameRaw.trim().replace(/^_global\./, "");
+  if (className === "Array") return Array.isArray(value);
+  if (className === "MovieClip") return value instanceof ClipInstance;
+  if (className === "Object") return typeof value === "object" && value !== null;
+  if (!isAvm1Object(value)) return false;
+  return String(value.__avm1Class ?? "").split(".").pop() === className;
+}
+
+function matchingParenRuntime(text: string): number {
+  let depth = 0;
+  let quote = "";
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (quote) {
+      if (c === quote && text[i - 1] !== "\\") quote = "";
+      continue;
+    }
+    if (c === '"' || c === "'") quote = c;
+    else if (c === "(") depth += 1;
+    else if (c === ")") {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
 }

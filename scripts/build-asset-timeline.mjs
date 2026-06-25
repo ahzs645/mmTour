@@ -24,7 +24,7 @@ import {
   opacityFromTag, colorTransformFromTag, colorFromTag,
 } from "./lib/geom.mjs";
 import { ctx } from "./lib/extractContext.mjs";
-import { discoverDefinedFunctions } from "./lib/actionscript.mjs";
+import { discoverDefinedFunctions, discoverRegisteredClasses } from "./lib/actionscript.mjs";
 import { discoverAssets, normalizeFrameSvgs, replaceStaticVariableText, stripBakedDynamicText, stripButtonStateText } from "./lib/assets.mjs";
 import { discoverButtonEvents, discoverControlFlow, discoverFrameActions, discoverNestedSectionTargets, discoverSpriteActions, discoverSpriteLocalDefaults, discoverSpriteStopFrames } from "./lib/controlFlow.mjs";
 import { copyIfExists, listDir, preserveGeneratedReports, restoreGeneratedReports } from "./lib/fileUtils.mjs";
@@ -90,8 +90,10 @@ const callableFunctionNames = discoverCallableFunctionNames(groupedButtonEvents,
 ctx.frameActions = markCallableFunctionActionsSupported(rawFrameActions, callableFunctionNames);
 ctx.spriteActions = markCallableFunctionActionsSupported(rawSpriteActions, callableFunctionNames);
 ctx.definedFunctions = discoverDefinedFunctions();
+ctx.registeredClasses = discoverRegisteredClasses();
 ctx.nestedSectionTargets = discoverNestedSectionTargets(groupedButtonEvents);
 const control = discoverControlFlow(ctx.tags, ctx.labels, groupedButtonEvents);
+control.registeredClasses = ctx.registeredClasses;
 
 const generatedBackup = preserveGeneratedReports();
 rmSync(ctx.publicDir, { recursive: true, force: true });
@@ -155,6 +157,7 @@ const controlFlow = {
   frameActions: ctx.frameActions,
   spriteActions: ctx.spriteActions,
   definedFunctions: ctx.definedFunctions,
+  registeredClasses: ctx.registeredClasses,
   spriteStopFrames: ctx.spriteStopFrames,
   spriteLocalDefaults: ctx.spriteLocalDefaults,
   soundLibrary: ctx.soundLibrary,

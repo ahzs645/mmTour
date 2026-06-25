@@ -5,11 +5,12 @@ import { findSpriteDir, listDir, listPublicDir, walkFiles } from "./fileUtils.mj
 import { colorFromTag } from "./geom.mjs";
 import { buttonDynamicTextField, dataUri, inlineSvgAsset, reflowSvgTextGroup, registrationShift, svgTextReplacement } from "./svgText.mjs";
 import { asArray, compactObject, comparableText, htmlTextAlign, normalizeLoadedText, normalizeVariableName, number, textAlignFromTag } from "./util.mjs";
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
 export function discoverAssets(allTags) {
   const defs = {};
+  const exportNames = discoverExportNames(allTags);
 
   for (const tag of allTags) {
     if (!tag?.type) continue;
@@ -190,10 +191,13 @@ export function discoverAssets(allTags) {
 
   for (const file of listDir("fonts")) {
     const id = basename(file).match(/\d+/)?.[0] ?? basename(file);
+    const path = join(ctx.extractedDir, "fonts", file);
+    const metadata = inspectTrueTypeFont(path);
     defs[`font:${id}`] = {
       id: Number(id),
       kind: "font",
       src: `generated/${ctx.scene}/fonts/${file}`,
+      ...metadata,
       origin: { x: 0, y: 0, width: 0, height: 0 },
     };
   }
@@ -208,7 +212,31 @@ export function discoverAssets(allTags) {
     };
   }
 
+  for (const [id, names] of exportNames) {
+    const asset = defs[String(id)] ?? defs[`button:${id}`];
+    if (!asset) continue;
+    asset.linkageNames = [...names].sort((a, b) => a.localeCompare(b));
+  }
+
   return defs;
+}
+
+function discoverExportNames(allTags) {
+  const out = new Map();
+  for (const tag of allTags) {
+    if (tag?.type !== "ExportAssetsTag") continue;
+    const ids = asArray(tag.tags?.item);
+    const names = asArray(tag.names?.item);
+    ids.forEach((rawId, index) => {
+      const id = Number(rawId);
+      const name = String(names[index] ?? "").trim();
+      if (!Number.isFinite(id) || !name) return;
+      let set = out.get(id);
+      if (!set) out.set(id, (set = new Set()));
+      set.add(name);
+    });
+  }
+  return out;
 }
 
 export function svgOrigin(path) {
@@ -481,4 +509,127 @@ export function discoverStaticVariableTextReplacements(allTags) {
   }
 
   return replacements;
+}
+
+function inspectTrueTypeFont(path) {
+  try {
+    const data = readFileSync(path);
+    const tables = readTrueTypeTables(data);
+    const name = readFontFamilyName(data, tables.get("name"));
+    const cmapLoadable = isCmapTableLoadable(data, tables.get("cmap"), tables.get("maxp"));
+    return compactObject({
+      byteLength: statSync(path).size,
+      fontName: name,
+      fontLoadable: cmapLoadable,
+    });
+  } catch {
+    return {};
+  }
+}
+
+function readTrueTypeTables(data) {
+  if (data.length < 12) return new Map();
+  const tableCount = data.readUInt16BE(4);
+  const tables = new Map();
+  for (let index = 0; index < tableCount; index++) {
+    const offset = 12 + index * 16;
+    if (offset + 16 > data.length) break;
+    const tag = data.toString("ascii", offset, offset + 4);
+    const tableOffset = data.readUInt32BE(offset + 8);
+    const length = data.readUInt32BE(offset + 12);
+    if (tableOffset + length <= data.length) tables.set(tag, { offset: tableOffset, length });
+  }
+  return tables;
+}
+
+function readFontFamilyName(data, table) {
+  if (!table || table.length < 6) return undefined;
+  const base = table.offset;
+  const count = data.readUInt16BE(base + 2);
+  const storageOffset = data.readUInt16BE(base + 4);
+  const candidates = [];
+
+  for (let index = 0; index < count; index++) {
+    const record = base + 6 + index * 12;
+    if (record + 12 > base + table.length) break;
+    const platform = data.readUInt16BE(record);
+    const encoding = data.readUInt16BE(record + 2);
+    const language = data.readUInt16BE(record + 4);
+    const nameId = data.readUInt16BE(record + 6);
+    if (nameId !== 1 && nameId !== 4 && nameId !== 6) continue;
+    const length = data.readUInt16BE(record + 8);
+    const offset = base + storageOffset + data.readUInt16BE(record + 10);
+    if (offset + length > base + table.length) continue;
+    const raw = data.subarray(offset, offset + length);
+    const value = decodeFontName(raw, platform, encoding);
+    if (!value) continue;
+    const priority = (nameId === 1 ? 0 : nameId === 4 ? 1 : 2) + (language === 0x0409 ? 0 : 4);
+    candidates.push({ value, priority });
+  }
+
+  candidates.sort((a, b) => a.priority - b.priority);
+  return candidates[0]?.value;
+}
+
+function decodeFontName(raw, platform, encoding) {
+  try {
+    if (platform === 0 || platform === 3 || (platform === 2 && encoding === 1)) {
+      const chars = [];
+      for (let offset = 0; offset + 1 < raw.length; offset += 2) chars.push(String.fromCharCode(raw.readUInt16BE(offset)));
+      return chars.join("").replace(/\0/g, "").trim();
+    }
+    return raw.toString("latin1").replace(/\0/g, "").trim();
+  } catch {
+    return undefined;
+  }
+}
+
+function isCmapTableLoadable(data, cmap, maxp) {
+  if (!cmap || !maxp || maxp.length < 6 || cmap.length < 4) return undefined;
+  const glyphCount = data.readUInt16BE(maxp.offset + 4);
+  const tableCount = data.readUInt16BE(cmap.offset + 2);
+
+  for (let index = 0; index < tableCount; index++) {
+    const record = cmap.offset + 4 + index * 8;
+    if (record + 8 > cmap.offset + cmap.length) return false;
+    const subtable = cmap.offset + data.readUInt32BE(record + 4);
+    if (subtable + 2 > cmap.offset + cmap.length) return false;
+    const format = data.readUInt16BE(subtable);
+    if (format === 4 && !isFormat4CmapLoadable(data, subtable, cmap.offset + cmap.length, glyphCount)) return false;
+  }
+
+  return true;
+}
+
+function isFormat4CmapLoadable(data, offset, limit, glyphCount) {
+  if (offset + 16 > limit) return false;
+  const length = data.readUInt16BE(offset + 2);
+  const end = offset + length;
+  if (length < 16 || end > limit) return false;
+  const segCount = data.readUInt16BE(offset + 6) / 2;
+  if (!Number.isInteger(segCount) || segCount <= 0) return false;
+
+  const endCode = offset + 14;
+  const startCode = endCode + segCount * 2 + 2;
+  const idDelta = startCode + segCount * 2;
+  const idRangeOffset = idDelta + segCount * 2;
+  const glyphArray = idRangeOffset + segCount * 2;
+  if (glyphArray > end) return false;
+
+  for (let index = 0; index < segCount; index++) {
+    const start = data.readUInt16BE(startCode + index * 2);
+    const finish = data.readUInt16BE(endCode + index * 2);
+    const rangeOffset = data.readUInt16BE(idRangeOffset + index * 2);
+    if (start > finish) return false;
+    if (rangeOffset === 0) continue;
+    const firstGlyph = idRangeOffset + index * 2 + rangeOffset;
+    const lastGlyph = firstGlyph + (finish - start) * 2;
+    if (lastGlyph + 2 > end) return false;
+    for (let glyphOffset = firstGlyph; glyphOffset <= lastGlyph; glyphOffset += 2) {
+      const glyphId = data.readUInt16BE(glyphOffset);
+      if (glyphId >= glyphCount) return false;
+    }
+  }
+
+  return true;
 }

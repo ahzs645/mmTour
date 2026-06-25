@@ -70,8 +70,8 @@ function svgImage(v: MaskVisual, extra = ""): string {
 }
 
 /** Build an inline SVG string that clips `items` to the `mask` shape's geometry. */
-function maskGroupSvg(group: { mask: MaskVisual; items: MaskVisual[] }, key: string): string {
-  const open = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="640" height="480" style="position:absolute;left:0;top:0;overflow:visible">`;
+function maskGroupSvg(group: { mask: MaskVisual; items: MaskVisual[] }, key: string, dimensions: { width: number; height: number }): string {
+  const open = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${dimensions.width}" height="${dimensions.height}" style="position:absolute;left:0;top:0;overflow:visible">`;
   const filterDefs = maskColorFilterDefs(group.items);
   const shape = loadMaskShape(group.mask.src);
   // Until the mask shape loads (or if it failed), show the items unclipped.
@@ -130,13 +130,15 @@ type RenderedNode = {
   src: string;
 };
 
-export type ButtonEvent = "rollOver" | "rollOut" | "press" | "release";
+export type ButtonEvent = "rollOver" | "rollOut" | "press" | "release" | "releaseOutside";
 
 export type DomRendererOptions = {
   /** Resolve a CSS font-family for a text field's font id. */
   resolveFontFamily?: (fontId?: number) => string | undefined;
   /** Dispatch a button pointer event, tagged with the owning clip's tree path. */
   onButtonEvent?: (ownerPath: string, characterId: number, event: ButtonEvent, buttonKey: string) => void;
+  onPointerDrag?: (dx: number, dy: number) => void;
+  stageDimensions?: { width: number; height: number };
 };
 
 /**
@@ -211,7 +213,7 @@ export class DomRenderer {
     }
     rendered.element.style.zIndex = String(node.order);
     rendered.element.style.transform = "none";
-    rendered.element.innerHTML = maskGroupSvg(node.maskGroup!, node.key);
+    rendered.element.innerHTML = maskGroupSvg(node.maskGroup!, node.key, this.options.stageDimensions ?? { width: 640, height: 480 });
   }
 
   private createNode(node: RenderNode): RenderedNode {
@@ -273,10 +275,22 @@ export class DomRenderer {
     media.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
       const rect = media.getBoundingClientRect();
+      const scale = this.pointerStageScale();
+      let lastX = event.clientX;
+      let lastY = event.clientY;
       const insideOriginalBounds = (x: number, y: number) => x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
       const cleanup = () => {
+        window.removeEventListener("pointermove", move, true);
         window.removeEventListener("pointerup", release, true);
         window.removeEventListener("pointercancel", cancel, true);
+      };
+      const move = (moveEvent: PointerEvent) => {
+        if (moveEvent.pointerId !== event.pointerId) return;
+        const dx = (moveEvent.clientX - lastX) * scale.x;
+        const dy = (moveEvent.clientY - lastY) * scale.y;
+        lastX = moveEvent.clientX;
+        lastY = moveEvent.clientY;
+        if (dx || dy) this.options.onPointerDrag?.(dx, dy);
       };
       const release = (upEvent: PointerEvent) => {
         if (upEvent.pointerId !== event.pointerId) return;
@@ -285,12 +299,15 @@ export class DomRenderer {
         const sameButton = hit?.dataset.buttonKey === buttonKey;
         if (sameButton || insideOriginalBounds(upEvent.clientX, upEvent.clientY)) {
           dispatch(ownerPath, characterId, "release", buttonKey);
+        } else {
+          dispatch(ownerPath, characterId, "releaseOutside", buttonKey);
         }
       };
       const cancel = (cancelEvent: PointerEvent) => {
         if (cancelEvent.pointerId !== event.pointerId) return;
         cleanup();
       };
+      window.addEventListener("pointermove", move, true);
       window.addEventListener("pointerup", release, true);
       window.addEventListener("pointercancel", cancel, true);
       try {
@@ -300,6 +317,15 @@ export class DomRenderer {
       }
       dispatch(ownerPath, characterId, "press", buttonKey);
     });
+  }
+
+  private pointerStageScale(): { x: number; y: number } {
+    const rect = this.layer.getBoundingClientRect();
+    const dimensions = this.options.stageDimensions ?? { width: rect.width || 1, height: rect.height || 1 };
+    return {
+      x: rect.width ? dimensions.width / rect.width : 1,
+      y: rect.height ? dimensions.height / rect.height : 1,
+    };
   }
 
   private createMedia(node: RenderNode): HTMLElement {
@@ -349,7 +375,7 @@ export class DomRenderer {
     void fetch(assetUrl(src))
       .then((response) => (response.ok ? response.text() : ""))
       .then((content) => {
-        element.textContent = content.trim();
+        element.textContent = displayText(content).trim();
       });
   }
 
@@ -375,8 +401,8 @@ export class DomRenderer {
     element.style.textAlign = (text.align as string) ?? "left";
     element.style.whiteSpace = text.wordWrap ? "pre-wrap" : "pre";
     if (family) element.style.fontFamily = family;
-    if (text.html) element.innerHTML = flashHtmlTextToBrowserHtml(text.text ?? "");
-    else element.textContent = text.text ?? "";
+    if (text.html) element.innerHTML = flashHtmlTextToBrowserHtml(displayText(text.text ?? ""));
+    else element.textContent = displayText(text.text ?? "");
   }
 
   private placeNode(rendered: RenderedNode, node: RenderNode) {
@@ -427,6 +453,13 @@ function flashHtmlTextToBrowserHtml(value: string): string {
     return children;
   };
   return [...template.content.childNodes].map(serializeNode).join("");
+}
+
+function displayText(value: string): string {
+  return value
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== "--- RECORDSEPARATOR ---")
+    .join("\n");
 }
 
 function flashFontStyle(node: Element): string {

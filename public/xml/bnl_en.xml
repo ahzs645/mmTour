@@ -1,0 +1,394 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<bnl>
+
+	<ticker>
+		<item id="0"><![CDATA[BnL Talent Winner Chosen]]></item>
+		<item id="1"><![CDATA[BnL Lottery Reaches 600 Million]]></item>
+		<item id="2"><![CDATA[The Sound and Fury of Corp. Punk]]></item>
+		<item id="3"><![CDATA[Floating City Readies to Launch]]></item>
+		<item id="5"><![CDATA[Stock Exchange Games Console a "Smash"]]></item>
+		<item id="6"><![CDATA[BnL Lowers Bottom Line and Raises Bar]]></item>
+		<item id="7"><![CDATA[G8 Now "The Big One"]]></item>
+		<item id="8"><![CDATA[BnL Industrial Average Soars]]></item>
+		<item id="13"><![CDATA[The Xanadou Shopping Pill is Here]]></item>
+		<item id="14"><![CDATA[BnL Gene-Marts Ready to Open]]></item>
+		<item id="15"><![CDATA[BnL Economics Wins Award]]></item>
+		<item id="16"><![CDATA[Joyboy Satellite Launch Rescheduled]]></item>
+		<item id="9"><![CDATA[Anti-Consumer Groups are "Opportunities"]]></item>
+		<item id="10"><![CDATA[BnL Announces Police Select]]></item>
+		<item id="11"><![CDATA[Say Goodbye to Cash]]></item>
+		<item id="17"><![CDATA[Men Shop as Much as Women]]></item>
+		<item id="18"><![CDATA[Liver Regeneration is Now Here]]></item>
+		<!--item id="33"><![CDATA[Wisconsin Mall Granted City Status]]></item>
+		<item id="34"><![CDATA[BnL to Brand Direction "North"]]></item>
+		<item id="35"><![CDATA[BnL Acquires World's News Headlines]]></item>
+		<item id="37"><![CDATA[BnL World Clock Reset]]></item>
+		<item id="38"><![CDATA[BnL to Launch Six Hundred New Satellites ]]></item>
+		<item id="39"><![CDATA[Weather System Set to be Upgraded ]]></item>
+		<item id="41"><![CDATA[Marx Takes Platinum at Shopping Open]]></item>
+		<item id="42"><![CDATA[Summer BnLympics Begins in Earnest]]></item>
+		<item id="43"><![CDATA[BnL UFL Has Had Enough]]></item>
+		<item id="44"><![CDATA[BnL Sloth Games Opener Nears]]></item>
+		<item id="21"><![CDATA[Teaching Bots Unveiled]]></item>
+		<item id="22"><![CDATA[Lost Student Found at BnL Business School]]></item>
+		<item id="23"><![CDATA[Money Monkey Visits Schools]]></item>
+		<item id="25"><![CDATA[Paris in the Sky]]></item>
+		<item id="26"><![CDATA[Robot Expresses First Emotion: Thoughtfulness]]></item>
+		<item id="27"><![CDATA[Buy n Large Releases Artificial Mate ]]></item>
+		<item id="28"><![CDATA[1,000,000 Zettabyte Flash Drive Shipping]]></item>
+		<item id="29"><![CDATA[California Man Breaks Ownership Record]]></item>
+		<item id="30"><![CDATA[Buy n Large Infotainment Network Announced]]></item>
+		<item id="31"><![CDATA[BnL Annual Report: The Musical Released]]></item>
+		<item id="32"><![CDATA[4-D Film Announced]]></item-->
+	</ticker>
+<!-- SECTIONS -->
+	<home link="home" id="0" title="home">
+		<subsections title="Corporate News">
+			<subsection id="0" link="NewsCenter.html?storyId=31">
+				<title><![CDATA[BNL ANNUAL REPORT:   THE MUSICAL]]></title>
+			</subsection>
+			<subsection id="1" link="NewsCenter.html?storyId=27">
+				<title><![CDATA[BNL'S ARTIFICIAL BOT MATE IS HERE]]></title>
+			</subsection>
+			<subsection id="2" link="NewsCenter.html?storyId=34">
+				<title><![CDATA[NORTH TO BE BRANDED BNL]]></title>
+			</subsection>
+			<subsection id="3" link="NewsCenter.html?storyId=30">
+				<title><![CDATA[BNL LAUNCHES "INFOTAINMENT" NETWORK]]></title>
+			</subsection>
+			<subsection id="4" link="NewsCenter.html?storyId=23">
+				<title><![CDATA[THE MONEY MONKEY IS COMING!]]></title>
+			</subsection>
+		</subsections>
+		<mainclips>
+			<mainclip src="swf/homebanner01.swf" id="0" link="robots:wende" />
+			<mainclip src="swf/homebanner02.swf" id="1" link="paris" />
+			<mainclip src="swf/homebanner03.swf" id="2" link="values" />
+			<mainclip src="swf/homebanner04.swf" id="3" link="future" />
+			<mainclip src="swf/homebanner05.swf" id="4" link="promise" />
+		</mainclips>
+		<subheaders>
+			<subheader src="swf/subheader1.swf" id="0" link="store" />
+			<subheader src="swf/subheader2.swf" id="1" link="street team" />
+			<subheader src="swf/subheader3.swf" id="2" link="news center" />
+			<!--subheader src="swf/subheader4.swf" id="3" link="contact" />
+			<subheader src="swf/subheader5.swf" id="4" link="company" />
+			<subheader src="swf/subheader6.swf" id="5" link="robotics" /-->
+		</subheaders>
+	</home>
+	<company link="company" id="1" title="Our Company">
+		<subsections title="In this section">
+			<subsection title="Mission Statement" id="0">
+				<text><![CDATA[At Buy n Large we are committed to absolute excellence, utilizing standards that raise the bar for customer satisfaction to the highest levels. We aim to bring you, our valued customer, an unprecedented level of convenience across the whole spectrum of your life. Our promise to fulfill your continuous needs while maximizing your satisfaction and comforts is one of our prime mandates. Here at Buy n Large, we always strive to positively impact your life and to give it more of that supreme effortlessness you love. Because at Buy n Large, we want you to leave your life to us.]]></text>
+			</subsection>
+			<subsection title="About Us" id="1">
+				<text><![CDATA[Buy n Large remains the leader in the fields of aerospace, robotics, agriculture, infrastructures, pharmaceuticals, electronics, food services, finance, energy, government, media, retail, travel services, utilities, super centers, repairs, medical science, psychotherapies, storage, fusion research, real estate, mortgage loans, pet care, ports and harbors, earth transport, hydro-power, fusion research, super grids, watermills, and corporate grooming. Our company was founded on the idea that value is obtainable in every industry and that, by maximizing value, we can provide streamlined solutions that enhance the lives of our customers. ]]></text>
+			</subsection>
+			<subsection title="Core Values" id="2">
+				<text><![CDATA[Buy n Large believes in focusing brand responses into leveraging consumer enhancement and nurturing emotional or cognitive customer satisfaction across the entire retail framework, while magnifying dynamic industry expansion into bespoke evergreen solutions. Our ability to harness visionary synergies and optimize out-of-the-box systems has created a dynamic process where we construct revolutionary architectures that redefine communities and cultivate integrated markets. Because we continually utilize global action points that enable 24/7 systems, our ability to engineer scalable methodologies is now second to none. At Buy n Large, it's always been important for us to incubate leading-edge action points and unleash best-of-breed relationships. Our focus has always been to strategize solutions that will enable our customers to harness collaborative relationships while we transparently utilize extensible models.]]></text>
+			</subsection>
+		</subsections>
+	</company>
+	<divisions link="divisions" id="2" title="Business Divisions">
+		<subsections title="In this section">
+			<subsection title="Synopsis" id="0">
+				<text><![CDATA[Buy n Large has emerged as the world's premier engineering, robotics, construction, retail, consumer goods, space, science, and media company. Our vast business divisions incorporate the dramatic scope of our various ventures, encompassing the whole spectrum of our varied customers needs. At Buy n Large, we believe our customers see us as integral to their success in the private and commercial sectors, and we will always strive to anticipate our customers' needs and deliver on every commitment we make.]]></text>
+			</subsection>
+			<subsection title="Business Communities" id="1">
+				<text><![CDATA[Buy n Large Business Communities are regarded as responsible and responsive. We integrate global and local perspectives, and contribute to a better quality of life for all our customers. The integration of all our businesses ensures a synergistic approach to our business reporting, enabling us to remain flexible and to always change with current trends.]]></text>
+			</subsection>
+			<subsection title="Business Ethics" id="2">
+				<text><![CDATA[Buy n Large is dedicated to upholding the highest ethical standards and principles throughout our operations worldwide. Our BnL Code of Business Conduct is a product of our commitment to conduct our business ethically while reinforcing our values of trust, respect, dignity, and honesty, which form the foundation for good business decisions. 
+The Buy n Large Business Integrity Office is responsible for developing and implementing the Ethics Program for Buy n Large Business subdivisions. This team is also charged with the administration of the Buy n Large Integrity Helpline-a tool for issue discussion and advice regarding ethics and behavior in the BnL marketplace.]]></text>
+			</subsection>
+		</subsections>
+	</divisions>
+	<robotics link="robotics" id="3" title="Robotics">
+		<subsections title="In this section">
+			<subsection title="About" id="0">
+				<text><![CDATA[Continuing our pioneering efforts, Buy n Large has made great strides (or should that be tracks) into the automaton industry with our Buy n Large Robotics division. The very future of convenience rests with the development of fully functioning home and utility robots designed from the ground up to do the tasks we as humans were never really meant to do -- tasks such as lawn mowing, vacuuming, surgery, food preparation, and political decision making. At Buy n Large Robotics, we want to free you from the mundane so you can spend time on the things that really matter to you and your family. ]]></text>
+			</subsection>
+			<subsection title="Coming Soon" id="1">
+				<text><![CDATA[We are hard at work here at BnL Robotics on the delightful PEET-E (Petcare Enhancing Electronic Technology, Earth Class). PEET-E is an artificially intelligent care assistant for your pet that can handle every conceivable pet-care need. Are you too busy to feed your tropical fish? Forget to let your cat outside? Too tired to walk the dog? Let PEET-E take care of those repetitive tasks you hate. This groundbreaking advancement in neural learning has been made possible by sharing information and technologies from our industrial division, giving our home robotic appliances the smarts they need to help you day to day. Using patented MpathE algorithms, the PEET-E robot becomes as attached to your pet as you are!
+PEET-E is expected to debut next fall. Available only at Buy n Large Robotics.
+]]></text>
+			</subsection>
+			<!--subsection title="Deployment" id="2">
+				<text><![CDATA[Starting next financial quarter, BnL Robotics will be selling its range of heavy labor robots to the construction trade, as well as a full suite of Farmbots for the agricultural industry. Following this in Q2 is the roll-out of mining robot line DrillMate', sea exploration H2Obots and Civicbot products designed for menial duty (street sweeping, milk delivery, etc.). You will be able to purchase your own Home Automaton starting this winter, the first being the BnL DIG-R gardening robot. A full range will follow throughout the year.]]></text>
+			</subsection-->
+			<subsection title="Robot Models" id="3">
+				<text><![CDATA[]]></text>
+			</subsection>
+		</subsections>
+		<robots>
+			<robot src="swf/robots/salle.swf" id="0">
+				<text><![CDATA[Tired of cleaning the stairs and struggling to reach under your sofa to vacuum? With the BnL SALL-E Vaccubot, cleaning dirty carpets and drapes yourself can be a thing of the past. Using our all-new Nano-Suction technology, the SALL-E cleans the dirtiest of carpets, floors, and drapes quickly and silently. The SALL-E  can be verbally programmed to clean at anytime you like, leaving you more time to focus on things that really matter. 
+Visit your local Buy n Large Home Appliance Center for pricing and availability details.
+]]></text>
+				<caption1><![CDATA[The SALL-E features the Buy n Large Insta-Float generator, which keeps your carpets free from unsightly bot tracks.]]></caption1>
+				<caption2><![CDATA[The SALL-E ensures that your carpets and floors remain dust, hair, and lint free, greatly reducing exposure to potential respiratory irritants that often cause painful allergic reactions. The SALL-E comes with a lifetime warranty and is available in four home-friendly colors.
+]]></caption2>
+			</robot>
+			<robot src="swf/robots/gare.swf" id="1">
+				<text><![CDATA[At Buy n Large, we know that keeping a yard clean and tidy can be a huge chore that often leads to discomfort and even serious injury. That's why we've created the GAR-E Yardbot. The GAR-E is ready to handle the most time-consuming and difficult aspects of keeping a yard in tip-top shape, from lawn trimming and hedge shaping to barbecue cleaning and maintenance. The GAR-E assures that you will never have to worry about an unsightly yard again. So fire up that barbecue and leave the cleaning to GAR-E.
+Visit your local Buy n Large Home Appliance Center for pricing and availability details.
+]]></text>
+				<caption1><![CDATA[Using our Enviro-Trim technology, the GAR-E ensures uniform hedges and even grass length after every use. The GAR-E also requires no refueling.]]></caption1>
+				<caption2><![CDATA[The GAR-E will instantly clean unsightly concrete stains and even automanage your barbecue food if you're unexpectedly called away from the grill. The GAR-E features the Buy n Large Insta-Float generator, which keeps your lawn free from unsightly Bot tracks and allows it to reach the tops of large hedges or trees.]]></caption2>
+			</robot>
+			<robot src="swf/robots/nance.swf" id="2">
+				<text><![CDATA[At Buy n Large, we know that caring for your most treasured possession, your child, can often be a daunting experience. But with the new NANC-E Nannybot you can rest easily, knowing that every aspect of your child's health and happiness has been addressed. The NANC-E is fully automated and programmed to feed and stimulate your newborn, and is engineered to provide a soothing sleep environment for your child. 
+With our revolutionary SingMode, the NANC-E will gently rock and sing your child to sleep while it continuously monitors and checks your child's health and happiness indicators. We know that nothing can replace the love of a parent, but the NANC-E can lend a helping hand (or two) when you need that little break. 
+Visit your local Buy n Large Home Appliance Center for pricing and availability details.
+]]></text>
+				<caption1><![CDATA[The NANC-E is a fully functioning crib that heats and cools your child depending on environmental conditions.]]></caption1>
+				<caption2><![CDATA[With the NANC-E protection system enabled, no unauthorized person or animal may approach your child without providing the correct verbal cue or enabling a positive signal from the bot's sight indicators. The NANC-E also features the Buy n Large Insta-Float generator, which keeps your child's position comfortably even and maintained.]]></caption2>
+			</robot>
+			<robot src="swf/robots/wende.swf" id="3">
+				<text><![CDATA[At Buy n Large, we know that doing the laundry can be a wasteful and mundane experience. That's why we created the WEND-E, the first fully automated laundry management system. With the WEND-E, washing, drying, folding, and putting away your clothes is a thing of the past. The WEND-E will inspect your clothes for their clean or dirty status; dry-clean or rinse, wash, and dry dirty laundry; and then fold and put away clean clothes. When the laundry is complete, the WEND-E will iron, fold, and hang your freshly cleaned clothing in the locations of your choosing. With the WEND-E at your service, the laundromat is now open 24-hours a day!
+Visit your local Buy n Large Home Appliance Center for pricing and availability details.
+]]></text>
+				<caption1><![CDATA[The WEND-E features the latest in erase-track bot treads, which leave no visible signs on floors or carpets. The WEND-E can also climb staircases.]]></caption1>
+				<caption2><![CDATA[The WEND-E uses intelligent telescopic scooping mechanics to reach under beds or behind furniture to locate discarded clothing. The WEND-E FreshScent feature leaves designated clothing smelling pine-wind dried or ocean-kissed clean.]]></caption2>
+			</robot>
+			<robot src="swf/robots/walle.swf" id="4">
+				<text><![CDATA[The WALL-E Wastebot is designed for those unique situations where waste or debris must be cleared from the harshest landscapes and toughest terrains. This all terrain industrial cleaning bot can effectively clean a large area quickly and efficiently, allowing for the maximum efficacy of valuable commercial real estate. With the WALL-E, your industrial cleaning needs are no longer cost prohibitive problems. 
+The WALL-E industrial cleaning system is available to Class CA223 Industries only. WALL-E is not designed for home commercial use.
+]]></text>
+				<caption1><![CDATA[WALL-E's improved stacking ability allows for the creation of efficient waste towers. These towers allow for the creation of efficient waste grids, grids that provide space for industrial productions and that may be effectively cleaned at a later date.]]></caption1>
+				<caption2><![CDATA[WALL-E can output one cube of waste every ten seconds, allowing for speedy and productive industrial cleaning management.]]></caption2>
+			</robot>
+		</robots>
+	</robotics>
+	<news link="news" id="4" title="Corporate News">
+		<topstory id="0">
+			<date></date>
+			<img src="image/news_center/large/iStock_000000721285Small.jpg" />
+			<lede><![CDATA[Buy n Large Economic Science metal was awarded the prodigious Buy n Large Consumer Science Merit medal in the annual BnL Consumer Awards ceremony last week.]]></lede>
+			<title><![CDATA[Buy n Large Economics Wins Consumer Science Award]]></title>
+			<text>
+				<p><![CDATA[BnL Associated Press
+STOCKHOLM, Sweden
+Buy n Large Economic Science was awarded the prestigious Buy n Large Consumer Science Merit medal in the annual BnL Consumer Awards ceremony last week. The award, given to recipients who have made outstanding achievements in the fields of economics, advertisement, and consumer science was given to Buy n Large Economic Science for its achievements in outdoor advertising.
+"We realize that what we do is so much more than putting up a new billboard for a film or presenting a window display in a megamall," said Jay Qualham, BnL Outdoor Marketing Director. We have always seen ourselves as artists who are, in our own way, painting the world. We bring the joy of a message to billions of people, and that has always been enough of a reward. But to receive this honor... well, words simply fail."]]></p>
+				<p><![CDATA[The team was honored for its "Isotope & Cockroach" billboard campaign, which showed the film's lead characters, the Isotope and the Cockroach, in a colorful, pleasing underwater world. 
+The awards, which have now become a big business themselves, are broadcast on BnL Network feeds to millions of people around the world. They are often watched for the advertisements alone. 
+This year the show also celebrated and awarded the best advertisements screened during commercial breaks, with the top Adver award going to the SloppyHog Fixin's Dog Food spot, "The Gulag."
+"It was a work of epic scope and brilliance. It reminded me of my own fragile humanity and our uniquely human ability to face unthinkable hardships with love and compassion," said Doug Hennesey, BnL commercial critic.
+The BnL Consumer Awards will re-air this Tuesday night. Please check your local listings for times and channels.]]></p>
+			</text>
+		</topstory>
+		<subsections title="In this section">
+			<subsection title="Headlines" id="0">
+				<story id="1">
+					<date></date>
+					<img src="image/news_center/large/iStock_000000907067Small.jpg" />
+					<title><![CDATA[BnL to Launch Six Hundred New Satellites]]></title>
+					<text>
+						<p><![CDATA[BnL Associated Press
+CAPE CANAVERAL, Florida
+BnL Space has announced plans to implement their "Helping Stars Satellite System," where over 600 communication satellites will be placed into Earth's orbit in the next two months.
+The satellites will be used to provide much-needed entertainment links to previously underserviced areas of the world-areas that have (at best) never had more than 700 entertainment channels to choose from. ]]></p>
+						<p><![CDATA[Long considered a difficult problem for the BnL Marketing services, the new satellites assure that their messaging will reach the most remote regions of the Earth whose primitive infrastructures previously kept millions of people in the "media dark."
+"We believe that with our resources we should be able to reach every person on Earth without messaging, and these satellites will help us achieve this goal. It's our mission to see that all of the people in the world share in the same BnL services," said Marion Willson of BnL Satellite Services.
+The first 10 of the 500 satellites will launch this weekend at the BnL Space Center & Megamall in Florida.
+]]></p>
+					</text>
+				</story>
+				<story id="2">
+					<date></date>
+					<img src="image/news_center/large/iStock_000003088202Small.jpg" />
+					<title><![CDATA[The Xanadou Shopping Pill is Here]]></title>
+					<text>
+						<p><![CDATA[BnL Associated Press
+DALLAS, Texas
+BnL Pharmaceutical announced today that it would release the much-heralded Xanadou pill, which BnL claims simulates the "euphoric shopping experience." The pill, which is still pending clearance from the BnL-FDA, is said to simulate the feeling a shopper gets after buying a particularly coveted item.
+"We believe that the feeling of shopping happiness should not only be dictated by natural biological impulses," said BnL Pharmaceutical staff scientist Dr. Lee Mosley. "We wanted to find a solution for the shopper who's feeling the frustration of not finding that special item. When taken orally, Xanadou instantaneously evokes a sensation of happy anticipation, excitement, relief, and even pride." ]]></p>
+						<p><![CDATA[What is most remarkable about the Xanadou medication is that it's designed to work only during a shopping experience. When taken at other times, the user feels none of the medication's intended effects and may, in certain instances, feel just its side effects. These include nausea, headaches, intestinal discomfort and cramping, temporary blindness, bleeding of the gums, and an inclination to read the works of Leon Trotsky.
+"If used as directed, Xanadou's side effects are usually not experienced. When the pill is taken outside of a shopping area, the side effects do have a more pronounced and lasting impact. We strongly urge users to adhere to the recommended dosage and environmental guidelines. Failure to do so may be dangerous," said Mosley.
+The Xanadou medication will be available this summer and may be obtained over-the-counter.
+]]></p>
+					</text>
+				</story>
+			</subsection>
+			<subsection title="Financial" id="1">
+				<story id="3">
+					<date></date>
+					<img src="" />
+					<title><![CDATA[Buy n Large Robotics Offer 4,000 Jobs]]></title>
+					<text>
+						<p><![CDATA[Buy n Large Associated Press
+NEW DELHI, India
+Buy n Large Robotics announced today that the thriving robotics manufacturer will be offering more than 4,000 new jobs at its robotic assembly plant in New Delhi, India. 
+It is expected that unassigned bots, many of which were created in the very plant they will be working in, will fill the majority of the available positions. Human workers are not allowed to fill these vacancies due to strict union guidelines that were set in place late last year. New Delhi has recently enacted laws that attempt to curb human remedial labor output. 
+Buy n Large expects the new bots to perform exceptionally and is looking to retool their New Delhi Robotics divisions to eventually be completely automated. ]]></p>
+						<p><![CDATA[Plants in Manchester, England, became fully automated last spring and have performed beyond the expectations of the BnL designers.
+Joan Holzted, BnL robotics engineer said, "Full automation provides us the flexibility that we need to remain competitive with other BnL Robotics divisions. We now can slow or speed up production without considering the potentially fragile health of human workers. Phasing out these workers will ultimately benefit the collective human community, as these people can now be enjoying the luxuries that automation can provide."
+The New Delhi plant has not yet committed to full automation but is dramatically downsizing its human workforce or relocating humans into middle-management positions.
+]]></p>
+					</text>
+				</story>
+				<story id="4">
+					<date></date>
+					<img src="" />
+					<title><![CDATA[Buy n Large Challenges Existing Tax Code]]></title>
+					<text>
+						<p><![CDATA[Buy n Large Associated Press
+LONDON, England
+Buy n Large Finance announced today that the net worth of the Buy n Large Corporation is not mathematically tenable, and that the corporation would be petitioning the world's governments to make Buy n Large Corporation a largely tax-exempt entity.
+The move is expected to draw harsh criticism from waning consumer advocacy groups who claim the tax-exempt status is another move by the world's largest corporation to maximize profits.
+Buy n Large Chief Financial Officer, Reggy Mathers, countered the accusations by insisting that the consumer groups' claims are "completely without merit" and that the Buy n Large organization is unique in history, as it is "the first corporation to lack the mathematical knowledge to assess its profits."]]></p>
+						<p><![CDATA["This uncertainty leads to issues of fairness and equity for corporate entities. If we can't claim the income of our company due to inefficacies in science, then why should we be financially penalized," said Mathers.
+It is not known when the world's leading courts will rule on the Buy n Large petition, but the corporation has stated publicly that they are not planning on filing tax returns for this fiscal quarter.
+]]></p>
+					</text>
+				</story>
+			</subsection>
+			<subsection title="Health" id="2">
+				<!--story id="6">
+					<date></date>
+					<img src="" />
+					<title><![CDATA[Instant Sobriety in a Pill?]]></title>
+					<text>
+						<p><![CDATA[By Hugh Bellpants, Free Press.
+GOA, India
+In an effort to curb "intoxicated" lifestyles BnL Pharmaceuticals has begun testing a drug that will instantly eliminate all recreational chemicals from the body, chemicals that traditionally impact driving and shopping skills. The "SoberNow" pill will instantly eliminate the feeling that any recreational drug provides, returning the user to a state of sobriety in under five seconds.
+The drug, which remains in its experimental phase, may be used in situations where a person would require instant sobriety, like after leaving a party or before visiting in-laws.
+The drug does pose major scientific complications, many of which the scientists at BnL Pharmaceuticals are currently examining.]]></p>
+						<p><![CDATA["We are certain that we can find a workable solution, but the drug does pose some difficult problems. For example, how does the drug differentiate a recreational substance from a substance prescribed by a doctor? Also, we need to define what "sobriety" is, as one person's sober may be another's intoxicated, " said Dr Wayne Moneypaw, head of BnL's Advanced Pharmaceuticals unit.
+BnL Pharmaceuticals has not placed SoberNow on their medication release schedule and expects the cutting-edge medication will be in tested phases for another five years.
+
+]]></p>
+					</text>
+				</story-->
+				<story id="5">
+					<date></date>
+					<img src="" />
+					<title><![CDATA[Men Shop as Much as Women]]></title>
+					<text>
+						<p><![CDATA[BnL Associated Press
+SAN FRANCISCO, California
+Whether it's shopping at a BnL megamall or buying food at the corner store, men dream about shopping as much as women do, according to a new study.
+In new research released last week, 2,000 men and 2,500 women recorded their dreams into a dream log, which they kept for 6 weeks. They then submitted these dreams to the BnL Science Center in San Francisco, California.
+Many of the men reported feelings of "completeness" and "giddiness" during their dreams, which ranged from buying video games and big shiny balls to new sports cars. Many men wrote that they felt "larger" in their shopping dreams and that they had access to Platinum Label BnL Vari-Credit lines, a financial status usually reserved for the hyper-rich.]]></p>
+
+						<p><![CDATA["Our findings indicate many fascinating details; some that we had previously known and others that are relatively new," said Dr. Rachel Raffael, spokesperson for the study. For instance, we didn't know that men felt physically larger in their shopping dreams or that they tended to desire certain forms of high-status financial freedom. We did confirm previous data that suggests that men, for the most part, are children." 
+The study will conclude next May, when the findings will be shared with other world health organizations.
+
+]]></p>
+
+					</text>
+				</story>
+			</subsection>
+		</subsections>
+	</news>
+	<newsCenter link="news center" id="5" title="World News">
+		
+	</newsCenter>
+	<store link="store" id="6" title="Buy n Large Store">
+		
+	</store>
+	<contact link="contact" id="7" title="Contact Us">
+		<subsections title="In this section">
+			<subsection title="Overview" id="0">
+				<text><![CDATA[Buy n Large is here 24-hours a day to assist you with any questions about our corporate or business platforms. Please send us email about your concerns, comments, or questions, and we'll get back to you. For individual product queries, please contact the specific Buy n Large retail outlet. The contact information for every BnL product is available on your BnL product warranty statement.]]></text>
+			</subsection>
+			<subsection title="BnL Headquarters" id="1">
+				<text><![CDATA[Buy n Large Towers<br>1 Buy n Large Plaza<br>BnL Ave, NJ 08012<br>USA<br>]]></text>
+			</subsection>
+			<subsection title="Worldwide Office" id="2">
+				<text><![CDATA[BnL World HQ<br>Buckingham Palace<br>1 The Mall<br>London<br>SW1E 5HY<br>United Kington]]></text>
+			</subsection>
+			<subsection title="Regional Offices" id="3">
+				<text><![CDATA[Americas<br>BnL LLC <br>1121 Buy n Large Avenue<br>Unit #3 <br>Largefield, New Jersey 08657<br>United State<br><br>United Kingdom<br>Buy n Large, Ltd.<br>33 BnLarge Street<br>Buyford<br>Reading<br>Berkshire <br>RG10 8NL<br>United Kingdom<br><br>Sweden<br>Buy n Large AS<br>Box 33<br>BNL 21 Molndal<br>Sweden <br><br>Germany<br>Buy n Large AG<br>1 Largestrasse<br>Bayernlarge<br>Germany<br><br>Southern Europe <br>Buy n Large SE<br>Via Grando N Large 43<br>I-20009 Milano<br>Italy<br><br>Spain and Portugal<br>Buy n Large SA<br>GorrondatxeBnL<br>bajo A<br>46840 Biunlargo<br>Spain<br><br>South Africa (Africa, Middle East and Oceania)<br>Buy n Large CC<br>1 Baernlarge Close <br>BnL Bay 7086<br>South Africa<br><br>Asia<br>Buy n Large<br>Block 8N7<br>Kallang Way<br>#04-05 Buy n Large Industrial Estate<br>Singapore 344297<br>Singapore<br><br>India<br>Buy n Large Ltd<br>123, B Large Road<br>Opp. BnL Gate<br>Mumbai-400 8NL<br>Maharashtra<br>India<br><br><br><br><br><br><br><br><br>]]></text>
+			</subsection>
+			<subsection title="Space Offices" id="4">
+				<text><![CDATA[The Paris<br>North American Orbit<br>M-003]]></text>
+			</subsection>
+			<subsection title="Flagship Stores" id="5">
+				<text><![CDATA[Aberdeen<br>Birmingham<br>Brighton<br>Bristol<br>Cardiff<br>Dublin<br>Exeter<br>Glasgow<br>Leeds<br>Liverpool<br>London<br>Manchester<br>Nottingham<br>Oxford<br>Portsmouth<br>Sheffield<br><br>Athens <br>Berlin<br>Lyon<br>Marseille<br>Nice<br>Paris<br><br>Chicago, Illinois<br>Denver, Colorado<br>Grapevine, Texas<br>Los Angeles, California<br>Orlando, Florida<br>Salt Lake City, Utah<br>San Francisco, California<br>Times Square, New York<br><br>Vancouver<br><br>Brisbane<br>Sydney<br><br>Kawasaki<br>Nagoya<br>Tokyo<br>Osaka<br><br>Abu-Dhabi<br>Bahrain<br>Cairo<br>Doha<br>Kuwait City<br><br><br><br><br><br><br><br><br><br>]]></text>
+			</subsection>
+			<subsection title="Offshore Locations" id="6">
+				<text><![CDATA[BnL Platform One<br>North Sea<br><br>BnL Underwater Hotel<br>Pacific Trench<br><br>BnLantis<br>Atlantic Shelf]]></text>
+			</subsection>
+		</subsections>
+	</contact>
+<!-- END SECTIONS -->
+
+<!-- HIDDEN SECTIONS -->
+
+	<future title="Buy n Large: Buying Into the Future">
+		<text><![CDATA[At Buy n Large we are constantly striving to better the products and services that we offer you. Our ability to dynamically productize cross-functional experiences has made us the leader in the progressive human capital retail market. As we completely transform our resource-maximizing synergy, Buy n Large guarantees that our position will intrinsically extend and expand an array of manufactured products for you and your family.
+Buy n Large has proactively managed front-end synergy systems for over 1,000 years, creating evergreen solutions that globally actualize effective portals that proactively fashion plug-and-play collaboration and idea-sharing. By first creating your needs and then fulfilling your needs, we help ensure that we complete the organic and time-tested cycle of supply and demand.
+At Buy n Large, we know how to quickly aggregate cross-media convergence to effectively leverage unstable yet dynamic marketplaces. We are leaders in reinventing frictionless bond ventures and have won the BnL Efficient Metric Award more than 300 times.
+Because at Buy n Large we are not content to merely look forward to your tomorrow, we want to make sure that the future, which has never been brighter, is waiting for you.]]></text>
+	</future>
+
+	<promise title="The Promise">
+		<text><![CDATA[Ten years ago we started the Buy n Large Platinum Lifestyle Program. This program has assisted thousands of youth in learning how to become fiscally responsible by providing them with BnL Vari-Credit lines, which they manage independently without the help of their parents or caregivers.
+By receiving an instant Vari-Credit line at birth, children can now interact with the world around them in all new ways. The BnL Empowered Purchasing guidelines help the kids get the toys they desire at interest rates that they can manage and understand.
+We also donate a percentage of these children's purchases to the BnL Kids Credit Care program so children can see their spending at work. This in turn helps millions of youth in underserviced areas become self-aware shoppers. 
+We will always strive to make sure your children use the credit that's been given to them. Because at Buy n Large, we know that the children of today are the leaders of tomorrow.
+We will always keep all our customers-from the newborn to the elderly-empowered with our Vari-Credit plans. That's our promise to you.
+]]></text>
+	</promise>
+
+	<values title="Buy n Large Family Values">
+		<text><![CDATA[Buy n Large Family Values: Because the Family That Pays Together Stays Together
+At Buy n Large, we believe that your family is one of our most treasured assets, and that's why we have introduced the BnL Family Values program. By gathering your complete family and collectively shopping at any participating Buy n Large megamall, your family unit will become eligible for a discount of up to 10 percent on any Buy n Large pet product and will be automatically entered for a chance to win a trip to the all-new Buy n Large Scranton Space Station.]]></text>
+		<legal title="TERMS AND CONDITIONS"><![CDATA[The submission of information to, and use of, the business listing service ("Service") available through the Buy n Large web site is subject to the following terms and conditions. BY SUBMITTING INFORMATION to, or accessing information from, the Service, YOU, the end-user customer ("Customer") AGREE TO THE FOLLOWING TERMS AND CONDITIONS. These Terms and Conditions are a legal agreement between you and BizBuySell, an operating division of Buy n Large.
+GENERAL PROVISIONS
+Company Communication
+Company (Buy n Large) utilizes email as a vital and primary communication channel with customers. As a registered user, Customer hereby acknowledges and grants Company permission to communicate with customer via email (as well as other communication channels such as phone and fax) for any purpose Company determines to be relevant including, but not limited to, system messages, product updates, service announcements, and other marketing messages. Company will use best efforts to honor Customer's request to opt out of marketing messages, but under no circumstances will Company have any liability for sending any email to its registered users/customers. Company assures Customer that under no circumstances will it knowingly share personal and/or email information with any third party. 
+Customer Privileges
+Customer privileges are granted by Company to individuals exclusively and are granted specifically to the registered member only. Individual user rights cannot be assigned, sublicensed, distributed, shared, viewed, accessed, or otherwise transferred to anyone without the express written permission of Company. Company requires that each registered user maintain a valid email address or Member ID and a password, which shall be utilized for logging on to the Buy n Large system. Customers are not permitted to share their individual logon information with others. Company has the right to refuse service to any member that refuses to abide by the Terms and Conditions herein or abuses their rights related to the Buy n Large Service.
+Submission and Administration of Listings
+Customer agrees not to submit any business descriptions, photographs, financial, contact, or other information contained in each business's data to Buy n Large unless Customer has received all necessary rights and authorizations, including from the photographer and/or copyright owner of any photographs, to publish and advertise the business on the Customer's web site or on the Buy n Large web site. The Company may, at its sole discretion but without any obligation to search for such, remove a business listing ("Business" or "Listing") that is alleged to have been submitted in violation of this provision. In addition, the Company may require additional evidence of compliance with this provision from Customers who are alleged to have submitted businesses or other information in violation of this agreement. The Company will, at its sole discretion, terminate the accounts of, and refuse service to, any Customer who repeatedly or knowingly violates this agreement. Additionally, the Customer agrees to allow the Listing, or any part of it, to be searched, displayed, accessed, downloaded, copied, and otherwise referred to by users of the Customer's web site or the Buy n Large web site. The Company shall have the sole authority to choose the manner in which any Business will be searched, displayed, accessed, downloaded, copied, and otherwise used on the Buy n Large web site and Company shall have the right to modify the business listing in the exercise of its rights under this agreement. Customer (a) represents and warrants that all Businesses and associated information provided by Customer will be accurate; (b) agrees that Customer will not permit the posting of a business on the Buy n Large system under a name other than the named licensed business agents that have been engaged by the business owner to market the business under the terms of a duly executed listing agreement with the owner; (c) agrees to administer the Listings provided by Customer and maintain their accuracy at all times. Company reserves, in a manner consistent with reasonable commercial business practices, the right to remove all or any part of the Listings posted on the Buy n Large web site. Company accepts no responsibility for checking the accuracy of reports or data files submitted by Customer. While Company shall make all reasonable efforts for data backup and business resumption, Customer will be solely responsible for retaining backup copies of all information, photographs, and other materials it provides to Buy n Large.
+Use of Information
+Customer agrees to treat all information obtained from the Service, including business listings, business broker directory, pricing reports, and any other information otherwise made available to Customer in the Service (individually and collectively, the "Content")  as proprietary to Company. Customer agrees that Content reserved for members will be maintained as confidential and shall be protected as a trade secret of Company.  Company does not ensure the accuracy of, endorse, or recommend any Content, and Customer uses such Content at the Customer's own risk. Customer may access the Content solely to obtain initial information from which further evaluation and investigation may commence. Customer shall limit access to and use of Content to personal and internal use, and shall not use Content obtained from the Service for further distribution, publication, public display, or preparation of derivative works or facilitate any of these activities in any way. Customer shall not use or reproduce Content obtained from the Service for, or in connection with, any other listing service or device. Customers violating these specific terms, specifically those customers searching the Service in an abusive or excessive manner, by automated or manual means, shall be subject to immediate termination of their membership and will be assessed an excessive-use fee of $500,000.00.
+Payment Terms
+Customer agrees to pay for all products ordered through the Buy n Large web site, or via Buy n Large client services personnel ("Client Services") using the payment method indicated, and provides Company express authorization to charge said fees to their payment provider. Fees owed depend on the specific type and quantity of Buy n Large products, services, information, or deliverables (collectively "Deliverables") ordered. Payment of fees shall not be contingent on any events other than the delivery of the ordered Deliverables. Any attorney fees, court costs, or other costs incurred in collection of delinquent undisputed amounts shall be the responsibility of and paid for by Customer. If payment is not current, Company may immediately cease to provide any and all Deliverables to the customer. The fees paid for monthly subscriptions are nonrefundable, regardless of whether the subscription is terminated prior to the end of the month. Fees paid for business listings and other products are not refundable. No partial-month refunds will be provided. Customer may cancel their Buy n Large product membership by sending email to Client Services (membership@bizbuysell.com) or by calling Client Services by telephone (415-555-4380). All cancellation requests will be processed within five (5) business days, and a cancellation confirmation will be sent via email to the email address on record for the account. The membership will be deactivated at the end of the current billing term. Company reserves the right to change its fees or billing methods at any time. Company will provide timely notice to the affected Customers of any such changes. It is Customer's responsibility to promptly provide Company with any contact or billing information changes or updates (including email address, credit card numbers, etc.).
+Unsolicited Commercial Email (spam)
+Company prohibits the use of our system or its tools to generate or send unsolicited commercial email (spam). Customers may not use the email services that Company offers to send spam (i.e. unsolicited commercial email) or otherwise send content that would violate these Terms and Conditions. Company has the right to revoke the privileges of any customer or company that breaches these terms.
+Ownership and License Grant
+Company retains all rights (including Intellectual Property Rights, as defined below), title, and interest in the Buy n Large web site and all underlying technology and data including any enhancements and improvements thereto as a result of providing the Deliverables hereunder. Customer will not and will not allow others to: reverse engineer, decompile, disassemble, merge, copy, use, disclose, sell, or transfer the underlying source code or structure or sequence of Company's technology or delete or alter author attributes or copyright notices. Customer shall use the Buy n Large system solely for their own use and shall not allow others to use the Buy n Large system under or through that Customer's login ID/email and password.
+Intellectual Property Rights means all intellectual property rights (throughout the universe, in all media, now existing or created in the future, for all versions and elements, in all languages, and for the entire duration of such rights) arising under statutory or common law, contract, or otherwise, and whether or not perfected, including without limitation, (a) all rights associated with works of authorship including without limitation, copyrights, moral rights, copyright applications, copyright registrations, synchronization rights; (b) rights associated with trademarks, service marks, trade names, logos, trade dress, and the applications for registration and registrations of trademarks and service marks; (c) rights relating to the protection of trade secrets and confidential information; (d) rights analogous to those set forth in this definition and any and all other proprietary rights relating to intangible property; and (e) divisions, continuations, renewals, reissues, and extensions of the foregoing (as and to the extent applicable) now existing, later filed, issued, or acquired.
+Limitation of Liability and Indemnification
+IN NO EVENT SHALL COMPANY BE LIABLE FOR ANY INDIRECT, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES (INCLUDING WITHOUT LIMITATION, DAMAGES FOR LOSS OF BUSINESS PROFITS, LOSS OF BUSINESS, LOSS OF USE OR OF DATA, OR INTERRUPTION OF BUSINESS) ARISING OUT OF THIS AGREEMENT. Customer's exclusive remedy, and Company's entire liability under this Agreement shall be a refund to Customer of the fees paid to Company hereunder, and in no event will Company's liability for any reason exceed such fee. Company (and its officers, directors, employees, and agents) shall not be liable for any damages whatsoever arising from Customer's use of the Deliverables, and Customer shall indemnify Company (and Company's officers, directors, employees, and agents), and hold each of them harmless from and against any and all costs, damages, or losses by any of them (including, without limitation, reasonable attorneys' fees) as a result of a claim by any person other than Customer arising from Customer's use or application of the Services or the Deliverables.
+Warranty Disclaimers
+THE LISTINGS AND SERVICE ARE PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND. COMPANY MAKES NO PROMISES, REPRESENTATION, OR WARRANTIES, EITHER EXPRESS, IMPLIED, STATUTORY, OR OTHERWISE, WITH RESPECT TO THE LISTINGS OR SERVICE, INCLUDING THEIR ACCURACY, OPERATION, CONFORMITY TO ANY REPRESENTATION OR DESCRIPTION, OR THE EXISTENCE OF ANY LATENT OR PATENT DEFECTS, AND COMPANY SPECIFICALLY DISCLAIMS ALL IMPLIED WARRANTIES OF MERCHANTABILITY, NONINFRINGEMENT AND FITNESS FOR A PARTICULAR PURPOSE AND, UNDER THE LAW OF THE UNITED KINGDOM, THE IMPLIED CONDITIONS OF SATISFACTORY QUALITY AND ACCEPTANCE AS WELL AS ANY LOCAL JURISDICTIONAL ANALOGTES TO THE ABOVE AND OTHER IMPLIED OR STATUTORY WARRANTIES.
+Links to Third-Party Sites
+This web site may contain hyperlinks to other web sites operated by parties other than Company that are beyond Company's control. Parties other than Company may provide services or sell product lines on this site that take you outside of our service. This includes links from advertisers, sponsors, and content partners that may use Buy n Large logo(s) as part of a cobranding relationship. For example, if you click on a banner advertisement the click may take you off the Buy n Large site. Company does not control, is not responsible for examining or evaluating, and does not warrant the offerings of any of these businesses or individuals or the content of their web sites. Company does not assume any liability for the actions, product, or content of any of these and any other third parties. By the way, if you are reading this, then you surely understand that it's all a joke, right? Company makes no representations and cannot be held responsible for the accuracy, relevancy, copyright compliance, legality, or decency of material on such third-party web sites. When you click on a link that leaves the Buy n Large site, the site you will land on is not controlled by Company and different terms of use and privacy statements may apply. Company also does not assume, and expressly disclaims, all liability for any viruses, worms, Trojan horses, defects, or other malfunctions caused by, resulting from, existing within, or in connection with such third-party sites and any links thereto.
+Other Rights of Company
+Customer agrees that Company shall have the right to use Listings and other information submitted to it for any purpose, including without limitation for publication of all or part of such Listing on the Internet for unrestricted use by Buy n Large customers and partners. Company shall have sole authority to choose the manner in which any Listing will be received, displayed and used by the Service, and reserves the right to remove all or any part of a Listing or refuse Services to anyone at any time at its sole discretion. Company shall have no obligation to: (a) resolve disputes among users of the Service; or (b) monitor or verify the accuracy or proper use of the Listings. Company reserves the right to modify or change any and all terms and conditions at any time. The most current copy of these Terms and Conditions will be posted and available for review on Company's corporate web site.
+Buy n Large Client Services may be cancelled by only proper notification, in writing or by telephone, 30 days prior to the renewal date. A Buy n Large Membership is fully refundable only within the first 30 days of purchase provided that Customer provides timely notification to Client Services in writing. The Company reserves the right to change its fees, payment frequency, or billing methods at any time. The Company will provide timely notice of any such changes.
+Listing Restrictions
+Customer acknowledges that business Listings will be added to the Buy n Large web site only if all contacts added to that listing are also subscribing individual members. Standard Buy n Large membership accounts are limited to no more than twenty (20) total business listings at any given time. Additional business listing limitations may be negotiated individually between Buy n Large and Customer. All listings must be added in accordance with the Submission and Administration of Listings terms, as above. Company reserves the right to remove Listings that are deemed excessive in number or in violation of the Submission and Administration of Listings terms. Company reserves the right, at its sole discretion, to remove any Listing from the Service.
+FRANCHISE DIRECTORY PROVISIONS
+The following provisions of Buy n Large Terms and Conditions are specifically and only applicable to Franchise Directory:
+Franchise Directory
+Buy n Large Franchise Directory provides Leads (as defined herein) to Franchisors on a cost-per-lead or fixed-fee basis. Franchise Directory customers are billed a one time set-up fee for leads delivered on a monthly basis. Credit cards are charged after customer has had a chance to review lead information, generally by the 5th business day of the following month. 
+A Lead is defined as follows: a user who submits information to be contacted by the sponsor franchise, and such user includes its (i) first and/or last name, (ii) mailing address or desired location, (iii) phone number and/or email address, and (iv) user-available capital. All Lead submissions to Franchise Directory sponsors are executed by the party submitting the Lead. It is the policy of Buy n Large to not resell Leads to third parties.
+Customers will not be billed for Leads that: (a) are located outside of the 50 United States; (b) are duplicates of Leads received during the same month for the same franchise concept; or (c) include demonstrably invalid information for both phone number and email address. Buy n Large will utilize its best efforts to review the validity of Leads. 
+Cancellations may be made at any time but are effective at the end of the month when notice of cancellation is received. Cancellations must be received either by email or in writing. 
+
+
+
+
+
+
+
+
+]]></legal>
+	</values>
+	
+	<streetTeam title="Buy n Large Street Team Sign-Up">
+		<text><![CDATA[Become Part of Our Corporate Street Team! 
+Buy n Large is now looking for enthusiastic "ultra-fans" of the Buy n Large brand to join our all-new Buy n Large Corporate Street Team. We are seeking motivated, positive-acting people who would like to spread the excitement and message of the Buy n Large corporate mandate to various under-serviced areas of the world. 
+The Street Team will inform people (who may or may not be on streets) about the Buy n Large "Five Point Corporate Plan." This plan allows for new subscribers to gain access to various Platinum service benefits, like discount BnL Water Mill coupons and the enrollment in the BnL Extended Bill Pay Service. The plan also informs under-serviced people of the various products and services that Buy n Large offers and how they can access a whole new world of experiences. 
+The Street Team has the ultimate goal of acquiring over 300 million new BnL Vari-Credit customers within one month.  For all their hard work, The Street Team members will also be awarded extra points on their BnL Vari-Credit accounts for each new subscriber they enroll.
+This exciting opportunity will expire soon, so rush into your nearest Buy n Large Community Service Center for details.]]></text>
+	</streetTeam>
+
+<!-- END HIDDEN SECTIONS -->
+</bnl>

@@ -78,6 +78,8 @@ export type PlayerControllerOptions = {
   /** Notified when the movie issues an AVM1 `fscommand(command, args)` — e.g. the tour's
    *  quit button (`fscommand("quit")`). The host decides what each command means. */
   onFsCommand?: (command: string, args: string) => void;
+  /** Notified when AVM1 asks to navigate to a URL. The host owns the response. */
+  onGetURL?: (url: string, target?: string) => void;
 } & PlayerLoadLifecycleCallbacks;
 
 type Level = { player: Player; layer: HTMLElement; swf: string };
@@ -144,6 +146,8 @@ export class PlayerController {
     // a light scene (e.g. the white intro) render black. The lab does the same in
     // sceneLoader; the embeddable player must too.
     this.container.style.background = timeline.backgroundColor ?? "#ffffff";
+    this.container.style.width = `${timeline.dimensions.width}px`;
+    this.container.style.height = `${timeline.dimensions.height}px`;
     this.createLevel(0, swf, timeline);
     if (typeof entryFrame === "number") this.main?.seekRootFrame(entryFrame);
     this.emitFrame();
@@ -162,6 +166,8 @@ export class PlayerController {
     this.prefetched.clear();
     this.sound.destroy();
     this.container.style.background = "";
+    this.container.style.width = "";
+    this.container.style.height = "";
     this.container.hidden = true;
     this.container.replaceChildren();
   }
@@ -214,7 +220,9 @@ export class PlayerController {
 
     const renderer = new DomRenderer(layer, {
       resolveFontFamily: (fontId) => this.fonts.resolveFamily(fontId),
+      stageDimensions: timeline.dimensions,
       onButtonEvent: (ownerPath, characterId, event, buttonKey) => this.levels.get(level)?.player.handleButtonEvent(ownerPath, characterId, event, buttonKey),
+      onPointerDrag: (dx, dy) => this.levels.get(level)?.player.handlePointerDrag(dx, dy),
     });
     const player = new Player(timeline, renderer, {
       // Level 0 ticks every frame (even when stopped), so poll waiters here.
@@ -229,6 +237,8 @@ export class PlayerController {
             this.options.onButton!({ characterId, ownerPath, event, scene: timeline.scene, action })
         : undefined,
       onFsCommand: this.options.onFsCommand,
+      onGetURL: this.options.onGetURL,
+      loadTimeline: (swf) => loadTimeline(swf.split("/").pop() ?? swf),
       store: this.store,
       onCallFunction: (target, name, args) => this.dispatchCall(target, name, args),
       onClipCommand: (target, command, frame) => this.dispatchClipCommand(target, command, frame),
