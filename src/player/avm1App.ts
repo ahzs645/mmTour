@@ -260,8 +260,23 @@ export function runDataDrivenApp(
   for (const prog of initActions) {
     try { vm.callFunction({ __avm1fn: true, params: [], body: prog, registerCount: 256, flags: 0 } as any, [], root); } catch { /* skip a bad init program */ }
   }
-  // tag the mx/* framework + xfactorstudio classes with their fully-qualified name.
-  const tagFqn = (o: any, prefix: string, depth = 0) => { if (!o || typeof o !== "object" || depth > 7) return; for (const k of Object.keys(o)) { const v: any = o[k]; if (v && typeof v === "object") { if (isFn(v) && !(v as any).__fqn) (v as any).__fqn = prefix ? prefix + "." + k : k; tagFqn(v, prefix ? prefix + "." + k : k, depth + 1); } } };
+  // Tag classes with their fully-qualified name (so XPath/EventDispatcher overrides
+  // can recognise them). Skip the circular `_global`/`_root` self-references and
+  // guard against cycles, else names accumulate bogus `_global.` prefixes.
+  const tagged = new WeakSet<object>();
+  const tagFqn = (o: any, prefix: string, depth = 0) => {
+    if (!o || typeof o !== "object" || depth > 8 || tagged.has(o)) return;
+    tagged.add(o);
+    for (const k of Object.keys(o)) {
+      if (k === "_global" || k === "_root" || k === "_level0") continue;
+      const v: any = o[k];
+      if (v && typeof v === "object") {
+        const fqn = prefix ? prefix + "." + k : k;
+        if (isFn(v) && !(v as any).__fqn) (v as any).__fqn = fqn;
+        tagFqn(v, fqn, depth + 1);
+      }
+    }
+  };
   tagFqn(globals, "");
 
   // 2) the entry-point frame(s) (e.g. App.main(this)).

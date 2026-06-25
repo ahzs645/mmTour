@@ -104,7 +104,7 @@ name** (`"topNavButton"`, `"subsectionClip"`, …). `Model.init()` then loads th
   text leaves, clip props, linkage map). Gated on `initActions` + `frameBytecode`; a tour
   SWF in the studio is verified untouched (no `avm1App` activity, renders normally).
 
-- **Stage 3 — bootstrap + verify (IN PROGRESS).** The player now advances root to the
+- **Stage 3 — bootstrap + verify (DONE — it renders).** The player advances root to the
   entry frame (so the View container instances exist) and runs `BuyNLarge.main` through the
   VM. **Verified working end-to-end in the player**: 95 `#initclip` programs build the class
   tree, `BuyNLarge.main → Presenter → Model → new XML().load("xml/bnl_en.xml")` fetches the
@@ -118,15 +118,22 @@ name** (`"topNavButton"`, `"subsectionClip"`, …). `Model.init()` then loads th
   (linkage → class path); at runtime the host resolves that path against the *completed*
   class tree, sidestepping the init-order issue where `registerClass` captured the class
   before its namespace finished building. The VM also got a safe string coercion (AS2
-  concatenation on our null-prototype instances no longer throws). With these, the whole
-  app **executes to completion** — `TopNav.init`/`News.init`/etc. run their real bodies
-  (`attachMovie` + AS2 `set label`/`set title` setters → text fields).
+  concatenation on our null-prototype instances no longer throws).
 
-  **Remaining (rendering-detail bugs):** the dynamic text isn't visually correct yet — some
-  fields get wrong values (e.g. a static label overwritten with `undefined`) and the
-  `attachMovie`-created buttons' `label_txt` overrides aren't surfacing in the flatten/
-  render path. These are execution/render-plumbing bugs to chase next (value correctness in
-  the View loops; rendering text overrides on runtime-attached clips), not architectural.
+  **The `tagFqn` fix made it render.** XPath/EventDispatcher are recognised by a class's
+  fully-qualified name; the tagging walk recursed through `_global`/`_root` self-references
+  and produced bogus `_global._global.…` prefixes, so those overrides never matched and the
+  data objects came back with empty titles. Skipping the circular keys and guarding cycles
+  (a `tagged` WeakSet) fixed it. With that, the Decompiled Player shows the live
+  XML-driven content: **24 unique dynamic text leaves** — all six nav labels (Our Company,
+  Business Divisions, Robotics, World News, Buy n Large Store, Contact Us), the news
+  headline + article bodies, the news-link list, robot names, and the contact privacy
+  text — matching the Ruffle reference.
+
+  **Remaining (fidelity, not blocking):** layout/positioning of some runtime-attached rows
+  isn't pixel-matched to Ruffle yet (e.g. nav-bar placement, animation timing of the reveal
+  panel), and the left-nav/ticker loops attach fewer rows than Ruffle in some states. These
+  are rendering-fidelity refinements on top of a working render, not architectural gaps.
 
 ## Non-negotiable
 
