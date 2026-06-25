@@ -52,6 +52,13 @@ Key things the VM needed beyond the build-time scanner:
   over a DOM (`//tag` = descendant search), plus node `.attributes` / `.firstChild.nodeValue`.
 - **Array `.push`**, `parseInt`, member get/set on plain objects.
 
+## Entry point (bnl)
+
+The root timeline's `frame_3` runs `com.buynlarge.BuyNLarge.main(this)`, which constructs
+the Presenter/Model/View and `attachMovie`s the components onto the root by **linkage
+name** (`"topNavButton"`, `"subsectionClip"`, …). `Model.init()` then loads the XML; its
+`onLoad` runs `parseXML`, and the View `init`s populate the attached clips' fields.
+
 ## Staged plan
 
 - **Stage 1 — emit bytecode (DONE).** `data/avm1Bytecode.ts` defines the canonical
@@ -59,19 +66,28 @@ Key things the VM needed beyond the build-time scanner:
   `DefinedFunction` (in-browser compile only — shipped tour packs use the separate `.mjs`
   build and are unchanged). bnl now carries bytecode on 470/573 functions.
 
-- **Stage 2 — runtime VM wired to the display list.** `src/player/avm1Vm.ts`, seeded from
-  `interp.ts`, executing function bytecode with a host interface backed by `ClipInstance`:
-  `attachMovie`/`createEmptyMovieClip` create real clips (by linkage/export name);
-  `.text`/`.htmlText`/`autoSize`/`setTextFormat` update fields; `_x`/`_y`/`_alpha`/`_width`
-  properties; `this[expr]`; the AS2 class system (`registerClass`/`extends`/`super`/
-  getters-setters); reuse the player's existing `selectXmlNodes` (XPath) + `DOMParser`
-  XML; `mx.utils.Delegate`, `EventDispatcher`, `Tween`. **Gated by bytecode presence so
-  the tour path is untouched.**
+- **Stage 2 — host-pluggable VM core (DONE).** `src/player/avm1Vm.ts`: a runtime AVM1
+  interpreter whose object/clip/property access goes through an `Avm1Host`. Verified
+  end-to-end against bnl's real `parseXML` bytecode + real `bnl_en.xml` (extracts every
+  nav/section title). Not yet wired into the player.
 
-- **Stage 3 — bootstrap + verify.** On `new XML().onLoad`, drive `Model.parseXML` + the
-  View component `init`s through the VM so nav labels, news, subsections, and ticker
-  render. Verify side-by-side against Ruffle in the compare view; iterate. Everything
-  data-driven — no bnl-specific branches.
+- **Stage 2a — extract symbol linkage (TODO, build).** Emit `ExportAssets`/`SymbolClass`
+  linkage (export name → characterId) onto timeline assets — today only *sound* exports
+  are kept. `attachMovie("topNavButton")` can't resolve a symbol without this. Additive,
+  low-risk, like Stage 1.
+
+- **Stage 2b — player host (TODO, runtime).** An `Avm1Host` backed by `ClipInstance`:
+  `attachMovie`/`createEmptyMovieClip` create real clips from the library (by linkage),
+  run their `#initclip`-registered class constructors; `.text`/`.htmlText`/`autoSize`/
+  `setTextFormat` update fields; `_x`/`_y`/`_alpha`/`_width` props; `this[expr]`; the AS2
+  class system (`registerClass`/`extends`/`super`/getters-setters); reuse the player's
+  `selectXmlNodes` (XPath) + `DOMParser` XML; `mx.utils.Delegate`/`EventDispatcher`/`Tween`.
+  **Gated by bytecode presence so the tour path is untouched.**
+
+- **Stage 3 — bootstrap + verify (TODO).** Run `frame_3` → `BuyNLarge.main(root)` through
+  the VM; on `new XML().onLoad`, `parseXML` + the View `init`s populate the display list so
+  nav labels, news, subsections, and ticker render. Verify side-by-side against Ruffle in
+  the compare view; iterate. Everything data-driven — no bnl-specific branches.
 
 ## Non-negotiable
 

@@ -323,6 +323,7 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
     control: timelineControl,
     frameSvgs: [],
     bitmapFillShapeSrcs: bitmapFillShapeSrcs(scene, files),
+    linkage: exportLinkage(movie),
     assets,
     frames,
   };
@@ -529,6 +530,23 @@ function soundExportNames(movie: any): Map<number, string> {
     for (const asset of tag.assets ?? []) {
       if (typeof asset.id !== "number" || !asset.name) continue;
       out.set(asset.id, String(asset.name));
+    }
+  }
+  return out;
+}
+
+/** Linkage/export name → character id, for runtime attachMovie("symbolName").
+ *  Covers every ExportAssets/SymbolClass entry (clips, not just sounds). */
+function exportLinkage(movie: any): Record<string, number> {
+  const out: Record<string, number> = {};
+  const exportAssets = (swf.TagType as any).ExportAssets ?? 35;
+  const symbolClass = (swf.TagType as any).SymbolClass ?? 76;
+  for (const tag of movie.tags) {
+    if (tag.type !== exportAssets && tag.type !== symbolClass) continue;
+    for (const asset of tag.assets ?? tag.symbols ?? []) {
+      const name = asset.name ?? asset.className;
+      if (typeof asset.id !== "number" || !name) continue;
+      out[String(name)] = asset.id;
     }
   }
   return out;
