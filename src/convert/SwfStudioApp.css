@@ -183,7 +183,7 @@ body[data-theme="dark"] .theme-toggle .moon {
 
 .lab-mount {
   width: 100%;
-  background: #ffffff;
+  background: var(--panel);
   overflow: auto;
 }
 
@@ -196,6 +196,12 @@ body[data-theme="dark"] .theme-toggle .moon {
 .lab-mount .native-info-btn {
   float: right;
   margin: 0 0 10px 12px;
+}
+
+/* In the studio, comparison scenes always play from their packed bundle, so the
+   "Asset source" toggle is redundant noise — hide it inside the embedded lab. */
+.lab-mount #assetSourceField {
+  display: none;
 }
 
 .layout {

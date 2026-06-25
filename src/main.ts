@@ -1,5 +1,6 @@
 import type { RuffleElement } from "./app/frameModeTypes";
 import type { CompiledScene } from "./convert/compileScene.ts";
+import type { TourScene } from "./data/scenes";
 
 declare global {
   interface Window {
@@ -14,11 +15,25 @@ declare global {
 let mounted = false;
 let handle: ConversionLabHandle | null = null;
 
-export type ConversionLabHandle = {
-  compareCompiledSwf: (input: { name: string; compiled: CompiledScene; ruffleUrl: string }) => Promise<void>;
+/** One converted scene the studio offers up for Ruffle comparison. */
+export type ComparableScene = {
+  name: string;
+  compiled: CompiledScene;
+  /** Object URL of the original SWF bytes, played as the Ruffle reference. */
+  ruffleUrl?: string;
 };
 
-export async function mountConversionLab(container: HTMLElement, options: { includeHeader?: boolean } = {}): Promise<ConversionLabHandle> {
+export type ConversionLabHandle = {
+  /**
+   * Replace the Compare workspace's scene list with the studio's converted
+   * library and focus one of them. Every scene plays from its own pack and,
+   * when available, its original SWF bytes drive Ruffle — so any converted SWF
+   * shows a reference without depending on a file living on the server.
+   */
+  showComparableScenes: (items: ComparableScene[], activeSwf?: string) => Promise<void>;
+};
+
+export async function mountConversionLab(container: HTMLElement, options: { includeHeader?: boolean; autoLoad?: boolean } = {}): Promise<ConversionLabHandle> {
   if (mounted && handle) return handle;
   mounted = true;
 
@@ -169,33 +184,58 @@ export async function mountConversionLab(container: HTMLElement, options: { incl
     });
   });
 
-  void loadScene(appState.activeScene);
+  // The studio drives the scene list via showComparableScenes(); only the
+  // standalone lab auto-loads a default bundled scene on mount.
+  if (options.autoLoad !== false) void loadScene(appState.activeScene);
   stageResizeObserver.observe(dom.assetWrap);
 
   handle = {
-    async compareCompiledSwf({ name, compiled, ruffleUrl }) {
+    async showComparableScenes(items, activeSwf) {
       packedAssets.setAssetSource("pack");
-      packedAssets.registerPackedScene(compiled.scene, compiled.files, compiled.timeline);
+
+      // Rebuild the comparable list straight from the studio's converted
+      // library, in place so every module that imported `scenes` sees it.
+      const rebuilt: TourScene[] = items.map(({ name, compiled, ruffleUrl }) => {
+        packedAssets.registerPackedScene(compiled.scene, compiled.files, compiled.timeline);
+        return {
+          swf: `${compiled.scene}.swf`,
+          label: name.replace(/\.swf$/i, ""),
+          length: compiled.timeline?.duration ?? 0,
+          ruffleUrl,
+        };
+      });
+      scenes.splice(0, scenes.length, ...rebuilt);
       clearTimelineCache();
       assetTimelineCache.clear();
       loadedFontFaceKeys.clear();
-
-      const swf = `${compiled.scene}.swf`;
-      const existingIndex = scenes.findIndex((scene) => scene.swf === swf);
-      const comparableScene = {
-        swf,
-        label: name.replace(/\.swf$/i, ""),
-        length: compiled.timeline.duration,
-        ruffleUrl,
-      };
-      if (existingIndex >= 0) scenes[existingIndex] = comparableScene;
-      else scenes.push(comparableScene);
-
-      dom.select.innerHTML = scenes.map((scene, index) => `<option value="${index}">${scene.label} - ${scene.swf}</option>`).join("");
-      appState.activeScene = scenes[existingIndex >= 0 ? existingIndex : scenes.length - 1] ?? comparableScene;
-      dom.select.value = String(scenes.indexOf(appState.activeScene));
       dom.assetSourceSelect.value = "pack";
-      await loadScene(appState.activeScene);
+      dom.select.innerHTML = scenes
+        .map((scene, index) => `<option value="${index}">${scene.label} - ${scene.swf}</option>`)
+        .join("");
+
+      if (!scenes.length) {
+        appState.activeAssetTimeline = null;
+        appState.rufflePlayer = null;
+        dom.ruffleMount.replaceChildren();
+        dom.ruffleName.textContent = "";
+        dom.assetName.textContent = "No converted scene";
+        dom.status.textContent = "Convert a SWF in the Convert tab to compare it here.";
+        dom.emptyMessage.hidden = false;
+        dom.emptyMessage.textContent = "Convert a SWF to compare it against the Ruffle reference here.";
+        return;
+      }
+
+      // Keep the scene already on screen unless the caller asks for a specific
+      // one — so finishing a background convert doesn't yank the view away.
+      const wanted = (activeSwf ?? appState.activeScene?.swf ?? "").toLowerCase();
+      const targetIndex = scenes.findIndex((scene) => scene.swf.toLowerCase() === wanted);
+      const target = scenes[targetIndex >= 0 ? targetIndex : scenes.length - 1];
+      const alreadyShown = !activeSwf
+        && Boolean(appState.activeAssetTimeline)
+        && target.swf.toLowerCase() === (appState.activeScene?.swf ?? "").toLowerCase();
+      appState.activeScene = target;
+      dom.select.value = String(scenes.indexOf(target));
+      if (!alreadyShown) await loadScene(target);
     },
   };
   return handle;

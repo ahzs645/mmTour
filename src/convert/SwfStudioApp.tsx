@@ -25,7 +25,7 @@ import {
 import { downloadBytes, exportArchiveForScenes, importArchiveScenes } from "./exportBundle.ts";
 import { applyInheritedGlobalDefaults, collectInheritableGlobalDefaults } from "./inheritedDefaults.ts";
 import { addExternalRef, type ExternalAssetRef } from "./avm1Control.ts";
-import type { ConversionLabHandle } from "../main";
+import type { ComparableScene, ConversionLabHandle } from "../main";
 
 setAssetSource("pack");
 setPackNetworkFallback(false);
@@ -76,11 +76,11 @@ export function SwfStudioApp() {
   const playerWrap = useRef<HTMLDivElement | null>(null);
   const playerEl = useRef<HTMLDivElement | null>(null);
   const labMount = useRef<HTMLDivElement | null>(null);
-  const labMounted = useRef(false);
   const labHandle = useRef<ConversionLabHandle | null>(null);
   const activePlayer = useRef<TourPlayer | null>(null);
   const compiledScenes = useRef(new Map<string, CompiledScene>());
   const originalSwfUrls = useRef(new Map<string, string>());
+  const pendingCompareSwf = useRef<string | undefined>(undefined);
   const inFlight = useRef(new Map<string, Promise<CompiledScene>>());
   const dependencyLoads = useRef(new Map<string, Promise<void>>());
 
@@ -95,15 +95,44 @@ export function SwfStudioApp() {
     localStorage.setItem(THEME_KEY, theme);
   }, [theme]);
 
-  useEffect(() => {
-    if (workspaceTab !== "compare" || labMounted.current || !labMount.current) return;
-    labMounted.current = true;
-    void import("../main").then(({ mountConversionLab }) => {
-      if (labMount.current) void mountConversionLab(labMount.current, { includeHeader: false }).then((mounted) => {
-        labHandle.current = mounted;
+  // Every ready card, as a scene the Compare workspace can play side-by-side
+  // with Ruffle. The original SWF bytes (when we still have them) drive Ruffle,
+  // so any converted SWF gets a reference — not just the bundled tour.
+  const comparableScenes = useCallback((): ComparableScene[] => {
+    const list: ComparableScene[] = [];
+    for (const card of Object.values(cards)) {
+      if (card.status !== "ready") continue;
+      list.push({
+        name: card.name,
+        compiled: card.compiled,
+        ruffleUrl: originalSwfUrls.current.get(card.compiled.scene),
       });
-    });
-  }, [workspaceTab]);
+    }
+    return list;
+  }, [cards]);
+
+  // Keep the Compare workspace mounted and in lock-step with the converted
+  // library: switching to the tab (or finishing a convert while it is open)
+  // re-syncs the scene list. pendingCompareSwf focuses a specific scene when
+  // the user clicked a "Compare" button; otherwise the current view is kept.
+  useEffect(() => {
+    if (workspaceTab !== "compare" || !labMount.current) return;
+    let cancelled = false;
+    void (async () => {
+      let mounted = labHandle.current;
+      if (!mounted) {
+        const { mountConversionLab } = await import("../main");
+        if (cancelled || !labMount.current) return;
+        mounted = await mountConversionLab(labMount.current, { includeHeader: false, autoLoad: false });
+        labHandle.current = mounted;
+      }
+      if (cancelled) return;
+      const focus = pendingCompareSwf.current;
+      pendingCompareSwf.current = undefined;
+      await mounted.showComparableScenes(comparableScenes(), focus);
+    })();
+    return () => { cancelled = true; };
+  }, [workspaceTab, comparableScenes]);
 
   const refreshHistory = useCallback(async () => {
     setHistory(await listConverts());
@@ -399,25 +428,24 @@ export function SwfStudioApp() {
   }, [compile, ensureDependencies, persistCompiled, showToast]);
 
   const compareCompiled = useCallback(async (name: string, compiled: CompiledScene) => {
-    const ruffleUrl = originalSwfUrls.current.get(compiled.scene);
-    if (!ruffleUrl) {
+    if (!originalSwfUrls.current.get(compiled.scene)) {
       showToast("Compare needs the original SWF. Re-convert the SWF file to load it into Ruffle.");
       return;
     }
-    setWorkspaceTab("compare");
-    let mounted = labHandle.current;
-    if (!mounted && labMount.current) {
-      labMounted.current = true;
-      const { mountConversionLab } = await import("../main");
-      mounted = await mountConversionLab(labMount.current, { includeHeader: false });
-      labHandle.current = mounted;
+    // Switching tabs runs the compare effect, which syncs the whole converted
+    // library into the lab and focuses this scene. If the tab is already open
+    // the dependency on comparableScenes re-runs the effect for us.
+    pendingCompareSwf.current = `${compiled.scene}.swf`;
+    if (workspaceTab === "compare") {
+      const mounted = labHandle.current;
+      if (mounted) {
+        pendingCompareSwf.current = undefined;
+        await mounted.showComparableScenes(comparableScenes(), `${compiled.scene}.swf`);
+      }
+    } else {
+      setWorkspaceTab("compare");
     }
-    if (!mounted) {
-      showToast("Compare workspace is not ready yet");
-      return;
-    }
-    await mounted.compareCompiledSwf({ name, compiled, ruffleUrl });
-  }, [showToast]);
+  }, [comparableScenes, showToast, workspaceTab]);
 
   const handleFiles = useCallback(async (files: Iterable<File>) => {
     for (const file of files) {
