@@ -1288,7 +1288,9 @@ function externalRefsInText(text: string): string[] {
 async function fetchTextAsset(ref: string): Promise<string | null> {
   try {
     const response = await fetch(assetHref(ref), { cache: "no-store" });
-    if (!response.ok) return null;
+    // Ignore an index.html SPA fallback so a missing XML doesn't get parsed for
+    // (and falsely register) asset references.
+    if (!response.ok || isHtmlResponse(response)) return null;
     return response.text();
   } catch {
     return null;
@@ -1297,14 +1299,21 @@ async function fetchTextAsset(ref: string): Promise<string | null> {
 
 async function assetPresent(ref: string): Promise<boolean> {
   try {
+    // A dev/SPA host answers a missing file with its index.html (HTTP 200,
+    // text/html) instead of a 404. Every ref we probe here is binary or XML, so
+    // an HTML response means the asset is not really there — treat it as missing
+    // rather than reporting it present and hiding the gap from the user.
     let response = await fetch(assetHref(ref), { method: "HEAD", cache: "no-store" });
-    if (response.ok) return true;
-    if (response.status !== 405) return false;
-    response = await fetch(assetHref(ref), { cache: "no-store" });
-    return response.ok;
+    if (response.status === 405) response = await fetch(assetHref(ref), { cache: "no-store" });
+    if (!response.ok) return false;
+    return !isHtmlResponse(response);
   } catch {
     return false;
   }
+}
+
+function isHtmlResponse(response: Response): boolean {
+  return /\btext\/html\b/i.test(response.headers.get("content-type") ?? "");
 }
 
 function assetHref(ref: string): string {
