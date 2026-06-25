@@ -80,6 +80,17 @@ name** (`"topNavButton"`, `"subsectionClip"`, …). `Model.init()` then loads th
   path, from `#initclip` `Object.registerClass`) is emitted by the node build but **not**
   the in-browser compile; detect it from the `registerClass` bytecode.
 
+- **Stage 2b integration map (how it plugs in).** The runtime `FunctionDef`
+  (`buildFunctionTable`) does **not** carry bytecode yet and merges by `functionName`
+  (many classes share `init`/`set label`), so the VM must dispatch by **class**: the
+  player already keys class methods in `methodFunctions` by `methodSourceKey(def.source)`
+  + name (so `TopNav.init` ≠ `News.init`). Steps: (1) add `bytecode` to the runtime
+  `FunctionDef` and populate it per-method in `buildFunctionTable`; (2) emit
+  `control.registeredClasses` (linkage → class path) from the `Object.registerClass`
+  bytecode so attached clips bind to their class; (3) route a bytecode-carrying method
+  call through `Avm1Vm` with a player-backed host; gate on `def.bytecode` so the tour's
+  (bytecode-free) functions keep the legacy path untouched.
+
 - **Stage 2b — player host (TODO, runtime).** An `Avm1Host` backed by `ClipInstance`:
   `attachMovie`/`createEmptyMovieClip` create real clips from the library (by linkage),
   run their `#initclip`-registered class constructors; `.text`/`.htmlText`/`autoSize`/
