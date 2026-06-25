@@ -71,10 +71,14 @@ name** (`"topNavButton"`, `"subsectionClip"`, …). `Model.init()` then loads th
   end-to-end against bnl's real `parseXML` bytecode + real `bnl_en.xml` (extracts every
   nav/section title). Not yet wired into the player.
 
-- **Stage 2a — extract symbol linkage (TODO, build).** Emit `ExportAssets`/`SymbolClass`
-  linkage (export name → characterId) onto timeline assets — today only *sound* exports
-  are kept. `attachMovie("topNavButton")` can't resolve a symbol without this. Additive,
-  low-risk, like Stage 1.
+- **Stage 2a — extract symbol linkage (PARTIAL).** `compileScene` now emits a
+  `timeline.linkage` (name → id) map and pushes `asset.linkageNames` for exported symbols.
+  **Remaining gaps found:** (1) the in-browser compile's `assets` map holds only *leaf*
+  assets (shapes/images/text/sounds), not **sprite/clip definitions**, so `attachMovie`
+  has no sprite to resolve for `topNavButton` etc. — the in-browser compile needs a sprite
+  asset model (the node build has one). (2) `control.registeredClasses` (linkage → class
+  path, from `#initclip` `Object.registerClass`) is emitted by the node build but **not**
+  the in-browser compile; detect it from the `registerClass` bytecode.
 
 - **Stage 2b — player host (TODO, runtime).** An `Avm1Host` backed by `ClipInstance`:
   `attachMovie`/`createEmptyMovieClip` create real clips from the library (by linkage),
