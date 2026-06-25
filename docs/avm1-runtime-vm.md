@@ -99,10 +99,28 @@ name** (`"topNavButton"`, `"subsectionClip"`, …). `Model.init()` then loads th
   `selectXmlNodes` (XPath) + `DOMParser` XML; `mx.utils.Delegate`/`EventDispatcher`/`Tween`.
   **Gated by bytecode presence so the tour path is untouched.**
 
-- **Stage 3 — bootstrap + verify (TODO).** Run `frame_3` → `BuyNLarge.main(root)` through
-  the VM; on `new XML().onLoad`, `parseXML` + the View `init`s populate the display list so
-  nav labels, news, subsections, and ticker render. Verify side-by-side against Ruffle in
-  the compare view; iterate. Everything data-driven — no bnl-specific branches.
+- **Stage 2b — player host (DONE).** `src/player/avm1App.ts` runs the app through `Avm1Vm`
+  against a live display list via a `PlayerBridge` (Player.ts: `attachMovieByLinkage`,
+  text leaves, clip props, linkage map). Gated on `initActions` + `frameBytecode`; a tour
+  SWF in the studio is verified untouched (no `avm1App` activity, renders normally).
+
+- **Stage 3 — bootstrap + verify (IN PROGRESS).** The player now advances root to the
+  entry frame (so the View container instances exist) and runs `BuyNLarge.main` through the
+  VM. **Verified working end-to-end in the player**: 95 `#initclip` programs build the class
+  tree, `BuyNLarge.main → Presenter → Model → new XML().load("xml/bnl_en.xml")` fetches the
+  real 54 KB XML, `parseXML` builds the data model, the `xmlLoaded`/`populateData`
+  EventDispatcher events fire, and every View `init` is invoked with the correct content
+  (`topNav.init([7 section DOs])`, `news.init(newsDO)`, `ticker.init([17 items])`, …).
+
+  **Remaining blocker (one bug):** placed View clips don't bind to their component classes
+  because AS2 `Object.registerClass("top nav", com…components.TopNav)` captures the class
+  *before* its namespace finishes building (an `#initclip` ordering subtlety) — so
+  `registry["top nav"]` is empty even though `globals.com.buynlarge.components.TopNav` is a
+  real class at the end. The View `init`s therefore no-op and no dynamic text is drawn yet.
+  Fix path: emit `registeredClasses` (linkage → class path) at build time (the node build
+  already does this) and resolve the class from the *completed* class tree at bind time,
+  sidestepping the ordering entirely. Then `TopNav.init` runs → `attachMovie` + `set label`
+  → text renders. Verify side-by-side against Ruffle; iterate. No scene-specific branches.
 
 ## Non-negotiable
 

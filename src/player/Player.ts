@@ -23,6 +23,7 @@ import {
   type ButtonVisualState,
 } from "./renderNodes";
 import { ClipInstance } from "./ClipInstance";
+import { runDataDrivenApp, type AppClip, type AppText, type PlayerBridge } from "./avm1App";
 import { evalCondition } from "./conditions";
 import { IDENTITY, multiplyMatrix } from "./matrix";
 import { Ticker } from "./Ticker";
@@ -223,6 +224,98 @@ export class Player {
     this.root = this.buildRoot(this.startFrame);
     this.primeAmbientSound();
     this.render();
+    this.tryRunDataDrivenApp();
+  }
+
+  /** If this scene is a data-driven AS2 app (carries #initclip class programs + an
+   *  entry frame), run it through the AVM1 VM so it builds its own UI from its XML.
+   *  Gated on that bytecode, so timeline-script SWFs (the tour) are untouched. */
+  private tryRunDataDrivenApp() {
+    const control = this.timeline.control as { initActions?: unknown[]; frameBytecode?: { frame: number }[] } | undefined;
+    if (!control?.initActions?.length || !control?.frameBytecode?.length) return;
+    // The app's entry script (e.g. App.main) lives on a later root frame that also
+    // places the View container instances. Advance the root there so they exist.
+    const bootFrame = Math.max(0, ...control.frameBytecode.map((f) => Number(f.frame) || 0));
+    if (this.root.currentFrame !== bootFrame) this.root = this.buildRoot(bootFrame);
+    const idToLinkage = new Map<number, string>();
+    for (const [name, id] of Object.entries((this.timeline as { linkage?: Record<string, number> }).linkage ?? {})) {
+      if (!idToLinkage.has(id)) idToLinkage.set(id, name);
+    }
+    try {
+      runDataDrivenApp(control as never, this.makeAppBridge(idToLinkage));
+    } catch (error) {
+      console.warn("[avm1App] data-driven app bootstrap failed", error);
+    }
+  }
+
+  private makeAppBridge(idToLinkage: Map<number, string>): PlayerBridge {
+    const asClip = (clip: ClipInstance): AppClip => { (clip as unknown as { __appClip: boolean }).__appClip = true; return clip as unknown as AppClip; };
+    const toClip = (c: AppClip): ClipInstance => c as unknown as ClipInstance;
+    return {
+      root: () => asClip(this.root),
+      child: (clip, name) => {
+        const owner = toClip(clip);
+        const sub = findChildByName(owner, name) ?? this.findClipByName(owner, name);
+        if (sub) return asClip(sub);
+        const textId = this.findTextChildByName(owner, name);
+        if (textId !== undefined) return { __appText: true, clip, field: name } as AppText;
+        return undefined;
+      },
+      attachMovie: (parent, linkage, name, depth) => {
+        const child = this.attachMovieByLinkage(toClip(parent), linkage, name, depth);
+        return child ? asClip(child) : undefined;
+      },
+      createEmptyMovieClip: (parent, name, depth) => asClip(this.createEmptyClip(toClip(parent), name, depth)),
+      setText: (t, value, html) => {
+        const owner = toClip(t.clip);
+        const id = this.findTextChildByName(owner, t.field);
+        if (id === undefined) return;
+        const override = this.textOverrideFor({ id, owner, name: t.field });
+        override.text = value; override.html = html;
+      },
+      getText: (t) => {
+        const owner = toClip(t.clip);
+        const id = this.findTextChildByName(owner, t.field);
+        if (id === undefined) return "";
+        return String(this.clipTextOverrides.get(owner)?.get(t.field)?.text ?? this.textOverrides.get(id)?.text ?? "");
+      },
+      getClipProp: (clip, key) => readClipProperty(toClip(clip), normalizeAvm1PropertyName(key) ?? key, this.getAsset(toClip(clip).characterId)),
+      setClipProp: (clip, key, value) => { setClipProperty(toClip(clip), normalizeAvm1PropertyName(key) ?? key, value as VarValue); },
+      clipField: (clip, key) => toClip(clip).props[key],
+      setClipField: (clip, key, value) => { toClip(clip).props[key] = value as VarValue; },
+      hasClipField: (clip, key) => key in toClip(clip).props,
+      linkageOf: (clip) => idToLinkage.get(toClip(clip).characterId),
+      nextDepth: (clip) => this.nextHighestDepth(toClip(clip)),
+      render: () => this.render(),
+      fetchText: (url, onText) => {
+        void fetch(assetUrl(url))
+          .then((response) => (response.ok && !/\btext\/html\b/i.test(response.headers.get("content-type") ?? "") ? response.text() : null))
+          .then(onText)
+          .catch(() => onText(null));
+      },
+    };
+  }
+
+  /** attachMovie() by linkage name, returning the new clip (no legacy AS2 constructor —
+   *  the data-driven app VM runs the class constructor itself). */
+  private attachMovieByLinkage(owner: ClipInstance, linkage: string, name: string, depth: number): ClipInstance | undefined {
+    const characterId = this.linkageAssetIds.get(normalizeLinkageName(linkage));
+    if (!characterId || !this.getAsset(characterId) || !Number.isFinite(depth)) return undefined;
+    owner.dynamicInstances.set(depth, { depth, characterId, placedFrame: owner.currentFrame, matrix: { ...IDENTITY }, opacity: 1, name });
+    owner.depthNames.set(depth, name);
+    const child = new ClipInstance(characterId, name, owner);
+    child.scriptKey = this.clipSourceKey(this.getAsset(characterId), name);
+    owner.childClips.set(depth, child);
+    this.enterFrame(child, 0, 0);
+    return child;
+  }
+
+  private createEmptyClip(owner: ClipInstance, name: string, depth: number): ClipInstance {
+    owner.dynamicInstances.set(depth, { depth, characterId: 0, placedFrame: owner.currentFrame, matrix: { ...IDENTITY }, opacity: 1, name });
+    owner.depthNames.set(depth, name);
+    const child = new ClipInstance(0, name, owner);
+    owner.childClips.set(depth, child);
+    return child;
   }
 
   get frameCount(): number {
