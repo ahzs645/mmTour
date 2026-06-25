@@ -19,8 +19,8 @@ function ensureWorker(): Worker | null {
     if (!p) return;
     pending.delete(e.data.id);
     if (e.data.ok) {
-      const { scene, timeline, files, stats, width, height, dependencies } = e.data;
-      p.resolve({ scene, timeline, files, stats, width, height, dependencies });
+      const { scene, timeline, files, stats, width, height, dependencies, externalAssets } = e.data;
+      p.resolve({ scene, timeline, files, stats, width, height, dependencies, externalAssets });
     } else {
       p.reject(new Error(e.data.error ?? "compile failed"));
     }

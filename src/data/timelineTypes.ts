@@ -244,6 +244,11 @@ export type BodyStatement =
 export type DefinedFunction = {
   functionName: string;
   parameters?: string[];
+  parameterRegisters?: { name: string; register?: number }[];
+  registerCount?: number;
+  flags?: number;
+  bytecodeName?: string;
+  assignmentTarget?: string;
   scope?: "root" | "sprite" | string;
   spriteId?: number;
   assignments?: { target: string; value?: unknown; rawValue?: string }[];

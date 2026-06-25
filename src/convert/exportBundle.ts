@@ -158,6 +158,7 @@ async function importSceneBlock(scene: string, block: Uint8Array): Promise<Compi
     width,
     height,
     dependencies: dependenciesFromTimeline(timeline),
+    externalAssets: timeline.control?.externalAssets ?? [],
   };
 }
 

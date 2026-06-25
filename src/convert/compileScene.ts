@@ -20,7 +20,7 @@ import {
 } from "./index.ts";
 import { matrixFromButtonRecord } from "./buttonComposer.ts";
 import type { BitmapFillImage } from "./svgEmit.ts";
-import { extractControl, detectDependencies, buttonEventsFromConditions, type ExtractedControl, type SwfDependency } from "./avm1Control.ts";
+import { extractControl, detectDependencies, detectExternalAssets, buttonEventsFromConditions, type ExtractedControl, type ExternalAssetRef, type SwfDependency } from "./avm1Control.ts";
 import { parseProgram } from "./avm1/parse.ts";
 import { addProgramCoverage, createAvm1Coverage } from "./avm1/coverage.ts";
 import { runInit } from "./avm1/interp.ts";
@@ -50,6 +50,8 @@ export interface CompiledScene {
   height: number;
   /** Other SWFs this scene loadMovie's (a shell like A-tour needs these too). */
   dependencies: SwfDependency[];
+  /** External media/data files referenced by the SWF or companion data, for warnings only. */
+  externalAssets: ExternalAssetRef[];
 }
 
 const enc = new TextEncoder();
@@ -142,6 +144,7 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
   // --- control ---
   const control = extractControl(movie);
   enrichSoundMetadata(control, soundLibrary);
+  const externalAssets = detectExternalAssets(movie);
 
   // --- buttons ---
   const dynamicTexts = dynamicTextInfo(movie);
@@ -301,6 +304,7 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
     soundLibrary,
     spriteLocalDefaults: inferSpriteLocalDefaults(control.spriteActions),
     dynamicTexts: controlDynamicTexts,
+    externalAssets,
     globalDefaults,
     avm1Coverage: buildAvm1Coverage(movie),
   }, assets, labels);
@@ -327,7 +331,7 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
   for (const f of files.values()) stats.assetBytes += f.bytes.length;
   stats.ms = Math.round(performance.now() - t0);
 
-  return { scene, timeline, files, stats, width, height, dependencies: detectDependencies(movie) };
+  return { scene, timeline, files, stats, width, height, dependencies: detectDependencies(movie), externalAssets };
 }
 
 // --- helpers ---

@@ -78,9 +78,159 @@ function safeParse(actions: Uint8Array): ReturnType<typeof parseProgram> {
   }
 }
 
+function collectFunctionMetadata(
+  actions: Uint8Array,
+  context: Parameters<typeof summarizeProgram>[1],
+): DefinedFunction[] {
+  const defs: DefinedFunction[] = [];
+  let functionId = 0;
+
+  type StackValue =
+    | { kind: "path"; path: string }
+    | { kind: "literal"; value: unknown }
+    | { kind: "function"; id: number; action: ReturnType<typeof parseProgram>[number]; emitted?: boolean };
+
+  const pathOf = (value: StackValue | undefined): string => {
+    if (!value) return "";
+    if (value.kind === "path") return value.path;
+    if (value.kind === "literal") return value.value === undefined ? "" : String(value.value);
+    return "";
+  };
+  const inferredName = (target: string, action: ReturnType<typeof parseProgram>[number]): string => {
+    if (action.name) return action.name;
+    const parts = target.split(".").filter(Boolean);
+    return normalizeFunctionName(parts[parts.length - 1] || "anonymous");
+  };
+  const makeDefinition = (
+    action: ReturnType<typeof parseProgram>[number],
+    functionName: string,
+    assignmentTarget?: string,
+  ): DefinedFunction => ({
+    functionName,
+    bytecodeName: action.name ?? "",
+    assignmentTarget,
+    parameters: (action.params ?? []).map((param) => param.name).filter(Boolean),
+    parameterRegisters: (action.params ?? []).map((param) => ({ name: param.name, register: param.register })),
+    registerCount: action.registerCount,
+    flags: action.flags,
+    scope: context.scope,
+    spriteId: context.spriteId,
+    body: [],
+    assignments: [],
+    calls: [],
+  } as DefinedFunction & { assignmentTarget?: string });
+  const emit = (fn: Extract<StackValue, { kind: "function" }>, assignmentTarget?: string) => {
+    if (fn.emitted) return;
+    fn.emitted = true;
+    if (!isAs2DefinedFunction(fn.action, assignmentTarget)) return;
+    defs.push(makeDefinition(fn.action, inferredName(assignmentTarget ?? "", fn.action), assignmentTarget));
+  };
+
+  const visit = (program: ReturnType<typeof parseProgram>) => {
+    const stack: StackValue[] = [];
+    const registers = new Map<number, StackValue>();
+    const pending: Array<Extract<StackValue, { kind: "function" }>> = [];
+    for (const action of program) {
+      switch (action.op) {
+        case "Push":
+          for (const value of action.values ?? []) {
+            if (value?.type === "register") stack.push(registers.get(value.value) ?? { kind: "literal", value: undefined });
+            else stack.push({ kind: "literal", value: value?.value });
+          }
+          break;
+        case "Pop":
+          stack.pop();
+          break;
+        case "PushDuplicate":
+          stack.push(stack[stack.length - 1] ?? { kind: "literal", value: undefined });
+          break;
+        case "StackSwap": {
+          const right = stack.pop() ?? { kind: "literal", value: undefined };
+          const left = stack.pop() ?? { kind: "literal", value: undefined };
+          stack.push(right, left);
+          break;
+        }
+        case "StoreRegister":
+          if (typeof action.register === "number") registers.set(action.register, stack[stack.length - 1] ?? { kind: "literal", value: undefined });
+          break;
+        case "GetVariable":
+          stack.push({ kind: "path", path: pathOf(stack.pop()) });
+          break;
+        case "GetMember": {
+          const key = pathOf(stack.pop());
+          const object = pathOf(stack.pop());
+          stack.push({ kind: "path", path: object && key ? `${object}.${key}` : object || key });
+          break;
+        }
+        case "SetMember": {
+          const value = stack.pop();
+          const key = pathOf(stack.pop());
+          const object = pathOf(stack.pop());
+          if (value?.kind === "function") emit(value, object && key ? `${object}.${key}` : object || key);
+          break;
+        }
+        case "SetVariable": {
+          const value = stack.pop();
+          const target = pathOf(stack.pop());
+          if (value?.kind === "function") emit(value, target);
+          break;
+        }
+        case "DefineLocal": {
+          const value = stack.pop();
+          stack.pop();
+          if (value?.kind === "function") emit(value);
+          break;
+        }
+        case "DefineFunction":
+        case "DefineFunction2": {
+          const fn = { kind: "function" as const, id: functionId += 1, action };
+          pending.push(fn);
+          if (action.name) emit(fn, action.name);
+          else stack.push(fn);
+          break;
+        }
+        default:
+          break;
+      }
+      if (action.op === "DefineFunction" || action.op === "DefineFunction2") {
+        visit(action.body ?? []);
+      }
+    }
+    for (const fn of pending) emit(fn);
+  };
+  visit(safeParse(actions));
+  return defs;
+}
+
+function normalizeFunctionName(name: string): string {
+  const accessor = /^__(get|set)__(.+)$/.exec(name);
+  if (accessor) return `${accessor[1]} ${accessor[2]}`;
+  return name;
+}
+
+function isAs2DefinedFunction(action: ReturnType<typeof parseProgram>[number], assignmentTarget?: string): boolean {
+  if (action.name) return true;
+  if (!assignmentTarget) return false;
+  const property = assignmentTarget.split(".").filter(Boolean).pop() ?? "";
+  if (property === "onEnterFrame" && assignmentTarget.includes("prototype.")) return true;
+  return !AVM1_EVENT_HANDLER_PROPERTIES.has(property);
+}
+
+const AVM1_EVENT_HANDLER_PROPERTIES = new Set([
+  "onEnterFrame",
+  "onRelease",
+]);
+
 export interface SwfDependency {
   swf: string; // e.g. "intro.swf"
   level?: number; // target _levelN, if a level load
+}
+
+export interface ExternalAssetRef {
+  ref: string;
+  kind: "swf" | "xml" | "image" | "audio" | "other";
+  source: "bytecode" | "xml";
+  present?: boolean;
 }
 
 /** Find the other SWFs this movie loads (loadMovie/loadMovieNum → GetUrl with a
@@ -109,12 +259,66 @@ export function detectDependencies(movie: any): SwfDependency[] {
   return [...seen.values()];
 }
 
+export function detectExternalAssets(movie: any): ExternalAssetRef[] {
+  const refs = new Map<string, ExternalAssetRef>();
+  const visit = (tags: any[]) => {
+    for (const tag of tags ?? []) {
+      if (tag.type === swf.TagType.DoAction) {
+        for (const op of safeDisassemble(tag.actions)) {
+          if (op.op === "GetUrl") {
+            addExternalRef(refs, op.url, "bytecode");
+            addExternalRef(refs, op.target, "bytecode");
+          } else if (op.op === "ConstantPool") {
+            for (const value of op.values ?? []) addExternalRef(refs, value, "bytecode");
+          } else if (op.op === "Push") {
+            for (const item of op.values ?? []) addExternalRef(refs, item?.value, "bytecode");
+          }
+        }
+      } else if (tag.type === swf.TagType.DefineSprite) {
+        visit(tag.tags);
+      }
+    }
+  };
+  visit(movie.tags);
+  return [...refs.values()].sort((a, b) => a.ref.localeCompare(b.ref));
+}
+
+export function addExternalRef(refs: Map<string, ExternalAssetRef>, value: unknown, source: ExternalAssetRef["source"]) {
+  if (typeof value !== "string") return;
+  const ref = normalizeExternalRef(value);
+  if (!ref) return;
+  const key = ref.toLowerCase();
+  refs.set(key, refs.get(key) ?? { ref, kind: externalAssetKind(ref), source });
+}
+
+export function normalizeExternalRef(value: string): string {
+  const clean = value
+    .trim()
+    .replace(/\\\//g, "/")
+    .replace(/^https?:\/\/[^/]+\//i, "")
+    .replace(/^\/+/, "");
+  if (!clean || clean.startsWith("public/") || clean.startsWith("generated/")) return "";
+  return /\.(?:swf|xml|png|jpe?g|gif|webp|mp3|wav)\b/i.test(clean) ? clean : "";
+}
+
+function externalAssetKind(ref: string): ExternalAssetRef["kind"] {
+  if (/\.swf\b/i.test(ref)) return "swf";
+  if (/\.xml\b/i.test(ref)) return "xml";
+  if (/\.(?:png|jpe?g|gif|webp)\b/i.test(ref)) return "image";
+  if (/\.(?:mp3|wav)\b/i.test(ref)) return "audio";
+  return "other";
+}
+
 export function extractControl(movie: any): ExtractedControl {
   const root = scanFrames(movie.tags, "root");
   const spriteStopFrames: Record<string, number[]> = {};
   const spriteActions: Array<{ spriteId: number; frame: number; actions: ControlAction[] }> = [];
   const definedFunctions: DefinedFunction[] = [...root.definedFunctions];
   for (const tag of movie.tags) {
+    if (tag.type === swf.TagType.DoInitAction) {
+      definedFunctions.push(...collectFunctionMetadata(tag.actions, { scope: "sprite", spriteId: tag.spriteId }));
+      continue;
+    }
     if (tag.type === swf.TagType.DefineSprite) {
       const { stops, frameActions, definedFunctions: defs } = scanFrames(tag.tags, "sprite", tag.id);
       if (stops.length) spriteStopFrames[String(tag.id)] = [...new Set(stops)].sort((a, b) => a - b);

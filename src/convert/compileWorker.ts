@@ -19,7 +19,7 @@ self.onmessage = async (e: MessageEvent<CompileRequest>) => {
     // structured-cloneable (clone preserves shared buffers, so it stays cheap).
     // We don't transfer the buffers: some asset bytes are subarray views of the
     // same SWF buffer, and transferring one ArrayBuffer twice throws.
-    (self as any).postMessage({ id, ok: true, scene: c.scene, timeline: c.timeline, files: c.files, stats: c.stats, width: c.width, height: c.height, dependencies: c.dependencies });
+    (self as any).postMessage({ id, ok: true, scene: c.scene, timeline: c.timeline, files: c.files, stats: c.stats, width: c.width, height: c.height, dependencies: c.dependencies, externalAssets: c.externalAssets });
   } catch (err) {
     (self as any).postMessage({ id, ok: false, error: (err as Error)?.message ?? String(err) });
   }

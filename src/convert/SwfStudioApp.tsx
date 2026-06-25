@@ -24,6 +24,7 @@ import {
 } from "./historyDb.ts";
 import { downloadBytes, exportArchiveForScenes, importArchiveScenes } from "./exportBundle.ts";
 import { applyInheritedGlobalDefaults, collectInheritableGlobalDefaults } from "./inheritedDefaults.ts";
+import { addExternalRef, type ExternalAssetRef } from "./avm1Control.ts";
 import type { ConversionLabHandle } from "../main";
 
 setAssetSource("pack");
@@ -181,7 +182,8 @@ export function SwfStudioApp() {
 
     setCards((prev) => ({ ...prev, [scene]: { scene, name, status: "converting" } }));
     const promise = compileSceneAsync(bytes, scene)
-      .then((compiled) => {
+      .then(async (compiled) => {
+        await enrichExternalAssetWarnings(compiled);
         acceptCompiled(name, compiled);
         return compiled;
       })
@@ -911,6 +913,7 @@ function TreeRow({
           </div>
           <div className="meta">{(s.assetBytes / 1024 / 1024).toFixed(2)} MB assets · compiled in {s.ms} ms</div>
           {compiled.dependencies.length > 0 && <DependencyLine card={ready} />}
+          {externalMissing(compiled).length > 0 && <ExternalAssetLine compiled={compiled} />}
         </div>
       )}
     </>
@@ -955,6 +958,21 @@ function DependencyLine({ card }: { card: Extract<CardView, { status: "ready" }>
           {hasMissing ? " missing assets" : " all compiled"}
         </span>
       )}
+    </div>
+  );
+}
+
+function ExternalAssetLine({ compiled }: { compiled: CompiledScene }) {
+  const missing = externalMissing(compiled);
+  const visible = missing.slice(0, 8);
+  const extra = missing.length - visible.length;
+  return (
+    <div className="meta dep">
+      <span className="dep-tail warn">{missing.length} external asset{missing.length === 1 ? "" : "s"} missing:</span>{" "}
+      {visible.map((asset) => (
+        <span key={asset.ref} className="pill missing" title={asset.ref}>{asset.ref}</span>
+      ))}
+      {extra > 0 && <span className="dep-tail warn">+{extra} more</span>}
     </div>
   );
 }
@@ -1172,6 +1190,7 @@ function storeCompiled(compiled: CompiledScene): StoredCompiledScene {
     width: compiled.width,
     height: compiled.height,
     dependencies: compiled.dependencies.map((dep) => ({ ...dep })),
+    externalAssets: (compiled.externalAssets ?? []).map((asset) => ({ ...asset })),
   };
 }
 
@@ -1190,7 +1209,82 @@ function reviveCompiled(stored: StoredCompiledScene): CompiledScene {
     width: stored.width,
     height: stored.height,
     dependencies: stored.dependencies ?? [],
+    externalAssets: stored.externalAssets ?? stored.timeline?.control?.externalAssets ?? [],
   };
+}
+
+async function enrichExternalAssetWarnings(compiled: CompiledScene) {
+  const refs = new Map<string, ExternalAssetRef>();
+  for (const asset of compiled.externalAssets ?? []) refs.set(asset.ref.toLowerCase(), { ...asset });
+
+  const xmlCandidates = new Set<string>();
+  for (const asset of refs.values()) if (asset.kind === "xml") xmlCandidates.add(asset.ref);
+  xmlCandidates.add(`xml/${compiled.scene}_en.xml`);
+  xmlCandidates.add(`xml/${compiled.scene}.xml`);
+
+  for (const ref of xmlCandidates) {
+    const text = await fetchTextAsset(ref);
+    if (text == null) continue;
+    addExternalRef(refs, ref, "xml");
+    for (const found of externalRefsInText(text)) addExternalRef(refs, found, "xml");
+  }
+
+  const assets = await Promise.all([...refs.values()].map(async (asset) => ({
+    ...asset,
+    present: await assetPresent(asset.ref),
+  })));
+  compiled.externalAssets = assets
+    .filter((asset) => asset.ref !== compiled.scene && asset.ref !== `${compiled.scene}.swf`)
+    .sort((a, b) => Number(a.present) - Number(b.present) || a.ref.localeCompare(b.ref));
+  compiled.timeline.control ??= {};
+  compiled.timeline.control.externalAssets = compiled.externalAssets;
+  const timelineFile = compiled.files.get("timeline.json");
+  if (timelineFile) {
+    timelineFile.bytes = new TextEncoder().encode(JSON.stringify(compiled.timeline));
+  }
+}
+
+function externalRefsInText(text: string): string[] {
+  const refs: string[] = [];
+  for (const pattern of [
+    /(?:src|href|value|rawValue|arguments)"?\s*[:=]\s*"?([^"'<>\s]+\.(?:swf|xml|png|jpe?g|gif|webp|mp3|wav))/gi,
+    /["']([^"']+\.(?:swf|xml|png|jpe?g|gif|webp|mp3|wav))["']/gi,
+  ]) {
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text))) refs.push(match[1]);
+  }
+  return refs;
+}
+
+async function fetchTextAsset(ref: string): Promise<string | null> {
+  try {
+    const response = await fetch(assetHref(ref), { cache: "no-store" });
+    if (!response.ok) return null;
+    return response.text();
+  } catch {
+    return null;
+  }
+}
+
+async function assetPresent(ref: string): Promise<boolean> {
+  try {
+    let response = await fetch(assetHref(ref), { method: "HEAD", cache: "no-store" });
+    if (response.ok) return true;
+    if (response.status !== 405) return false;
+    response = await fetch(assetHref(ref), { cache: "no-store" });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+function assetHref(ref: string): string {
+  return `${import.meta.env.BASE_URL}${ref.replace(/^\/+/, "")}`;
+}
+
+function externalMissing(compiled: CompiledScene): ExternalAssetRef[] {
+  return (compiled.externalAssets ?? []).filter((asset) => asset.present === false);
 }
 
 function canonical(name: string): string {
