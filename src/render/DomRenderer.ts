@@ -254,6 +254,7 @@ export class DomRenderer {
     };
     media.addEventListener("pointerenter", rollOver);
     media.addEventListener("pointerover", rollOver);
+    media.addEventListener("pointermove", rollOver);
     media.addEventListener("mouseover", rollOver);
     media.addEventListener("pointerleave", (event) => {
       const rect = media.getBoundingClientRect();

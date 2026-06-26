@@ -5,6 +5,7 @@ import type {
   ControlAction,
   DefinedFunction,
   DynamicText,
+  Matrix,
   TimelineAsset,
   TimelineFrame,
 } from "../data/timelineTypes";
@@ -143,6 +144,7 @@ export class Player {
   private readonly textVars = new Map<string, string>();
   private readonly textOverrides = new Map<number, TextOverride>();
   private readonly clipTextOverrides = new WeakMap<ClipInstance, Map<string, TextOverride>>();
+  private readonly explicitLeafProps = new WeakMap<Record<string, VarValue | undefined>, Set<string>>();
   /** Normalized variable names that back a dynamic text field, so a frame-script
    *  assignment to one (e.g. the music control's `t_music = _parent.t_musicOn`) is
    *  mirrored into textVars and the bound field re-renders with the new value. */
@@ -241,6 +243,11 @@ export class Player {
     for (const [name, id] of Object.entries((this.timeline as { linkage?: Record<string, number> }).linkage ?? {})) {
       if (!idToLinkage.has(id)) idToLinkage.set(id, name);
     }
+    for (const asset of Object.values(this.assets)) {
+      const names = (asset as { linkageNames?: string[] }).linkageNames;
+      if (!names?.length || idToLinkage.has(asset.id)) continue;
+      idToLinkage.set(asset.id, names[0]);
+    }
     try {
       runDataDrivenApp(control as never, this.makeAppBridge(idToLinkage));
     } catch (error) {
@@ -272,6 +279,7 @@ export class Player {
         if (id === undefined) return;
         const override = this.textOverrideFor({ id, owner, name: t.field });
         override.text = value; override.html = html;
+        owner.mutatedLeaves.add(t.field);
       },
       getText: (t) => {
         const owner = toClip(t.clip);
@@ -279,11 +287,20 @@ export class Player {
         if (id === undefined) return "";
         return String(this.clipTextOverrides.get(owner)?.get(t.field)?.text ?? this.textOverrides.get(id)?.text ?? "");
       },
-      getClipProp: (clip, key) => readClipProperty(toClip(clip), normalizeAvm1PropertyName(key) ?? key, this.getAsset(toClip(clip).characterId)),
+      getTextProp: (t, key) => this.getAppTextProp(toClip(t.clip), t.field, normalizeAvm1PropertyName(key) ?? key),
+      setTextProp: (t, key, value) => {
+        const owner = toClip(t.clip);
+        this.setLeafDisplayProp(owner, t.field, normalizeAvm1PropertyName(key) ?? key, value as VarValue);
+      },
+      getClipProp: (clip, key) => this.getAppClipProp(toClip(clip), normalizeAvm1PropertyName(key) ?? key),
       setClipProp: (clip, key, value) => { setClipProperty(toClip(clip), normalizeAvm1PropertyName(key) ?? key, value as VarValue); },
       clipField: (clip, key) => toClip(clip).props[key],
-      setClipField: (clip, key, value) => { toClip(clip).props[key] = value as VarValue; },
-      hasClipField: (clip, key) => key in toClip(clip).props,
+      setClipField: (clip, key, value) => {
+        const owner = toClip(clip);
+        if (value === undefined || value === null) delete owner.props[key];
+        else owner.props[key] = value as VarValue;
+      },
+      hasClipField: (clip, key) => Object.prototype.hasOwnProperty.call(toClip(clip).props, key),
       linkageOf: (clip) => idToLinkage.get(toClip(clip).characterId),
       nextDepth: (clip) => this.nextHighestDepth(toClip(clip)),
       render: () => this.render(),
@@ -292,6 +309,17 @@ export class Player {
           .then((response) => (response.ok && !/\btext\/html\b/i.test(response.headers.get("content-type") ?? "") ? response.text() : null))
           .then(onText)
           .catch(() => onText(null));
+      },
+      setPointerEventHandler: (clip, handler) => {
+        const owner = toClip(clip);
+        if (handler) owner.props.__appPointerDispatcher = handler as unknown as VarValue;
+        else delete owner.props.__appPointerDispatcher;
+      },
+      timelineCommand: (clip, command, frame) => this.runAppClipTimelineCommand(toClip(clip), command, frame as VarValue | undefined),
+      setClipMethodDispatcher: (clip, dispatcher) => {
+        const owner = toClip(clip);
+        if (dispatcher) owner.props.__appMethodDispatcher = dispatcher as unknown as VarValue;
+        else delete owner.props.__appMethodDispatcher;
       },
     };
   }
@@ -302,6 +330,7 @@ export class Player {
     const characterId = this.linkageAssetIds.get(normalizeLinkageName(linkage));
     if (!characterId || !this.getAsset(characterId) || !Number.isFinite(depth)) return undefined;
     owner.dynamicInstances.set(depth, { depth, characterId, placedFrame: owner.currentFrame, matrix: { ...IDENTITY }, opacity: 1, name });
+    owner.displayListMutated = true;
     owner.depthNames.set(depth, name);
     const child = new ClipInstance(characterId, name, owner);
     child.scriptKey = this.clipSourceKey(this.getAsset(characterId), name);
@@ -312,10 +341,139 @@ export class Player {
 
   private createEmptyClip(owner: ClipInstance, name: string, depth: number): ClipInstance {
     owner.dynamicInstances.set(depth, { depth, characterId: 0, placedFrame: owner.currentFrame, matrix: { ...IDENTITY }, opacity: 1, name });
+    owner.displayListMutated = true;
     owner.depthNames.set(depth, name);
     const child = new ClipInstance(0, name, owner);
     owner.childClips.set(depth, child);
     return child;
+  }
+
+  private runAppClipTimelineCommand(clip: ClipInstance, command: string, frame?: VarValue): boolean {
+    switch (command) {
+      case "play":
+        clip.playing = true;
+        this.render();
+        return true;
+      case "stop":
+        clip.playing = false;
+        this.render();
+        return true;
+      case "nextFrame": {
+        const frames = this.framesFor(clip);
+        if (!frames?.length) return false;
+        clip.playing = false;
+        this.enterFrame(clip, Math.min(frames.length - 1, clip.currentFrame + 1), 0);
+        this.render();
+        return true;
+      }
+      case "prevFrame": {
+        clip.playing = false;
+        this.enterFrame(clip, Math.max(0, clip.currentFrame - 1), 0);
+        this.render();
+        return true;
+      }
+      case "gotoAndPlay":
+      case "gotoAndStop": {
+        const frameIndex = this.resolveClipFrame(clip, frame ?? 1);
+        if (frameIndex < 0) return false;
+        clip.playing = command === "gotoAndPlay";
+        this.enterFrame(clip, frameIndex, 0);
+        this.render();
+        return true;
+      }
+      default:
+        return false;
+    }
+  }
+
+  private getAppClipProp(clip: ClipInstance, key: string): VarValue | undefined {
+    if (this.shouldUseLiveClipBounds(clip) && ((key === "_width" && clip.width === undefined) || (key === "_height" && clip.height === undefined))) {
+      const bounds = this.liveClipBounds(clip);
+      if (key === "_width" && bounds) return bounds.width;
+      if (key === "_height" && bounds) return bounds.height;
+    }
+    return readClipProperty(clip, key, this.getAsset(clip.characterId));
+  }
+
+  private getAppTextProp(owner: ClipInstance, name: string, key: string): VarValue | undefined {
+    const props = this.leafDisplayProps(owner, name);
+    const explicit = this.explicitLeafProps.get(props);
+    if (explicit?.has(key)) return props[key];
+    const id = this.findTextChildByName(owner, name);
+    const asset = id === undefined ? undefined : this.getAsset(id);
+    if (!asset || asset.kind !== "text") return undefined;
+    const text = this.resolveTextField(asset.id, asset, owner, name);
+    const metrics = this.liveTextMetrics(asset, text, props);
+    switch (key) {
+      case "_width":
+      case "textWidth":
+        return metrics.width;
+      case "_height":
+      case "textHeight":
+        return metrics.height;
+      default:
+        return undefined;
+    }
+  }
+
+  private liveClipBounds(clip: ClipInstance): { width: number; height: number } | undefined {
+    const frame = this.framesFor(clip)?.[clip.currentFrame];
+    const boxes: Array<{ x: number; y: number; width: number; height: number }> = [];
+    for (const instance of this.instancesForFrame(clip, frame)) {
+      const asset = this.getAsset(instance.characterId);
+      if (!asset) continue;
+      const props = instance.name ? clip.leafProps.get(instance.name) : undefined;
+      let origin = asset.origin;
+      if (asset.kind === "text" && clip.mutatedLeaves.has(instance.name ?? "")) {
+        const text = this.resolveTextField(asset.id, asset, clip, instance.name);
+        const metrics = this.liveTextMetrics(asset, text, props);
+        origin = { ...origin, width: metrics.width, height: metrics.height };
+      } else if (props) {
+        origin = applyLeafOriginOverrides(asset, props);
+      }
+      if (!origin.width && !origin.height) continue;
+      boxes.push(transformedBounds(origin, instance.matrix));
+    }
+    if (!boxes.length) return undefined;
+    const minX = Math.min(...boxes.map((box) => box.x));
+    const minY = Math.min(...boxes.map((box) => box.y));
+    const maxX = Math.max(...boxes.map((box) => box.x + box.width));
+    const maxY = Math.max(...boxes.map((box) => box.y + box.height));
+    return { width: Math.max(0, maxX - minX), height: Math.max(0, maxY - minY) };
+  }
+
+  private shouldUseLiveClipBounds(clip: ClipInstance): boolean {
+    return clip.displayListMutated || clip.mutatedLeaves.size > 0;
+  }
+
+  private setLeafDisplayProp(clip: ClipInstance, name: string, key: string, value: VarValue | undefined) {
+    const props = this.leafDisplayProps(clip, name);
+    if (value === undefined || value === null) delete props[key];
+    else props[key] = value;
+    let explicit = this.explicitLeafProps.get(props);
+    if (!explicit) {
+      explicit = new Set();
+      this.explicitLeafProps.set(props, explicit);
+    }
+    if (value === undefined || value === null) explicit.delete(key);
+    else explicit.add(key);
+    clip.mutatedLeaves.add(name);
+  }
+
+  private liveTextMetrics(asset: TimelineAsset, text: ReturnType<Player["resolveTextField"]>, props?: Record<string, VarValue | undefined>): { width: number; height: number } {
+    const fallbackWidth = asset.text?.width ?? asset.origin.width ?? 0;
+    const fallbackHeight = asset.text?.height ?? asset.origin.height ?? 0;
+    if (!text) return { width: fallbackWidth, height: fallbackHeight };
+    const fontHeight = Number(text.fontHeight);
+    const lineHeight = Math.max(1, Number.isFinite(fontHeight) && fontHeight > 0 ? fontHeight + Number(text.leading ?? 0) : fallbackHeight || 12);
+    const autoSize = props?.autoSize !== undefined ? avm1Boolean(props.autoSize) : false;
+    const width = measuredTextWidth(text.text ?? "", text.fontHeight, fallbackWidth, autoSize);
+    const charsPerLine = Math.max(1, Math.floor(Math.max(1, autoSize ? fallbackWidth || width : fallbackWidth || width) / Math.max(1, lineHeight * 0.62)));
+    const plain = (text.text ?? "").replace(/<[^>]+>/g, "").trim();
+    const explicitLines = plain ? plain.split(/\r?\n/).length : 1;
+    const wrappedLines = plain ? Math.ceil(plain.length / charsPerLine) : 1;
+    const contentHeight = Math.max(lineHeight, Math.max(explicitLines, wrappedLines) * lineHeight);
+    return { width, height: autoSize ? contentHeight : Math.max(fallbackHeight, contentHeight) };
   }
 
   get frameCount(): number {
@@ -1702,6 +1860,7 @@ export class Player {
     if (target === "self" || target === "this" || target === "_root") {
       // Prefer a sprite-scoped function on the owning clip (a control's over()/out() label
       // reveal lives on its own sprite); fall back to a root/global function.
+      if (target !== "_root" && this.runAppClipMethod(clip, fn, this.parseArgs(call.arguments, locals))) return true;
       if (target !== "_root" && this.spriteFunctions.get(clip.characterId)?.has(fn)) return this.callClipFunction(clip, fn);
       const method = target !== "_root" ? this.methodFunctionForClip(clip, fn) : undefined;
       return method ? this.callFunctionDef(method.key, method.def, call.arguments, locals, clip) : this.callFunction(fn, call.arguments);
@@ -1723,12 +1882,19 @@ export class Player {
       ?? (fallbackClip ? (this.resolveTarget(fallbackClip, target) ?? this.findClipByName(fallbackClip, name)) : null);
     if (targetClip === this.root) return this.callFunction(fn, call.arguments, locals);
     if (targetClip) {
+      if (this.runAppClipMethod(targetClip, fn, this.parseArgs(call.arguments, locals))) return true;
       const method = this.methodFunctionForClip(targetClip, fn);
       if (method) return this.callFunctionDef(method.key, method.def, call.arguments, locals, targetClip, clip);
       return this.callClipFunction(targetClip, fn);
     }
     if (this.functions.has(fn) && shouldFallbackToGlobalFunction(target, fn)) return this.callFunction(fn, call.arguments, locals);
     return false;
+  }
+
+  private runAppClipMethod(clip: ClipInstance, name: string, args: Array<VarValue | undefined>): boolean {
+    const dispatcher = clip.props.__appMethodDispatcher;
+    if (typeof dispatcher !== "function") return false;
+    return Boolean(dispatcher(name, args));
   }
 
   private methodFunctionForClip(clip: ClipInstance, functionName: string): { key: string; def: FunctionDef } | undefined {
@@ -2135,13 +2301,14 @@ export class Player {
       const override = this.textOverrideFor(textTarget);
       override.text = String(value);
       override.html = parsed.property === "htmlText";
+      if (textTarget.owner && textTarget.name) textTarget.owner.mutatedLeaves.add(textTarget.name);
       return true;
     }
     const owner = this.resolveValueTarget(scope, parsed.owner, locals);
     if (owner instanceof ClipInstance) return setClipProperty(owner, parsed.property, value);
     const leaf = this.resolveLeafTarget(scope, parsed.owner, locals);
     if (leaf) {
-      leaf.props[parsed.property] = value;
+      this.setLeafDisplayProp(leaf.owner, leaf.name, parsed.property, value);
       return true;
     }
     return false;
@@ -2237,6 +2404,7 @@ export class Player {
       name,
     };
     owner.dynamicInstances.set(depth, instance);
+    owner.displayListMutated = true;
     owner.depthNames.set(depth, name);
     const child = new ClipInstance(characterId, name, owner);
     child.scriptKey = this.clipSourceKey(this.getAsset(characterId), name);
@@ -2261,6 +2429,7 @@ export class Player {
       opacity: 1,
       name,
     });
+    owner.displayListMutated = true;
     owner.depthNames.set(depth, name);
     const child = new ClipInstance(0, name, owner);
     child.placedX = 0;
@@ -2474,6 +2643,7 @@ export class Player {
       parent.childClips.delete(depth);
       parent.dynamicInstances.delete(depth);
       parent.depthNames.delete(depth);
+      parent.displayListMutated = true;
       return;
     }
     clip.visible = false;
@@ -2500,6 +2670,7 @@ export class Player {
       dynamic.depth = targetDepth;
       parent.dynamicInstances.set(targetDepth, dynamic);
       parent.childClips.set(targetDepth, clip);
+      parent.displayListMutated = true;
       clip.depthOverride = undefined;
       return;
     }
@@ -2531,6 +2702,7 @@ export class Player {
     clip.childClips.clear();
     clip.dynamicInstances.clear();
     clip.depthNames.clear();
+    clip.displayListMutated = true;
     clip.loadedTimeline = undefined;
     clip.loadedFrame = 0;
     clip.loadedPlaying = false;
@@ -2683,6 +2855,8 @@ export class Player {
     const type = movieClipEventName(event);
     const direct = directMovieClipHandlerName(event);
     const eventObject = { target: owner, type };
+    const appDispatcher = owner.props.__appPointerDispatcher;
+    if (typeof appDispatcher === "function") appDispatcher(type);
     if (direct) {
       const handler = owner.props[direct];
       if (isDelegate(handler) && handler.target instanceof ClipInstance) {
@@ -3289,6 +3463,7 @@ export class Player {
         if (Array.isArray(listeners[name]) && listeners[name].length) return true;
       }
     }
+    if (clip.props.__appPointerEvents || typeof clip.props.__appPointerDispatcher === "function") return true;
     return isDelegate(clip.props.onRelease) || isDelegate(clip.props.onReleaseOutside) || isDelegate(clip.props.onRollOver) || isDelegate(clip.props.onRollOut) || isDelegate(clip.props.onPress);
   }
 
@@ -3623,6 +3798,27 @@ function applyLeafOriginOverrides(asset: TimelineAsset, props: Record<string, Va
     width: Number.isFinite(width) ? width : asset.origin.width,
     height: Number.isFinite(height) ? height : asset.origin.height,
   };
+}
+
+function transformedBounds(origin: TimelineAsset["origin"], matrix: Matrix) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const [x, y] of [
+    [origin.x, origin.y],
+    [origin.x + origin.width, origin.y],
+    [origin.x, origin.y + origin.height],
+    [origin.x + origin.width, origin.y + origin.height],
+  ]) {
+    const px = matrix.a * x + matrix.c * y + matrix.tx;
+    const py = matrix.b * x + matrix.d * y + matrix.ty;
+    minX = Math.min(minX, px);
+    minY = Math.min(minY, py);
+    maxX = Math.max(maxX, px);
+    maxY = Math.max(maxY, py);
+  }
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 
 function effectiveDepthForInstance(parent: ClipInstance, instance: TimelineFrame["instances"][number]): number {
@@ -4049,12 +4245,13 @@ function readClipProperty(clip: ClipInstance, property: string, asset: TimelineA
   }
 }
 
-function measuredTextWidth(text: string, fontHeight: number | undefined, fallback: number): number {
+function measuredTextWidth(text: string, fontHeight: number | undefined, fallback: number, allowShrink = false): number {
   const normalized = text.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
-  if (!normalized) return fallback;
+  if (!normalized) return allowShrink ? 0 : fallback;
   const height = Number(fontHeight);
   if (!Number.isFinite(height) || height <= 0) return fallback;
-  return Math.max(fallback || 1, normalized.length * height * 0.62);
+  const measured = Math.max(1, normalized.length * height * 0.62);
+  return allowShrink ? measured : Math.max(fallback || 1, measured);
 }
 
 function parseDelegateCreate(expr: string): { target: string; method: string } | undefined {

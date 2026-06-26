@@ -7,7 +7,7 @@
 // Gated on `control.initActions` + `control.frameBytecode` (only data-driven app
 // SWFs carry these), so timeline-script SWFs like the tour are never touched.
 
-import { Avm1Vm, isFn, type Avm1Host, type Avm1Value } from "./avm1Vm.ts";
+import { Avm1Vm, ensurePrototype, isFn, type Avm1Host, type Avm1Value } from "./avm1Vm.ts";
 import type { Avm1Op } from "../data/avm1Bytecode.ts";
 
 /** A live clip handle the bridge understands (the Player wraps its ClipInstance). */
@@ -28,6 +28,9 @@ export interface PlayerBridge {
   setText(t: AppText, value: string, html: boolean): void;
   /** Read a text leaf's current text. */
   getText(t: AppText): string;
+  /** Read/write AS2 display fields on a text leaf (`_height`, `_width`, `autoSize`, ...). */
+  getTextProp?(t: AppText, key: string): Avm1Value;
+  setTextProp?(t: AppText, key: string, value: Avm1Value): void;
   /** Read/write a clip display property (_x,_y,_alpha,_width,…). */
   getClipProp(clip: AppClip, key: string): Avm1Value;
   setClipProp(clip: AppClip, key: string, value: Avm1Value): void;
@@ -43,6 +46,12 @@ export interface PlayerBridge {
   render(): void;
   /** Fetch a text asset (the app's XML), resolving asynchronously. */
   fetchText(url: string, onText: (text: string | null) => void): void;
+  /** Register a VM-backed MovieClip pointer dispatcher for clips with AS2 handlers. */
+  setPointerEventHandler?(clip: AppClip, handler: ((event: string) => void) | undefined): void;
+  /** Run a generic MovieClip timeline command (`gotoAndPlay`, `stop`, etc.). */
+  timelineCommand?(clip: AppClip, command: string, frame?: Avm1Value): boolean;
+  /** Register a VM-backed class method dispatcher for timeline frame calls on this clip. */
+  setClipMethodDispatcher?(clip: AppClip, dispatcher: ((method: string, args: Avm1Value[]) => boolean) | undefined): void;
 }
 
 // --- a tiny pure-JS XML DOM (browser-safe): firstChild / childNodes / attributes
@@ -79,6 +88,14 @@ function xmlSelect(ctx: any, query: string): XmlNode[] { return xmlDescendants(c
 const avmCoerce = (v: any): string => { if (v == null) return ""; if (typeof v === "object") { try { return String(v); } catch { return ""; } } return String(v); };
 const isClip = (v: any): v is AppClip => !!v && v.__appClip === true;
 const isText = (v: any): v is AppText => !!v && v.__appText === true;
+const POINTER_EVENTS = new Set(["release", "releaseoutside", "rollover", "rollout", "press"]);
+const DIRECT_POINTER_HANDLERS = new Map([
+  ["onRelease", "release"],
+  ["onReleaseOutside", "releaseoutside"],
+  ["onRollOver", "rollover"],
+  ["onRollOut", "rollout"],
+  ["onPress", "press"],
+]);
 
 export function runDataDrivenApp(
   control: { initActions?: Avm1Op[][]; frameBytecode?: { frame: number; ops: Avm1Op[] }[]; registeredClasses?: Record<string, string> },
@@ -92,8 +109,11 @@ export function runDataDrivenApp(
   const globals: any = Object.create(null);
   const registry: Record<string, any> = Object.create(null); // linkage → class fn
   const clipClass = new WeakMap<object, any>();              // clip → bound AS2 class fn
+  const clipMethodDispatchers = new WeakSet<object>();
   const listeners = new WeakMap<object, Record<string, any[]>>();
   const root = bridge.root();
+  const timers = new Map<number, ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>>();
+  let nextTimerId = 1;
 
   const vmRef: { vm?: Avm1Vm } = {};
   const invoke = (fn: any, args: any[], thisObj: any): any => {
@@ -101,9 +121,15 @@ export function runDataDrivenApp(
     if (isFn(fn)) return vmRef.vm!.callFunction(fn, args, thisObj);
     return undefined;
   };
-  const protoOf = (fn: any) => { if (!fn) return undefined; if (!fn.prototype) fn.prototype = Object.create(null); return fn.prototype; };
-  const resolveProto = (cls: any, key: string): any => { let p = cls?.prototype; let g = 0; while (p && g++ < 40) { if (key in p) return p[key]; p = p.__proto__; } return undefined; };
-  const resolveAccessor = (cls: any, key: string): any => { let p = cls?.prototype; let g = 0; while (p && g++ < 40) { if (p.__accessors && key in p.__accessors) return p.__accessors[key]; p = p.__proto__; } return undefined; };
+  const protoOf = (fn: any) => {
+    const proto = ensurePrototype(fn);
+    if (proto && !(proto as any).__constructor) (proto as any).__constructor = fn;
+    return proto;
+  };
+  const resolveProto = (cls: any, key: string): any => { let p = protoOf(cls); let g = 0; while (p && g++ < 40) { if (key in p) return p[key]; p = Object.getPrototypeOf(p); } return undefined; };
+  const resolveAccessor = (cls: any, key: string): any => { let p = protoOf(cls); let g = 0; while (p && g++ < 40) { if (p.__accessors && key in p.__accessors) return p.__accessors[key]; p = Object.getPrototypeOf(p); } return undefined; };
+  const resolveGetter = (cls: any, key: string): any => resolveAccessor(cls, key)?.get ?? resolveProto(cls, `__get__${key}`) ?? resolveProto(cls, `get ${key}`);
+  const resolveSetter = (cls: any, key: string): any => resolveAccessor(cls, key)?.set ?? resolveProto(cls, `__set__${key}`) ?? resolveProto(cls, `set ${key}`);
   const normLinkage = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
   const registryNorm = new Map<string, any>();
   const resolvePath = (path: string): any => { let o: any = globals; for (const part of path.split(".")) { if (o == null) return undefined; o = o[part]; } return isFn(o) ? o : undefined; };
@@ -118,11 +144,102 @@ export function runDataDrivenApp(
         const path = registeredClasses[lk] ?? registeredClasses[lk.trim()];
         c = (path && resolvePath(path)) || registry[lk] || registry[lk.trim()] || registryNorm.get(normLinkage(lk));
       }
-      if (c) clipClass.set(clip, c);
+      if (c) {
+        clipClass.set(clip, c);
+        if (!clipMethodDispatchers.has(clip)) {
+          clipMethodDispatchers.add(clip);
+          bridge.setClipMethodDispatcher?.(clip, (method, args) => callObjectMethod(clip, method, args));
+        }
+      }
     }
     return c;
   };
   const listenersOf = (obj: any): Record<string, any[]> => { let l = listeners.get(obj); if (!l) { l = Object.create(null) as Record<string, any[]>; listeners.set(obj, l); } return l; };
+  const callObjectMethod = (obj: any, method: string, args: any[] = []): boolean => {
+    if (!obj || !method) return false;
+    if (isClip(obj)) {
+      const cls = classFor(obj);
+      const fn = cls ? resolveProto(cls, method) : undefined;
+      if (!fn) return false;
+      invoke(fn, args, obj);
+      bridge.render();
+      return true;
+    }
+    const fn = obj[method] ?? obj.props?.[method];
+    if (isFn(fn)) {
+      invoke(fn, args, obj);
+      bridge.render();
+      return true;
+    }
+    return false;
+  };
+  const scheduleCallback = (repeat: boolean, args: any[]): number => {
+    const target = args[0];
+    const method = String(args[1] ?? "");
+    const delay = Math.max(16, Number(args[2] ?? 0) || 0);
+    const id = nextTimerId++;
+    if (repeat) {
+      // Repeating AS2 timers often back mouse-tracking loops. Until the player
+      // emulates Flash hit-testing for those loops, firing them on wall-clock JS
+      // time can immediately undo visible state such as opened menus.
+      return id;
+    }
+    const callback = () => {
+      timers.delete(id);
+      callObjectMethod(target, method);
+    };
+    timers.set(id, setTimeout(callback, delay));
+    return id;
+  };
+  const clearTimer = (id: any) => {
+    const handle = timers.get(Number(id));
+    if (!handle) return;
+    clearTimeout(handle);
+    clearInterval(handle);
+    timers.delete(Number(id));
+  };
+  const createTween = (args: any[]) => {
+    const target = args[0];
+    const prop = String(args[1] ?? "");
+    const finish = args[4];
+    const useSeconds = Boolean(args[6]);
+    const tween: any = { __tween: true, target, prop, finish, completed: !useSeconds };
+    if (target && prop && !useSeconds) host.setMember(target, prop, finish);
+    bridge.render();
+    return tween;
+  };
+  const hasPointerInterest = (clip: AppClip): boolean => {
+    for (const [name] of DIRECT_POINTER_HANDLERS) if (bridge.clipField(clip, name)) return true;
+    const L = listenersOf(clip);
+    return Object.keys(L).some((name) => POINTER_EVENTS.has(name.toLowerCase()) && L[name]?.length);
+  };
+  const dispatchPointerEvent = (clip: AppClip, type: string) => {
+    const directName = [...DIRECT_POINTER_HANDLERS.entries()].find(([, event]) => event === type)?.[0];
+    const direct = directName ? bridge.clipField(clip, directName) : undefined;
+    if (direct) {
+      // Direct AS2 handlers often call dispatchEvent with custom fields; a
+      // second synthetic listener event would lose those fields and double-fire.
+      invoke(direct, [{ target: clip, type }], clip);
+      bridge.render();
+      return;
+    }
+    const L = listenersOf(clip);
+    for (const name of Object.keys(L)) {
+      if (name.toLowerCase() !== type) continue;
+      const eventObject = { target: clip, type: name };
+      for (const listener of L[name] || []) invoke(listener, [eventObject], clip);
+    }
+    bridge.render();
+  };
+  const syncPointerClip = (clip: AppClip) => {
+    if (hasPointerInterest(clip)) {
+      bridge.setClipField(clip, "__appPointerEvents", true);
+      bridge.setPointerEventHandler?.(clip, (event) => dispatchPointerEvent(clip, event));
+      return;
+    }
+    bridge.setClipField(clip, "__appPointerEvents", undefined);
+    bridge.setPointerEventHandler?.(clip, undefined);
+  };
 
   const host: Avm1Host = {
     getVar(name) {
@@ -137,11 +254,14 @@ export function runDataDrivenApp(
       if (key === "addEventListener" || key === "removeEventListener" || key === "dispatchEvent") return undefined;
       if ((key === "selectNodes" || key === "selectSingleNode") && obj.__fqn === "com.xfactorstudio.xml.xpath.XPath") return undefined;
       if (isFn(obj)) { if (key === "prototype") return protoOf(obj); return (key in obj) ? (obj as any)[key] : undefined; }
-      if (isText(obj)) { if (key === "text" || key === "htmlText") return bridge.getText(obj); return (obj as any)[key]; }
+      if (isText(obj)) {
+        if (key === "text" || key === "htmlText") return bridge.getText(obj);
+        return bridge.getTextProp?.(obj, key) ?? (obj as any)[key];
+      }
       if (isClip(obj)) {
         const cls = classFor(obj);
-        const acc = cls ? resolveAccessor(cls, key as string) : undefined;
-        if (acc?.get) return invoke(acc.get, [], obj);
+        const getter = cls ? resolveGetter(cls, key as string) : undefined;
+        if (getter) return invoke(getter, [], obj);
         if (bridge.hasClipField(obj, key as string)) return bridge.clipField(obj, key as string);
         const ch = bridge.child(obj, key as string);
         if (ch !== undefined) { if (isClip(ch) && !clipClass.has(ch)) classFor(ch); return ch; }
@@ -149,6 +269,15 @@ export function runDataDrivenApp(
         return bridge.getClipProp(obj, key as string);
       }
       if (isXmlNode(obj)) { return (obj as any)[key]; } // firstChild/childNodes/attributes/nodeValue/nodeName
+      if (typeof obj === "string" || obj instanceof String) {
+        if (key === "length") return avmCoerce(obj).length;
+        const member = (String.prototype as any)[key];
+        return typeof member === "function" ? (...args: any[]) => member.apply(avmCoerce(obj), args) : undefined;
+      }
+      if (Array.isArray(obj)) {
+        const member = (obj as any)[key];
+        return typeof member === "function" ? (...args: any[]) => member.apply(obj, args) : member;
+      }
       if (obj.__class) {
         if (obj.props && key in obj.props) return obj.props[key];
         if (key in obj) return obj[key];
@@ -159,27 +288,77 @@ export function runDataDrivenApp(
     },
     setMember(obj, key, value) {
       if (obj == null) return;
+      if (obj.__tween) {
+        obj[key] = value;
+        if (key === "onMotionFinished" && obj.completed && value) {
+          obj.completed = false;
+          invoke(value, [], obj);
+          bridge.render();
+        }
+        return;
+      }
       if (isFn(obj)) { (obj as any)[key] = value; return; }
-      if (isText(obj)) { if (key === "text" || key === "htmlText") { bridge.setText(obj, avmCoerce(value), key === "htmlText"); return; } (obj as any)[key] = value; return; }
+      if (isText(obj)) {
+        if (key === "text" || key === "htmlText") { bridge.setText(obj, avmCoerce(value), key === "htmlText"); return; }
+        bridge.setTextProp?.(obj, key, value);
+        (obj as any)[key] = value;
+        return;
+      }
       if (isClip(obj)) {
         const cls = classFor(obj);
-        const acc = cls ? resolveAccessor(cls, key as string) : undefined;
-        if (acc?.set) { invoke(acc.set, [value], obj); return; }
+        const setter = cls ? resolveSetter(cls, key as string) : undefined;
+        if (setter) { invoke(setter, [value], obj); return; }
         if (key.startsWith("_")) { bridge.setClipProp(obj, key, value); return; }
         bridge.setClipField(obj, key as string, value);
+        if (DIRECT_POINTER_HANDLERS.has(key as string)) syncPointerClip(obj);
         return;
       }
       try { obj[key] = value; } catch { /* frozen */ }
+    },
+    deleteMember(obj, key) {
+      if (obj == null) return false;
+      if (isFn(obj)) { try { return delete (obj as any)[key]; } catch { return false; } }
+      if (isText(obj)) {
+        try { return delete (obj as any)[key]; } catch { return false; }
+      }
+      if (isClip(obj)) {
+        bridge.setClipField(obj, key, undefined);
+        if (DIRECT_POINTER_HANDLERS.has(key)) syncPointerClip(obj);
+        return true;
+      }
+      try { return delete obj[key]; } catch { return false; }
+    },
+    deleteVar(name) {
+      if (name in globals) {
+        delete globals[name];
+        return true;
+      }
+      return false;
+    },
+    enumerate(obj) {
+      if (obj == null) return [];
+      if (isXmlNode(obj)) return Object.keys(obj).filter((key) => obj[key as keyof XmlNode] !== undefined);
+      if (isClip(obj)) {
+        const out = new Set<string>();
+        for (const key of Object.keys((obj as any) || {})) out.add(key);
+        for (const key of Object.keys((obj as any).props || {})) if (bridge.clipField(obj, key) !== undefined) out.add(key);
+        return [...out];
+      }
+      if (obj.props && typeof obj.props === "object") return Object.keys(obj.props).filter((key) => obj.props[key] !== undefined);
+      try { return Object.keys(obj).filter((key) => obj[key] !== undefined); } catch { return []; }
     },
     construct(className, args) {
       if (className === "Object") return Object.create(null);
       if (className === "Array") return args.length === 1 && typeof args[0] === "number" ? new Array(args[0]) : [...args];
       if (className === "XML" || className === "LoadVars") return { __xml: true, props: Object.create(null), ignoreWhite: true };
+      if (className === "mx.transitions.Tween" || className.endsWith(".Tween")) return createTween(args);
       const path = String(className).split(".");
       let cf: any = globals; for (const p of path) cf = cf?.[p];
       return this.instantiate(cf, args);
     },
     instantiate(ctor, args) {
+      const fqn = typeof ctor?.__fqn === "string" ? ctor.__fqn : "";
+      if (fqn === "mx.transitions.Tween" || fqn.endsWith(".Tween")) return createTween(args);
       if (!isFn(ctor)) return Object.create(null);
       const inst: any = Object.create(null); inst.props = Object.create(null); inst.__class = ctor;
       invoke(ctor, args, inst);
@@ -195,7 +374,10 @@ export function runDataDrivenApp(
         case "Array": return args.length === 1 && typeof args[0] === "number" ? new Array(args[0]) : [...args];
         case "Object": return Object.create(null);
         case "getTimer": return 0;
-        case "setInterval": case "setTimeout": case "clearInterval": case "updateAfterEvent":
+        case "setTimeout": return scheduleCallback(false, args);
+        case "setInterval": return scheduleCallback(true, args);
+        case "clearInterval": case "clearTimeout": clearTimer(args[0]); return undefined;
+        case "updateAfterEvent":
         case "trace": case "ASSetPropFlags": case "getURL": return undefined;
         default: return undefined;
       }
@@ -203,9 +385,23 @@ export function runDataDrivenApp(
     callMethod(obj, key, args) {
       if (obj == null || key === undefined) return undefined;
       // EventDispatcher (generic, host-managed so add/dispatch stay consistent)
-      if (key === "addEventListener") { const t = String(args[0]); const L = listenersOf(obj); L[t] = [...(L[t] || []), args[1]]; return undefined; }
-      if (key === "removeEventListener") return undefined;
+      if (key === "addEventListener") {
+        const t = String(args[0]);
+        const L = listenersOf(obj);
+        L[t] = [...(L[t] || []), args[1]];
+        if (isClip(obj) && POINTER_EVENTS.has(t.toLowerCase())) syncPointerClip(obj);
+        return undefined;
+      }
+      if (key === "removeEventListener") {
+        const t = String(args[0]);
+        const L = listenersOf(obj);
+        if (L[t]?.length) L[t] = L[t].filter((listener) => listener !== args[1]);
+        if (isClip(obj) && POINTER_EVENTS.has(t.toLowerCase())) syncPointerClip(obj);
+        return undefined;
+      }
       if (key === "dispatchEvent") { const ev = args[0]; const t = String(ev?.type ?? ""); for (const l of listenersOf(obj)[t] || []) invoke(l, [ev], obj); return undefined; }
+      if ((key === "setTimeout" || key === "setInterval") && obj === globals) return scheduleCallback(key === "setInterval", args);
+      if ((key === "clearTimeout" || key === "clearInterval") && obj === globals) { clearTimer(args[0]); return undefined; }
       if (key === "addProperty") { (obj.__accessors ??= Object.create(null))[String(args[0])] = { get: args[1], set: args[2] }; return true; }
       // XML object: fetch + parse, then fire onLoad and re-render.
       if (obj.__xml) {
@@ -214,8 +410,13 @@ export function runDataDrivenApp(
             const doc = text != null ? parseXmlDom(text) : null;
             obj.firstChild = doc; obj.childNodes = doc?.childNodes; obj.loaded = true;
             const cb = obj.onLoad ?? obj.props?.onLoad;
-            if (cb) invoke(cb, [true], obj);
-            bridge.render();
+            try {
+              if (cb) invoke(cb, [true], obj);
+            } catch (error) {
+              console.warn("[avm1App] XML onLoad failed", error);
+            } finally {
+              bridge.render();
+            }
           });
           return true;
         }
@@ -230,6 +431,20 @@ export function runDataDrivenApp(
         if (key === "selectNodes") return xmlSelect(obj, String(args[0]));
         if (key === "selectSingleNode") return xmlSelect(obj, String(args[0]))[0];
       }
+      if (typeof obj === "string" || obj instanceof String) {
+        const s = avmCoerce(obj);
+        switch (key) {
+          case "split": return s.split(avmCoerce(args[0]), args[1] === undefined ? undefined : Number(args[1]));
+          case "substr": return s.substr(Number(args[0] ?? 0), args[1] === undefined ? undefined : Number(args[1]));
+          case "substring": return s.substring(Number(args[0] ?? 0), args[1] === undefined ? undefined : Number(args[1]));
+          case "indexOf": return s.indexOf(avmCoerce(args[0]), args[1] === undefined ? undefined : Number(args[1]));
+          case "charAt": return s.charAt(Number(args[0] ?? 0));
+          case "toUpperCase": return s.toUpperCase();
+          case "toLowerCase": return s.toLowerCase();
+          case "slice": return s.slice(Number(args[0] ?? 0), args[1] === undefined ? undefined : Number(args[1]));
+          default: return undefined;
+        }
+      }
       if (Array.isArray(obj)) { const m = (obj as any)[key]; return typeof m === "function" ? m.apply(obj, args) : undefined; }
       if (key === "registerClass") { registry[String(args[0])] = args[1]; return true; }
       // clip natives
@@ -240,6 +455,13 @@ export function runDataDrivenApp(
           case "createTextField": return bridge.createEmptyMovieClip(obj, String(args[0]), Number(args[2] ?? bridge.nextDepth(obj)));
           case "getNextHighestDepth": return bridge.nextDepth(obj);
           case "getBytesLoaded": case "getBytesTotal": return 100;
+          case "gotoAndPlay":
+          case "gotoAndStop":
+          case "play":
+          case "stop":
+          case "nextFrame":
+          case "prevFrame":
+            return bridge.timelineCommand?.(obj, key, args[0]) ?? undefined;
           default: return undefined; // no-op
         }
       }
@@ -252,7 +474,9 @@ export function runDataDrivenApp(
 
   const vm = new Avm1Vm(host, 60_000_000);
   vmRef.vm = vm;
-  globals.Object = { __obj: true };
+  globals.Object = { __nativeCtor: "Object", prototype: Object.create(null) };
+  globals.Array = { __nativeCtor: "Array", prototype: Object.create(null) };
+  globals.MovieClip = { __nativeCtor: "MovieClip", prototype: Object.create(null) };
   globals._global = globals;
 
   // 1) class registrations (#initclip): build _global.* classes + the linkage registry.

@@ -16,6 +16,7 @@ export interface Avm1Fn {
   body: Avm1Op[];
   registerCount?: number;
   flags?: number;
+  debugName?: string;
   /** `this` captured at definition for methods stored on an object (AS2 binds late,
    *  but most class methods are invoked as `obj.method()` so `this` comes from the call). */
   homeScope?: Avm1Value;
@@ -35,6 +36,9 @@ export interface Avm1Host {
   getMember(obj: Avm1Value, key: string): Avm1Value;
   /** Write a member (host may special-case clip properties, text fields, setters). */
   setMember(obj: Avm1Value, key: string, value: Avm1Value): void;
+  deleteMember?(obj: Avm1Value, key: string): boolean;
+  deleteVar?(name: string): boolean;
+  enumerate?(obj: Avm1Value): string[];
   /** `new className(args)` — construct by name (host owns the class registry / builtins). */
   construct(className: string, args: Avm1Value[]): Avm1Value;
   /** `new ctor(args)` where the constructor is already a resolved function value
@@ -82,14 +86,15 @@ export class Avm1Vm {
     // Expose the AS2 `arguments` object (array + `.callee`) for closures that
     // forward calls (e.g. mx.utils.Delegate's `func.apply(target, arguments)`).
     if (!("arguments" in locals)) { try { (args as any).callee = fn; } catch { /* frozen */ } locals.arguments = args; }
-    return this.exec(fn.body, { thisObj, registers, locals });
+    return this.exec(fn.body, { thisObj, registers, locals, label: debugFunctionName(fn) });
   }
 
   private exec(actions: Avm1Op[], frame: Frame): Avm1Value {
     const stack: Avm1Value[] = [];
+    const branchHits = new Map<string, number>();
     let ip = 0;
     while (ip < actions.length) {
-      if (++this.steps > this.budget) throw new Error("avm1 budget exceeded");
+      if (++this.steps > this.budget) throw new Error(this.branchError("avm1 budget exceeded", frame, ip, undefined, stack));
       const a = actions[ip];
       switch (a.op) {
         case "ConstantPool": break;
@@ -103,12 +108,20 @@ export class Avm1Vm {
         case "SetVariable": { const val = stack.pop(); const name = String(stack.pop()); this.setVar(frame, name, val); break; }
         case "GetMember": { const key = String(stack.pop()); const obj = stack.pop(); stack.push(this.host.getMember(obj, key)); break; }
         case "SetMember": { const val = stack.pop(); const key = String(stack.pop()); const obj = stack.pop(); this.host.setMember(obj, key, val); break; }
+        case "Delete": { const key = String(stack.pop()); const obj = stack.pop(); stack.push(this.host.deleteMember?.(obj, key) ?? deletePlainMember(obj, key)); break; }
+        case "Delete2": { const key = String(stack.pop()); stack.push(this.deleteVar(frame, key)); break; }
         case "DefineLocal": { const val = stack.pop(); const name = String(stack.pop()); frame.locals[name] = val; break; }
         case "DefineLocal2": { const name = String(stack.pop()); if (!(name in frame.locals)) frame.locals[name] = UNDEF; break; }
         case "InitArray": { const n = Number(stack.pop()) | 0; const arr: Avm1Value[] = []; for (let i = 0; i < n; i++) arr.unshift(stack.pop()); stack.push(arr); break; }
         case "InitObject": { const n = Number(stack.pop()) | 0; const o: any = {}; for (let i = 0; i < n; i++) { const v = stack.pop(); const k = String(stack.pop()); o[k] = v; } stack.push(o); break; }
         case "NewObject": { const name = String(stack.pop()); const args = popArgs(stack); stack.push(this.host.construct(name, args)); break; }
         case "NewMethod": { const key = stack.pop(); const obj = stack.pop(); const args = popArgs(stack); stack.push(this.newMethod(obj, key, args)); break; }
+        case "Enumerate2": {
+          const obj = stack.pop();
+          stack.push(null);
+          for (const key of this.enumerate(obj)) stack.push(key);
+          break;
+        }
         case "Not": stack.push(!truthy(stack.pop())); break;
         case "And": { const b = stack.pop(); const aa = stack.pop(); stack.push(truthy(aa) && truthy(b)); break; }
         case "Or": { const b = stack.pop(); const aa = stack.pop(); stack.push(truthy(aa) || truthy(b)); break; }
@@ -136,8 +149,20 @@ export class Avm1Vm {
         case "GetProperty": { const index = Number(stack.pop()) | 0; const obj = stack.pop(); stack.push(this.host.getProperty?.(obj, index)); break; }
         case "SetProperty": { const val = stack.pop(); const index = Number(stack.pop()) | 0; const obj = stack.pop(); this.host.setProperty?.(obj, index, val); break; }
         case "DefineFunction": case "DefineFunction2": {
-          const fn: Avm1Fn = { __avm1fn: true, params: a.params ?? [], body: a.body ?? [], registerCount: a.registerCount, flags: a.flags };
+          const fn: Avm1Fn = { __avm1fn: true, params: a.params ?? [], body: a.body ?? [], registerCount: a.registerCount, flags: a.flags, debugName: a.name };
           if (a.name) this.setVar(frame, a.name, fn); else stack.push(fn);
+          break;
+        }
+        case "Extends": {
+          const superCtor = stack.pop();
+          const subCtor = stack.pop();
+          applyExtends(subCtor, superCtor);
+          break;
+        }
+        case "InstanceOf": {
+          const ctor = stack.pop();
+          const obj = stack.pop();
+          stack.push(instanceOfAvm(obj, ctor));
           break;
         }
         case "CallFunction": { const name = String(stack.pop()); const args = popArgs(stack); stack.push(this.callNamed(frame, name, args)); break; }
@@ -147,8 +172,22 @@ export class Avm1Vm {
           stack.push(this.callMethod(obj, k, args)); break;
         }
         case "Return": return stack.pop();
-        case "Jump": ip = a.jumpTo ?? ip + 1; continue;
-        case "If": { const cond = truthy(stack.pop()); if (cond) { ip = a.jumpTo ?? ip + 1; continue; } break; }
+        case "Jump": {
+          const target = a.jumpTo ?? ip + 1;
+          this.checkBackwardBranch(branchHits, frame, ip, target, stack);
+          ip = target;
+          continue;
+        }
+        case "If": {
+          const cond = truthy(stack.pop());
+          if (cond) {
+            const target = a.jumpTo ?? ip + 1;
+            this.checkBackwardBranch(branchHits, frame, ip, target, stack);
+            ip = target;
+            continue;
+          }
+          break;
+        }
         case "Stop": case "Play": case "GotoFrame": case "GotoFrame2": case "GotoLabel": case "SetTarget": case "SetTarget2": break;
         default: break; // unknown op — best effort, leave stack as-is
       }
@@ -166,6 +205,23 @@ export class Avm1Vm {
     if (name in frame.locals) { frame.locals[name] = value; return; }
     this.host.setVar(name, value);
   }
+  private deleteVar(frame: Frame, name: string): boolean {
+    if (name in frame.locals) {
+      delete frame.locals[name];
+      return true;
+    }
+    return this.host.deleteVar?.(name) ?? false;
+  }
+  private enumerate(obj: Avm1Value): string[] {
+    const keys = this.host.enumerate?.(obj);
+    if (keys) return keys;
+    if (obj == null) return [];
+    if (Array.isArray(obj)) return obj.map((_, index) => String(index));
+    if (typeof obj === "object" || typeof obj === "function") {
+      try { return Object.keys(obj); } catch { return []; }
+    }
+    return [];
+  }
   private callNamed(frame: Frame, name: string, args: Avm1Value[]): Avm1Value {
     const fn = this.getVar(frame, name);
     if (isFn(fn)) return this.callFunction(fn, args, frame.thisObj);
@@ -180,6 +236,16 @@ export class Avm1Vm {
         : args.slice(1);
       return this.callFunction(obj, callArgs, thisArg);
     }
+    if (typeof obj === "function" && key === undefined) {
+      try { return obj(...args); } catch { return undefined; }
+    }
+    if (typeof obj === "function" && (key === "apply" || key === "call")) {
+      const thisArg = args[0];
+      const callArgs = key === "apply"
+        ? (Array.isArray(args[1]) ? args[1] : args[1] != null ? Array.from(args[1] as ArrayLike<Avm1Value>) : [])
+        : args.slice(1);
+      try { return obj.apply(thisArg, callArgs); } catch { return undefined; }
+    }
     if (obj != null && key !== undefined) {
       const m = this.host.getMember(obj, key);
       if (isFn(m)) return this.callFunction(m, args, obj);
@@ -190,11 +256,27 @@ export class Avm1Vm {
     const ctor = key === undefined || key === null || key === "" ? obj : this.host.getMember(obj, String(key));
     return this.host.instantiate(ctor, args);
   }
+  private checkBackwardBranch(hits: Map<string, number>, frame: Frame, ip: number, target: number, stack: Avm1Value[]) {
+    if (target > ip) return;
+    const key = `${ip}->${target}`;
+    const next = (hits.get(key) ?? 0) + 1;
+    hits.set(key, next);
+    if (next > 200_000) throw new Error(this.branchError("avm1 backward branch limit exceeded", frame, ip, target, stack));
+  }
+  private branchError(prefix: string, frame: Frame, ip: number, target: number | undefined, stack: Avm1Value[]): string {
+    return `${prefix}: function=${frame.label}, opcode=${ip}, target=${target ?? "n/a"}, stackTop=${formatStackTop(stack)}`;
+  }
 }
 
-interface Frame { thisObj: Avm1Value; registers: Avm1Value[]; locals: Record<string, Avm1Value>; }
+interface Frame { thisObj: Avm1Value; registers: Avm1Value[]; locals: Record<string, Avm1Value>; label: string; }
 
 export function isFn(v: Avm1Value): v is Avm1Fn { return !!v && typeof v === "object" && (v as any).__avm1fn === true; }
+export function ensurePrototype(fn: Avm1Value): Record<string, Avm1Value> | undefined {
+  if (!fn || typeof fn !== "object") return undefined;
+  const obj = fn as { prototype?: Record<string, Avm1Value> };
+  if (!obj.prototype) obj.prototype = Object.create(null);
+  return obj.prototype;
+}
 /** Safe AS2 string coercion: null-prototype objects (our class instances) have no
  *  toString, so `String(obj)` throws "Cannot convert object to primitive value". */
 function avmStr(v: Avm1Value): string {
@@ -205,3 +287,58 @@ function avmStr(v: Avm1Value): string {
 function truthy(v: Avm1Value): boolean { return !(v === undefined || v === null || v === false || v === 0 || v === "" || (typeof v === "number" && isNaN(v))); }
 function typeofAvm(v: Avm1Value): string { return v === undefined ? "undefined" : v === null ? "null" : isFn(v) || typeof v === "function" ? "function" : Array.isArray(v) ? "object" : typeof v; }
 function popArgs(stack: Avm1Value[]): Avm1Value[] { const n = Number(stack.pop()) | 0; const args: Avm1Value[] = []; for (let i = 0; i < n; i++) args.push(stack.pop()); return args; }
+
+function debugFunctionName(fn: Avm1Fn): string {
+  const named = fn.debugName || (fn as Record<string, Avm1Value>).__fqn;
+  return typeof named === "string" && named ? named : "<anonymous>";
+}
+
+function deletePlainMember(obj: Avm1Value, key: string): boolean {
+  if (obj == null || (typeof obj !== "object" && typeof obj !== "function")) return false;
+  try { return delete obj[key]; } catch { return false; }
+}
+
+function formatStackTop(stack: Avm1Value[]): string {
+  return JSON.stringify(stack.slice(-5).map((value) => {
+    if (value === undefined) return "undefined";
+    if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+    if (isFn(value)) return `[Function ${debugFunctionName(value)}]`;
+    if (Array.isArray(value)) return `[Array(${value.length})]`;
+    if (typeof value === "object") return value.__appClip ? "[MovieClip]" : value.__appText ? "[TextField]" : "[Object]";
+    return String(value);
+  }));
+}
+
+function applyExtends(subCtor: Avm1Value, superCtor: Avm1Value) {
+  const subProto = ensurePrototype(subCtor);
+  const superProto = ensurePrototype(superCtor);
+  if (!subProto || !superProto) return;
+  if (Object.getPrototypeOf(subProto) !== superProto) Object.setPrototypeOf(subProto, superProto);
+  if (!(subProto as Record<string, Avm1Value>).__constructor) (subProto as Record<string, Avm1Value>).__constructor = subCtor;
+  if (!(superProto as Record<string, Avm1Value>).__constructor) (superProto as Record<string, Avm1Value>).__constructor = superCtor;
+  try { (subCtor as Record<string, Avm1Value>).__super = superCtor; } catch { /* frozen */ }
+}
+
+function instanceOfAvm(obj: Avm1Value, ctor: Avm1Value): boolean {
+  if (ctor?.__nativeCtor === "Array") return Array.isArray(obj);
+  if (ctor?.__nativeCtor === "Object") return obj !== null && (typeof obj === "object" || typeof obj === "function");
+  if (!obj || typeof obj !== "object" || !ctor || typeof ctor !== "object") return false;
+  const ctorProto = ensurePrototype(ctor);
+  if (!ctorProto) return false;
+  let proto = Object.getPrototypeOf(obj);
+  while (proto) {
+    if (proto === ctorProto) return true;
+    proto = Object.getPrototypeOf(proto);
+  }
+  let cls = (obj as Record<string, Avm1Value>).__class;
+  let guard = 0;
+  while (cls && guard++ < 40) {
+    if (cls === ctor) return true;
+    const clsProto = ensurePrototype(cls);
+    if (!clsProto) break;
+    const parentProto = Object.getPrototypeOf(clsProto);
+    if (!parentProto) break;
+    cls = (parentProto as Record<string, Avm1Value>).__constructor;
+  }
+  return false;
+}

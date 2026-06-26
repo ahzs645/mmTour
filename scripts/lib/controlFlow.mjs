@@ -136,11 +136,11 @@ export function discoverSpriteActions(frameLabels) {
   return walkFiles(scriptsDir)
     .filter((path) => {
       const normalized = path.replaceAll("\\", "/");
-      return /\/DefineSprite_\d+\/frame_\d+\/DoAction\.as$/.test(normalized);
+      return /\/DefineSprite_\d+(?:_[^/]+)?\/frame_\d+\/DoAction\.as$/.test(normalized);
     })
     .map((file) => {
       const normalized = file.replaceAll("\\", "/");
-      const match = normalized.match(/\/DefineSprite_(\d+)\/frame_(\d+)\/DoAction\.as$/);
+      const match = normalized.match(/\/DefineSprite_(\d+)(?:_[^/]+)?\/frame_(\d+)\/DoAction\.as$/);
       const spriteId = Number(match?.[1] ?? 0);
       const frame = Number(match?.[2] ?? 1) - 1;
       const sourcePath = `scripts/${normalized.split("/scripts/").pop()}`;
@@ -198,7 +198,7 @@ export function discoverSpriteStopFrames() {
   const stops = {};
   for (const file of walkFiles(scriptsDir).filter((path) => path.endsWith("DoAction.as") && path.includes("DefineSprite_"))) {
     const normalized = file.replaceAll("\\", "/");
-    const match = normalized.match(/DefineSprite_(\d+)\/frame_(\d+)\/DoAction\.as$/);
+    const match = normalized.match(/DefineSprite_(\d+)(?:_[^/]+)?\/frame_(\d+)\/DoAction\.as$/);
     if (!match) continue;
 
     const source = readFileSync(file, "utf8").trim();
@@ -219,17 +219,17 @@ export function discoverSpriteLocalDefaults() {
 
   const defaults = {};
   const files = walkFiles(scriptsDir)
-    .filter((path) => /\/DefineSprite_\d+\/frame_\d+\/DoAction\.as$/.test(path.replaceAll("\\", "/")))
+    .filter((path) => /\/DefineSprite_\d+(?:_[^/]+)?\/frame_\d+\/DoAction\.as$/.test(path.replaceAll("\\", "/")))
     .sort((left, right) => {
-      const leftMatch = left.replaceAll("\\", "/").match(/\/DefineSprite_(\d+)\/frame_(\d+)\/DoAction\.as$/);
-      const rightMatch = right.replaceAll("\\", "/").match(/\/DefineSprite_(\d+)\/frame_(\d+)\/DoAction\.as$/);
+      const leftMatch = left.replaceAll("\\", "/").match(/\/DefineSprite_(\d+)(?:_[^/]+)?\/frame_(\d+)\/DoAction\.as$/);
+      const rightMatch = right.replaceAll("\\", "/").match(/\/DefineSprite_(\d+)(?:_[^/]+)?\/frame_(\d+)\/DoAction\.as$/);
       return Number(leftMatch?.[1] ?? 0) - Number(rightMatch?.[1] ?? 0)
         || Number(leftMatch?.[2] ?? 0) - Number(rightMatch?.[2] ?? 0);
     });
 
   for (const file of files) {
     const normalized = file.replaceAll("\\", "/");
-    const match = normalized.match(/\/DefineSprite_(\d+)\/frame_(\d+)\/DoAction\.as$/);
+    const match = normalized.match(/\/DefineSprite_(\d+)(?:_[^/]+)?\/frame_(\d+)\/DoAction\.as$/);
     const spriteId = match?.[1];
     if (!spriteId) continue;
 

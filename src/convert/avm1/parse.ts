@@ -44,9 +44,10 @@ const NAMES: Record<number, string> = {
   0x21: "StringAdd", 0x22: "GetProperty", 0x23: "SetProperty", 0x24: "CloneSprite", 0x25: "RemoveSprite",
   0x26: "Trace", 0x34: "GetTime", 0x3a: "Delete", 0x3b: "Delete2", 0x3c: "DefineLocal", 0x3d: "CallFunction",
   0x3e: "Return", 0x3f: "Modulo", 0x40: "NewObject", 0x41: "DefineLocal2", 0x42: "InitArray",
-  0x43: "InitObject", 0x44: "TypeOf", 0x47: "Add2", 0x48: "Less2", 0x49: "Equals2", 0x4c: "PushDuplicate",
-  0x4d: "StackSwap", 0x4e: "GetMember", 0x4f: "SetMember", 0x50: "Increment", 0x51: "Decrement", 0x52: "CallMethod",
-  0x53: "NewMethod", 0x67: "Greater", 0x9a: "GetUrl2", 0x9e: "Call",
+  0x43: "InitObject", 0x44: "TypeOf", 0x47: "Add2", 0x48: "Less2", 0x49: "Equals2", 0x4a: "ToNumber",
+  0x4b: "ToString", 0x4c: "PushDuplicate", 0x4d: "StackSwap", 0x4e: "GetMember", 0x4f: "SetMember",
+  0x50: "Increment", 0x51: "Decrement", 0x52: "CallMethod", 0x53: "NewMethod", 0x54: "InstanceOf",
+  0x55: "Enumerate2", 0x66: "StrictEquals", 0x67: "Greater", 0x69: "Extends", 0x9a: "GetUrl2", 0x9e: "Call",
 };
 
 /** Parse an AVM1 bytecode block into actions, nesting DefineFunction bodies and

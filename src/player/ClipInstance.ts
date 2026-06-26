@@ -39,6 +39,10 @@ export class ClipInstance {
   readonly props: Record<string, VarValue | undefined> = {};
   /** Runtime display properties for named non-MovieClip children (text/shape/image leaves). */
   readonly leafProps = new Map<string, Record<string, VarValue | undefined>>();
+  /** Named leaves whose content/display properties were mutated by runtime AS. */
+  readonly mutatedLeaves = new Set<string>();
+  /** True once runtime AS creates/removes child display objects under this clip. */
+  displayListMutated = false;
   /** Runtime display-object property overrides written by AVM1 (`clip._visible = false`, etc.). */
   visible: boolean | undefined;
   alpha: number | undefined;
