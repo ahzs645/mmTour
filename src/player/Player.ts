@@ -171,6 +171,9 @@ export class Player {
   private root: ClipInstance;
   private clipByPath = new Map<string, ClipInstance>();
   private lastNodes: RenderNode[] = [];
+  // Set once any clip gains a runtime-attached child (attachMovie/createEmptyMovieClip).
+  // Gates the per-frame subtree scan in flatten() so attachMovie-free scenes pay nothing.
+  private hasAnyDynamicInstances = false;
   private readonly functionReentry = new Map<string, number>();
   private readonly runtimeTimers = new Set<RuntimeTimerId>();
   private activeDrag: DragState | undefined;
@@ -330,6 +333,7 @@ export class Player {
     const characterId = this.linkageAssetIds.get(normalizeLinkageName(linkage));
     if (!characterId || !this.getAsset(characterId) || !Number.isFinite(depth)) return undefined;
     owner.dynamicInstances.set(depth, { depth, characterId, placedFrame: owner.currentFrame, matrix: { ...IDENTITY }, opacity: 1, name });
+    this.hasAnyDynamicInstances = true;
     owner.displayListMutated = true;
     owner.depthNames.set(depth, name);
     const child = new ClipInstance(characterId, name, owner);
@@ -341,6 +345,7 @@ export class Player {
 
   private createEmptyClip(owner: ClipInstance, name: string, depth: number): ClipInstance {
     owner.dynamicInstances.set(depth, { depth, characterId: 0, placedFrame: owner.currentFrame, matrix: { ...IDENTITY }, opacity: 1, name });
+    this.hasAnyDynamicInstances = true;
     owner.displayListMutated = true;
     owner.depthNames.set(depth, name);
     const child = new ClipInstance(0, name, owner);
@@ -2425,6 +2430,7 @@ export class Player {
       name,
     };
     owner.dynamicInstances.set(depth, instance);
+    this.hasAnyDynamicInstances = true;
     owner.displayListMutated = true;
     owner.depthNames.set(depth, name);
     const child = new ClipInstance(characterId, name, owner);
@@ -2450,6 +2456,7 @@ export class Player {
       opacity: 1,
       name,
     });
+    this.hasAnyDynamicInstances = true;
     owner.displayListMutated = true;
     owner.depthNames.set(depth, name);
     const child = new ClipInstance(0, name, owner);
@@ -2591,17 +2598,43 @@ export class Player {
       duration: durationValue as VarValue,
     };
     const ms = tweenDurationMs(durationValue, useSecondsValue, this.timeline.fps || 30);
-    const timer = setTimeout(() => {
-      this.runtimeTimers.delete(timer);
+    const finishTween = () => {
       if (target instanceof ClipInstance && property) setClipProperty(target, property, finish as VarValue);
+      // onMotionFinished is assigned right after construction, so read it lazily at the end.
       const callback = tween.onMotionFinished;
       if (isDelegate(callback) && callback.target instanceof ClipInstance) {
         const method = this.methodFunctionForClip(callback.target, callback.method);
         if (method) this.callFunctionDef(method.key, method.def, "__tween", { __tween: tween as VarValue }, callback.target);
       }
       this.render();
-    }, ms);
-    this.runtimeTimers.add(timer);
+    };
+
+    const beginNumber = Number(begin);
+    const finishNumber = Number(finish);
+    // Non-numeric target/prop or instant duration → jump to the end value (legacy behaviour).
+    if (!(target instanceof ClipInstance) || !property || !Number.isFinite(beginNumber) || !Number.isFinite(finishNumber) || ms <= 16) {
+      const timer = setTimeout(() => { this.runtimeTimers.delete(timer); finishTween(); }, ms);
+      this.runtimeTimers.add(timer);
+      return tween;
+    }
+
+    // Smooth linear interpolation begin→finish (the mx.transitions easing curve is ignored,
+    // matching the avm1App VM). Without this, tweened motion teleports to its end state —
+    // e.g. bnl's news ticker items jump from off-right to off-left, never scrolling across.
+    setClipProperty(target, property, beginNumber);
+    const start = Date.now();
+    const handle = setInterval(() => {
+      const progress = Math.min(1, (Date.now() - start) / ms);
+      setClipProperty(target, property, beginNumber + (finishNumber - beginNumber) * progress);
+      if (progress >= 1) {
+        this.runtimeTimers.delete(handle);
+        clearInterval(handle);
+        finishTween();
+      } else {
+        this.render();
+      }
+    }, 33);
+    this.runtimeTimers.add(handle);
     return tween;
   }
 
@@ -3102,6 +3135,18 @@ export class Player {
     this.lastNodes = nodes;
   }
 
+  /** Whether `clip` or any descendant holds a runtime-attached instance (attachMovie /
+   *  createEmptyMovieClip). Used to pull a baked sprite onto the tree render path so its
+   *  attached children render. Only called when `hasAnyDynamicInstances` is set, so
+   *  attachMovie-free scenes never walk here. */
+  private subtreeHasDynamicInstances(clip: ClipInstance): boolean {
+    if (clip.dynamicInstances.size > 0) return true;
+    for (const child of clip.childClips.values()) {
+      if (this.subtreeHasDynamicInstances(child)) return true;
+    }
+    return false;
+  }
+
   private flatten(
     clip: ClipInstance,
     world: RenderNode["matrix"],
@@ -3216,7 +3261,8 @@ export class Player {
       // Inside an active mask → collect the instance as a masked item, not a normal node.
       const activeMask = maskStack[maskStack.length - 1];
       if (activeMask && instance.depth <= activeMask.clipDepth) {
-        const timelineSprite = asset.kind === "sprite" && asset.timeline?.length && child && child.characterId === asset.id;
+        const timelineSprite = asset.kind === "sprite" && child && child.characterId === asset.id
+          && (asset.timeline?.length || (this.hasAnyDynamicInstances && this.subtreeHasDynamicInstances(child)));
         if (timelineSprite) {
           const temp: RenderNode[] = [];
           this.flatten(child, matrix, opacity, colorTransform, key, order, temp);
@@ -3232,7 +3278,8 @@ export class Player {
       // (FFDec bakes masks/group-alpha the nested leaves would lose), and overlay
       // transparent button hit areas from its nested timeline so it stays
       // interactive and its frame scripts still run (logic lives in the tree).
-      if (asset.kind === "sprite" && asset.frames?.length && !asset.overflowsBounds) {
+      if (asset.kind === "sprite" && asset.frames?.length && !asset.overflowsBounds
+          && !(this.hasAnyDynamicInstances && child && this.subtreeHasDynamicInstances(child))) {
         const frameIndex = child ? clamp(child.currentFrame, 0, asset.frames.length - 1) : 0;
         out.push(spriteNode(key, order.n++, asset, asset.frames[frameIndex], matrix, opacity, instance, child?.currentFrame, colorTransform));
         if (child && asset.timeline?.length) this.collectButtons(child, matrix, colorTransform, key, order, out, opacity);
@@ -3241,9 +3288,12 @@ export class Player {
       }
 
       // Sprite whose animated content slides outside its baked-frame bounds (e.g. the nav
-      // cascade buttons), or a sprite with only a nested timeline (no baked frames) →
-      // render from the display-list tree so the moving content isn't clipped/dropped.
-      if (asset.kind === "sprite" && asset.timeline?.length && child && child.characterId === asset.id) {
+      // cascade buttons), a sprite with only a nested timeline (no baked frames), or one
+      // that gained runtime-attached children (attachMovie — e.g. bnl's tickerHolder, which
+      // has no timeline of its own) → render from the display-list tree so the moving /
+      // attached content isn't clipped or dropped.
+      if (asset.kind === "sprite" && child && child.characterId === asset.id
+          && (asset.timeline?.length || (this.hasAnyDynamicInstances && child.dynamicInstances.size))) {
         this.clipByPath.set(key, child);
         if (this.clipHasPointerEvents(child)) out.push(this.movieClipHitNode(`${key}#hit`, order.n++, asset, matrix, instance, key, colorTransform));
         this.flatten(child, matrix, opacity, colorTransform, key, order, out);
