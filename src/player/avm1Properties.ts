@@ -56,6 +56,7 @@ const AVM1_NAMED_PROPERTIES = [
   property("text", undefined, "textfield", "readwrite", "string"),
   property("htmlText", undefined, "textfield", "readwrite", "string", ["htmltext"]),
   property("html", undefined, "textfield", "readwrite", "boolean"),
+  property("textColor", undefined, "textfield", "readwrite", "number", ["textcolor"]),
   property("variable", undefined, "textfield", "readwrite", "string"),
   property("selectable", undefined, "textfield", "readwrite", "boolean"),
   property("type", undefined, "textfield", "readwrite", "string"),

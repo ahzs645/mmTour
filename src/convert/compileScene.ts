@@ -16,7 +16,7 @@ import {
   collectFonts, buildTtf,
   collectSounds, extractSound,
   collectButtons, composeButton,
-  fontsById, reconstructText,
+  fontsById, reconstructText, reconstructTextRecords,
 } from "./index.ts";
 import { matrixFromButtonRecord } from "./buttonComposer.ts";
 import type { BitmapFillImage } from "./svgEmit.ts";
@@ -111,8 +111,18 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
     try {
       const safe = (font.fontName || "Font").replace(/[^\w .-]/g, "");
       const path = `fonts/${font.id}_${safe}.ttf`;
-      put(path, "font/ttf", buildTtf(font));
-      assets[`font:${font.id}`] = { id: font.id, kind: "font", src: `generated/${scene}/${path}`, origin: zero() };
+      const buildFont = browserFontSource(font, movie);
+      const bytes = buildTtf(buildFont);
+      put(path, "font/ttf", bytes);
+      assets[`font:${font.id}`] = {
+        id: font.id,
+        kind: "font",
+        src: `generated/${scene}/${path}`,
+        byteLength: bytes.byteLength,
+        fontName: font.fontName,
+        fontLoadable: browserFontLikelyLoadable(buildFont, bytes),
+        origin: zero(),
+      };
       stats.fonts++;
     } catch { /* skip */ }
   }
@@ -202,7 +212,7 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
       if (!content) continue;
       put(`texts/${t.id}.txt`, "text/plain", content);
       const b = t.bounds;
-      const text = staticTextStyle(t, content);
+      const text = staticTextStyle(t, content, reconstructTextRecords(t, fonts));
       assets[String(t.id)] ??= {
         id: t.id, kind: "text", src: `generated/${scene}/texts/${t.id}.txt`,
         origin: b ? { x: b.xMin / 20, y: b.yMin / 20, width: (b.xMax - b.xMin) / 20, height: (b.yMax - b.yMin) / 20 } : zero(),
@@ -473,6 +483,65 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+function browserFontLikelyLoadable(font: any, bytes: Uint8Array): boolean {
+  const glyphCount = Number(font.glyphs?.length ?? font.codeUnits?.length ?? 0);
+  if (glyphCount > 4096) return false;
+  if (bytes.byteLength > 1_000_000) return false;
+  return true;
+}
+
+function browserFontSource(font: any, movie: any): any {
+  const glyphCount = Number(font.glyphs?.length ?? font.codeUnits?.length ?? 0);
+  if (glyphCount <= 4096) return font;
+  return subsetFont(font, browserFontCodeUnits(movie));
+}
+
+function browserFontCodeUnits(movie: any): Set<number> {
+  const out = new Set<number>();
+  for (let code = 32; code <= 126; code++) out.add(code);
+  for (let code = 160; code <= 255; code++) out.add(code);
+  for (const char of "•–—‘’“”™©®…") out.add(char.charCodeAt(0));
+  const fonts = new Map<number, any>();
+  for (const tag of movie.tags ?? []) if (tag.type === swf.TagType.DefineFont) fonts.set(Number(tag.id), tag);
+  for (const tag of movie.tags ?? []) {
+    if (tag.type === swf.TagType.DefineDynamicText && tag.text) {
+      for (const char of String(tag.text)) out.add(char.charCodeAt(0));
+    } else if (tag.type === swf.TagType.DefineText) {
+      let fontId: number | undefined;
+      for (const record of tag.records ?? []) {
+        if (record.fontId !== undefined) fontId = Number(record.fontId);
+        const recordFont = fontId !== undefined ? fonts.get(fontId) : undefined;
+        for (const entry of record.entries ?? []) {
+          const code = recordFont?.codeUnits?.[entry.index];
+          if (typeof code === "number") out.add(code);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+function subsetFont(font: any, include: Set<number>): any {
+  const glyphs: any[] = [];
+  const codeUnits: number[] = [];
+  const advances: number[] = [];
+  const seen = new Set<number>();
+  for (let index = 0; index < (font.codeUnits?.length ?? 0); index++) {
+    const code = Number(font.codeUnits[index]);
+    if (!include.has(code) || seen.has(code) || !font.glyphs?.[index]) continue;
+    seen.add(code);
+    glyphs.push(font.glyphs[index]);
+    codeUnits.push(code);
+    advances.push(Number(font.layout?.advances?.[index] ?? font.emSquareSize ?? 1024));
+  }
+  return {
+    ...font,
+    glyphs,
+    codeUnits,
+    layout: { ...(font.layout ?? {}), advances },
+  };
+}
+
 const ALIGN = ["left", "right", "center", "justify"];
 function editTextStyle(t: any, scene: string) {
   const b = t.bounds;
@@ -491,21 +560,25 @@ function editTextStyle(t: any, scene: string) {
     multiline: !!t.multiline,
     wordWrap: !!t.wordWrap,
     html: !!t.html,
-    text: t.text ? String(t.text) : undefined,
+    text: undefined as string | undefined,
     variableName: t.variableName || undefined,
     normalizedVariableName: t.variableName ? normalizeBindingName(t.variableName) : undefined,
   };
+  const literalText = t.text ? String(t.text) : undefined;
+  text.text = text.normalizedVariableName ? literalText : literalText?.trim();
   return { id: t.id, kind: "text", src: `generated/${scene}/texts/${t.id}.txt`, origin: { x: text.x, y: text.y, width: w, height: h }, text };
 }
 
-function staticTextStyle(t: any, content: string) {
+function staticTextStyle(t: any, content: string, staticLines: Array<{ text: string; x: number; y: number; width?: number }> = []) {
   const b = t.bounds;
   const firstRecord = (t.records ?? []).find((record: any) => record.fontId !== undefined || record.fontSize !== undefined || record.color);
+  const lineHeight = staticTextLineHeight(t.records ?? []);
   const width = b ? (b.xMax - b.xMin) / 20 : 0;
   const height = b ? (b.yMax - b.yMin) / 20 : 0;
   return {
     fontId: firstRecord?.fontId,
     fontHeight: firstRecord?.fontSize ? firstRecord.fontSize / 20 : 12,
+    lineHeight,
     color: firstRecord?.color ? `#${hx(firstRecord.color.r)}${hx(firstRecord.color.g)}${hx(firstRecord.color.b)}` : undefined,
     align: "center",
     x: b ? b.xMin / 20 : 0,
@@ -517,7 +590,21 @@ function staticTextStyle(t: any, content: string) {
     wordWrap: false,
     multiline: false,
     text: content,
+    staticLines: staticLines.length ? staticLines : undefined,
   };
+}
+
+function staticTextLineHeight(records: any[]) {
+  const offsets = records
+    .filter((record: any) => record.entries?.length && Number.isFinite(Number(record.offsetY)))
+    .map((record: any) => Number(record.offsetY) / 20);
+  const deltas = offsets
+    .slice(1)
+    .map((offset, index) => offset - offsets[index])
+    .filter((delta) => Number.isFinite(delta) && delta > 0);
+  if (!deltas.length) return undefined;
+  const sorted = deltas.sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
 }
 
 function dynamicTextInfo(movie: any): Map<number, DynamicTextInfo> {

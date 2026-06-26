@@ -6,7 +6,7 @@ import Dexie, { type Table } from "dexie";
 import type { CompileStats } from "./compileScene.ts";
 import type { ExternalAssetRef } from "./avm1Control.ts";
 
-export const COMPILED_CACHE_VERSION = 7;
+export const COMPILED_CACHE_VERSION = 14;
 
 export interface StoredCompiledFile {
   path: string;

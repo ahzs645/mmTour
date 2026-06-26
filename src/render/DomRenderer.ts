@@ -58,7 +58,9 @@ function loadMaskShape(src: string): ParsedShape | null | undefined {
   return undefined;
 }
 
-function svgImage(v: MaskVisual, extra = ""): string {
+function svgImage(v: MaskVisual, extra = "", dimensions: { width: number; height: number }, key: string): string {
+  if (v.maskGroup) return `<g${extra}>${maskGroupSvg(v.maskGroup, key, dimensions)}</g>`;
+  if (v.text) return svgText(v, extra);
   const m = v.matrix;
   const url = assetUrl(v.src);
   const filter = v.colorTransform ? ` filter="url(#${maskColorFilterId(v.colorTransform)})"` : "";
@@ -69,6 +71,40 @@ function svgImage(v: MaskVisual, extra = ""): string {
   );
 }
 
+function svgText(v: MaskVisual, extra = ""): string {
+  const text = v.text!;
+  const m = v.matrix;
+  const x = text.x ?? v.origin.x;
+  const y = text.y ?? v.origin.y;
+  const width = Math.max(1, text.width ?? v.origin.width);
+  const height = Math.max(1, text.height ?? v.origin.height);
+  const lineHeight = `${text.lineHeight ?? text.fontHeight + (text.leading ?? 0)}px`;
+  const whiteSpace = text.wordWrap ? "pre-wrap" : "pre";
+  const align = (text.align as string) ?? "left";
+  const staticLines = text.staticLines?.length ? staticLineHtml(text, width) : "";
+  const content = text.html
+    ? flashHtmlTextToBrowserHtml(displayText(text.text ?? ""))
+    : escapeHtml(displayText(text.text ?? ""));
+  const style = [
+    "margin:0",
+    "padding:0",
+    "overflow:visible",
+    `width:${width}px`,
+    `height:${height}px`,
+    `font-size:${text.fontHeight}px`,
+    `line-height:${lineHeight}`,
+    `color:${text.color ?? "#000"}`,
+    `text-align:${align}`,
+    `white-space:${whiteSpace}`,
+    "font-family:sans-serif",
+  ].join(";");
+  return (
+    `<foreignObject class="player-text player-mask-text" x="${x}" y="${y}" width="${width}" height="${height}" ` +
+    `transform="matrix(${m.a},${m.b},${m.c},${m.d},${m.tx},${m.ty})"${extra}>` +
+    `<div xmlns="http://www.w3.org/1999/xhtml" style="${style}">${staticLines || content}</div></foreignObject>`
+  );
+}
+
 /** Build an inline SVG string that clips `items` to the `mask` shape's geometry. */
 function maskGroupSvg(group: { mask: MaskVisual; items: MaskVisual[] }, key: string, dimensions: { width: number; height: number }): string {
   const open = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${dimensions.width}" height="${dimensions.height}" style="position:absolute;left:0;top:0;overflow:visible">`;
@@ -76,7 +112,7 @@ function maskGroupSvg(group: { mask: MaskVisual; items: MaskVisual[] }, key: str
   const shape = loadMaskShape(group.mask.src);
   // Until the mask shape loads (or if it failed), show the items unclipped.
   if (!shape) {
-    return `${open}${filterDefs ? `<defs>${filterDefs}</defs>` : ""}${group.items.map((it) => svgImage(it)).join("")}</svg>`;
+    return `${open}${filterDefs ? `<defs>${filterDefs}</defs>` : ""}${group.items.map((it, index) => svgImage(it, "", dimensions, `${key}_${it.key ?? index}`)).join("")}</svg>`;
   }
 
   // Bake mask-matrix ∘ origin-shift ∘ shape-g into ONE matrix on a single <g>, so the
@@ -89,7 +125,7 @@ function maskGroupSvg(group: { mask: MaskVisual; items: MaskVisual[] }, key: str
   // <path>/<polygon> directly (the only reliable form).
   const tf = `matrix(${combined.a},${combined.b},${combined.c},${combined.d},${combined.tx},${combined.ty})`;
   const clipBody = shape.body.replace(/<(path|polygon|rect|ellipse|circle)\b/g, `<$1 transform="${tf}"`);
-  const items = group.items.map((it) => svgImage(it, it.opacity !== 1 ? ` opacity="${it.opacity}"` : "")).join("");
+  const items = group.items.map((it, index) => svgImage(it, it.opacity !== 1 ? ` opacity="${it.opacity}"` : "", dimensions, `${key}_${it.key ?? index}`)).join("");
   return `${open}<defs>${filterDefs}<clipPath id="${clipId}" clipPathUnits="userSpaceOnUse">${clipBody}</clipPath></defs><g clip-path="url(#${clipId})">${items}</g></svg>`;
 }
 
@@ -165,6 +201,7 @@ export class DomRenderer {
   }
 
   apply(renderNodes: RenderNode[]) {
+    renderNodes = suppressDuplicateTextNodes(renderNodes);
     const live = new Set<string>();
 
     for (const node of renderNodes) {
@@ -396,14 +433,20 @@ export class DomRenderer {
     element.style.top = `${text.y ?? node.origin.y}px`;
     const width = text.width ?? node.origin.width;
     if (width > 0) element.style.width = `${width}px`;
+    const height = text.height ?? node.origin.height;
+    if (height > 0) element.style.height = `${height}px`;
     element.style.fontSize = `${text.fontHeight}px`;
-    element.style.lineHeight = text.leading ? `${text.fontHeight + text.leading}px` : "normal";
+    element.style.lineHeight = `${text.lineHeight ?? text.fontHeight + (text.leading ?? 0)}px`;
     element.style.color = text.color ?? "#000";
     element.style.textAlign = (text.align as string) ?? "left";
     element.style.whiteSpace = text.wordWrap ? "pre-wrap" : "pre";
     if (family) element.style.fontFamily = family;
+    if (text.staticLines?.length) {
+      element.innerHTML = staticLineHtml(text, width);
+      return;
+    }
     if (text.html) element.innerHTML = flashHtmlTextToBrowserHtml(displayText(text.text ?? ""));
-    else element.textContent = displayText(text.text ?? "");
+    else setPlainTextField(element, displayText(text.text ?? ""), text, width);
   }
 
   private placeNode(rendered: RenderedNode, node: RenderNode) {
@@ -458,9 +501,106 @@ function flashHtmlTextToBrowserHtml(value: string): string {
 
 function displayText(value: string): string {
   return value
+    .replace(/\s*--- RECORDSEPARATOR ---\s*/g, "\n")
     .split(/\r?\n/)
     .filter((line) => line.trim() !== "--- RECORDSEPARATOR ---")
     .join("\n");
+}
+
+function setPlainTextField(
+  element: HTMLElement,
+  value: string,
+  text: { wordWrap?: boolean; multiline?: boolean; align?: string },
+  width: number,
+) {
+  if (text.wordWrap || text.multiline || value.includes("\n") || width <= 0) {
+    element.textContent = value;
+    return;
+  }
+  const span = document.createElement("span");
+  span.className = "player-text-fit";
+  span.textContent = value;
+  span.style.display = "inline-block";
+  span.style.whiteSpace = "pre";
+  span.style.transformOrigin = text.align === "right" ? "right top" : text.align === "center" ? "center top" : "left top";
+  element.replaceChildren(span);
+  queueTextFit(element, span, width);
+}
+
+function queueTextFit(element: HTMLElement, span: HTMLElement, width: number) {
+  const fit = () => fitSingleLineText(element, span, width);
+  requestAnimationFrame(fit);
+  requestAnimationFrame(() => requestAnimationFrame(fit));
+  document.fonts?.ready.then(fit).catch(() => {});
+}
+
+function fitSingleLineText(element: HTMLElement, span: HTMLElement, width: number) {
+  if (!span.isConnected || span.parentElement !== element) return;
+  span.style.transform = "";
+  const naturalWidth = span.scrollWidth || span.offsetWidth || span.getBoundingClientRect().width;
+  if (!Number.isFinite(naturalWidth) || naturalWidth <= 0 || naturalWidth <= width) return;
+  const scale = Math.max(0.1, width / naturalWidth);
+  span.style.transform = `scaleX(${scale})`;
+}
+
+function staticLineHtml(
+  text: { staticLines?: Array<{ text: string; x: number; y: number; width?: number }>; fontHeight: number; color?: string; align?: string },
+  fallbackWidth: number,
+): string {
+  const boxWidth = Math.max(1, fallbackWidth);
+  return (text.staticLines ?? []).map((line) => {
+    const lineWidth = Math.max(1, line.width ?? boxWidth);
+    const left = text.align === "center" ? line.x + (boxWidth - lineWidth) / 2 : line.x;
+    const top = line.y - text.fontHeight;
+    const align = text.align ?? "left";
+    return (
+      `<span style="position:absolute;left:${left}px;top:${top}px;width:${lineWidth}px;` +
+      `height:${text.fontHeight}px;line-height:${text.fontHeight}px;white-space:pre;` +
+      `color:${text.color ?? "#000"};text-align:${align}">${escapeHtml(line.text.trimEnd())}</span>`
+    );
+  }).join("");
+}
+
+function suppressDuplicateTextNodes(nodes: RenderNode[]): RenderNode[] {
+  const chosen = new Map<string, { node: RenderNode; area: number }>();
+  const suppressed = new Set<string>();
+  const replacements = new Map<string, RenderNode>();
+  for (const node of nodes) {
+    if (node.kind !== "text" || !node.text) continue;
+    const text = normalizedNodeText(node);
+    if (!text) continue;
+    const width = node.text.width ?? node.origin.width;
+    const height = node.text.height ?? node.origin.height;
+    if (!(width > 0 && height > 0)) continue;
+    const x = node.matrix.tx + (node.text.x ?? node.origin.x) + width / 2;
+    const y = node.matrix.ty + (node.text.y ?? node.origin.y) + height / 2;
+    const key = `${text}|${Math.round(x / 2) * 2}|${Math.round(y / 2) * 2}`;
+    const area = width * height;
+    const prev = chosen.get(key);
+    if (!prev) {
+      chosen.set(key, { node, area });
+      continue;
+    }
+    const larger = area > prev.area * 1.1 ? { node, area } : prev;
+    const smaller = larger.node === node ? prev.node : node;
+    const topOrder = Math.max(prev.node.order, node.order);
+    if (larger.node.order < topOrder) replacements.set(larger.node.key, { ...larger.node, order: topOrder });
+    if (larger.node !== smaller) suppressed.add(smaller.key);
+    chosen.set(key, larger);
+  }
+  if (!suppressed.size) return nodes;
+  return nodes
+    .filter((node) => !suppressed.has(node.key))
+    .map((node) => replacements.get(node.key) ?? node);
+}
+
+function normalizedNodeText(node: RenderNode): string {
+  const text = node.text;
+  if (!text) return "";
+  const value = text.staticLines?.length
+    ? text.staticLines.map((line) => line.text.trim()).join("\n")
+    : displayText(text.text ?? "");
+  return value.replace(/\s+/g, " ").trim();
 }
 
 function flashFontStyle(node: Element): string {

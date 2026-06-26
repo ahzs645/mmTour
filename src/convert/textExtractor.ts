@@ -19,15 +19,30 @@ export function fontsById(movie: any): Map<number, any> {
 /** Reconstruct a DefineText's string via the referenced fonts' codeUnits.
  *  fontId is sticky across records (set when it changes). */
 export function reconstructText(defineText: any, fonts: Map<number, any>): string {
+  return reconstructTextRecords(defineText, fonts).map((record) => record.text).join("\n--- RECORDSEPARATOR ---\n").trim();
+}
+
+export function reconstructTextRecords(defineText: any, fonts: Map<number, any>): Array<{ text: string; x: number; y: number; width?: number }> {
   let fontId: number | undefined;
-  let out = "";
+  const records: Array<{ text: string; x: number; y: number; width?: number }> = [];
   for (const rec of defineText.records ?? []) {
     if (rec.fontId !== undefined) fontId = rec.fontId;
     const font = fontId !== undefined ? fonts.get(fontId) : undefined;
+    let text = "";
+    let width = 0;
     for (const entry of rec.entries ?? []) {
       const code = font?.codeUnits?.[entry.index];
-      if (code !== undefined) out += String.fromCharCode(code);
+      if (code !== undefined) text += String.fromCharCode(code);
+      width += Number(entry.advance ?? 0) / 20;
+    }
+    if (text) {
+      records.push({
+        text,
+        x: Number(rec.offsetX ?? 0) / 20,
+        y: Number(rec.offsetY ?? 0) / 20,
+        width: width > 0 ? width : undefined,
+      });
     }
   }
-  return out;
+  return records;
 }

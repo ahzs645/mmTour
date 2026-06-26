@@ -27,7 +27,7 @@ export type { ExtractedSound } from "./soundExtractor.ts";
 export { collectButtons, composeButton } from "./buttonComposer.ts";
 export type { ComposedButton } from "./buttonComposer.ts";
 export { shapeInner } from "./svgEmit.ts";
-export { collectStaticTexts, fontsById, reconstructText } from "./textExtractor.ts";
+export { collectStaticTexts, fontsById, reconstructText, reconstructTextRecords } from "./textExtractor.ts";
 
 export interface CollectedShape {
   id: number;

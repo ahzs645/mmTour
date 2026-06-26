@@ -201,10 +201,49 @@ export function runDataDrivenApp(
   const createTween = (args: any[]) => {
     const target = args[0];
     const prop = String(args[1] ?? "");
+    const begin = args[3];
     const finish = args[4];
+    const duration = Number(args[5] ?? 0);
     const useSeconds = Boolean(args[6]);
-    const tween: any = { __tween: true, target, prop, finish, completed: !useSeconds };
-    if (target && prop && !useSeconds) host.setMember(target, prop, finish);
+    const tween: any = { __tween: true, target, prop, begin, finish, duration, completed: false };
+    const finishTween = () => {
+      tween.completed = true;
+      if (target && prop) host.setMember(target, prop, finish);
+      const callback = tween.onMotionFinished;
+      if (callback) {
+        tween.completed = false;
+        invoke(callback, [tween], tween);
+      }
+      bridge.render();
+    };
+    if (!target || !prop) {
+      tween.completed = true;
+      return tween;
+    }
+    host.setMember(target, prop, begin);
+    if (!useSeconds || !Number.isFinite(duration) || duration <= 0) {
+      finishTween();
+      return tween;
+    }
+    const beginNumber = Number(begin);
+    const finishNumber = Number(finish);
+    const durationMs = Math.max(16, duration * 1000);
+    const start = Date.now();
+    const id = nextTimerId++;
+    const handle = setInterval(() => {
+      const progress = Math.min(1, (Date.now() - start) / durationMs);
+      if (Number.isFinite(beginNumber) && Number.isFinite(finishNumber)) {
+        host.setMember(target, prop, beginNumber + (finishNumber - beginNumber) * progress);
+      }
+      if (progress >= 1) {
+        clearTimer(id);
+        finishTween();
+      } else {
+        bridge.render();
+      }
+    }, 33);
+    timers.set(id, handle);
+    tween.__timerId = id;
     bridge.render();
     return tween;
   };

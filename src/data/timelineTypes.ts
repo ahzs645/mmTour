@@ -341,6 +341,13 @@ export type DynamicText = {
   text?: string;
   fontHeight: number;
   leading?: number;
+  lineHeight?: number;
+  staticLines?: Array<{
+    text: string;
+    x: number;
+    y: number;
+    width?: number;
+  }>;
   color?: string;
   align?: "left" | "center" | "right" | string;
   multiline?: boolean;

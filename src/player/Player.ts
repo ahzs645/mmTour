@@ -411,6 +411,8 @@ export class Player {
       case "_height":
       case "textHeight":
         return metrics.height;
+      case "textColor":
+        return Number.parseInt((text?.color ?? "#000000").replace(/^#/, ""), 16);
       default:
         return undefined;
     }
@@ -447,6 +449,17 @@ export class Player {
   }
 
   private setLeafDisplayProp(clip: ClipInstance, name: string, key: string, value: VarValue | undefined) {
+    if (key === "textColor") {
+      const id = this.findTextChildByName(clip, name);
+      if (id !== undefined) {
+        const override = this.textOverrideFor({ id, owner: clip, name });
+        const color = flashColor(value);
+        if (color) override.color = color;
+        else delete override.color;
+        clip.mutatedLeaves.add(name);
+      }
+      return;
+    }
     const props = this.leafDisplayProps(clip, name);
     if (value === undefined || value === null) delete props[key];
     else props[key] = value;
@@ -465,7 +478,15 @@ export class Player {
     const fallbackHeight = asset.text?.height ?? asset.origin.height ?? 0;
     if (!text) return { width: fallbackWidth, height: fallbackHeight };
     const fontHeight = Number(text.fontHeight);
-    const lineHeight = Math.max(1, Number.isFinite(fontHeight) && fontHeight > 0 ? fontHeight + Number(text.leading ?? 0) : fallbackHeight || 12);
+    const explicitLineHeight = Number(text.lineHeight);
+    const lineHeight = Math.max(
+      1,
+      Number.isFinite(explicitLineHeight) && explicitLineHeight > 0
+        ? explicitLineHeight
+        : Number.isFinite(fontHeight) && fontHeight > 0
+          ? fontHeight + Number(text.leading ?? 0)
+          : fallbackHeight || 12,
+    );
     const autoSize = props?.autoSize !== undefined ? avm1Boolean(props.autoSize) : false;
     const width = measuredTextWidth(text.text ?? "", text.fontHeight, fallbackWidth, autoSize);
     const charsPerLine = Math.max(1, Math.floor(Math.max(1, autoSize ? fallbackWidth || width : fallbackWidth || width) / Math.max(1, lineHeight * 0.62)));
@@ -2787,7 +2808,7 @@ export class Player {
       const text = asset.kind === "text" ? this.resolveTextField(asset.id, asset, clip, name) : undefined;
       const props = this.leafDisplayProps(clip, name);
       if (props._width === undefined) props._width = text ? measuredTextWidth(text.text ?? "", text.fontHeight, asset.text?.width ?? asset.origin.width ?? 0) : (asset.text?.width ?? asset.origin.width ?? 0);
-      if (props._height === undefined) props._height = text ? Math.max(text.height ?? 0, text.fontHeight + (text.leading ?? 0)) : (asset.text?.height ?? asset.origin.height ?? 0);
+      if (props._height === undefined) props._height = text ? Math.max(text.height ?? 0, text.lineHeight ?? text.fontHeight + (text.leading ?? 0)) : (asset.text?.height ?? asset.origin.height ?? 0);
       if (props._x === undefined) props._x = instance.matrix.tx;
       if (props._y === undefined) props._y = instance.matrix.ty;
       return props;
@@ -3195,8 +3216,15 @@ export class Player {
       // Inside an active mask → collect the instance as a masked item, not a normal node.
       const activeMask = maskStack[maskStack.length - 1];
       if (activeMask && instance.depth <= activeMask.clipDepth) {
-        const src = visualSrc(asset, child);
-        if (src) activeMask.group.items.push({ characterId: asset.id, src, origin: asset.origin, matrix, opacity, colorTransform, ...renderMetadataFromInstance(instance) });
+        const timelineSprite = asset.kind === "sprite" && asset.timeline?.length && child && child.characterId === asset.id;
+        if (timelineSprite) {
+          const temp: RenderNode[] = [];
+          this.flatten(child, matrix, opacity, colorTransform, key, order, temp);
+          activeMask.group.items.push(...this.maskVisualsFromNodes(temp));
+        } else {
+          const src = visualSrc(asset, child);
+          if (src) activeMask.group.items.push({ characterId: asset.id, src, origin: asset.origin, matrix, opacity, colorTransform, ...renderMetadataFromInstance(instance) });
+        }
         continue;
       }
 
@@ -3372,17 +3400,7 @@ export class Player {
     const maskMatrix = multiplyMatrix(parentWorld, applyClipMatrixOverrides(maskPlacement.matrix, maskClip));
     const temp: RenderNode[] = [];
     this.flatten(target, targetWorld, opacity, colorTransform, key, order, temp);
-    const items = temp
-      .filter((node) => Boolean(node.src) && node.kind !== "button" && !node.maskGroup)
-      .map((node) => ({
-        characterId: node.characterId,
-        src: node.src,
-        origin: node.origin,
-        matrix: node.matrix,
-        opacity: node.opacity,
-        colorTransform: node.colorTransform,
-        ...renderMetadataSubset(node),
-      }));
+    const items = this.maskVisualsFromNodes(temp);
     if (!items.length) return undefined;
     return {
       key: `${key}#runtime-mask`,
@@ -3406,6 +3424,27 @@ export class Player {
         items,
       },
     };
+  }
+
+  private maskVisualsFromNodes(nodes: RenderNode[]): NonNullable<RenderNode["maskGroup"]>["items"] {
+    return nodes
+      .filter((node) =>
+        node.kind !== "button"
+        && (Boolean(node.maskGroup) || Boolean(node.src) || (node.kind === "text" && Boolean(node.text)))
+      )
+      .map((node) => ({
+        key: node.key,
+        characterId: node.characterId,
+        kind: node.kind,
+        src: node.src,
+        origin: node.origin,
+        matrix: node.matrix,
+        opacity: node.opacity,
+        colorTransform: node.colorTransform,
+        text: node.text,
+        maskGroup: node.maskGroup,
+        ...renderMetadataSubset(node),
+      }));
   }
 
   private placementForChild(parent: ClipInstance, child: ClipInstance): TimelineFrame["instances"][number] | undefined {

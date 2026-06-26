@@ -48,12 +48,19 @@ export type RenderNode = {
 };
 
 export type MaskVisual = {
+  key?: string;
   characterId: number;
+  kind?: AssetKind;
   src: string;
   origin: { x: number; y: number; width: number; height: number };
   matrix: import("../data/timelineTypes").Matrix;
   opacity: number;
   colorTransform?: ColorTransform;
+  text?: DynamicText;
+  maskGroup?: {
+    mask: MaskVisual;
+    items: MaskVisual[];
+  };
 } & RenderPlacementMetadata;
 
 export function clamp(value: number, min: number, max: number): number {
