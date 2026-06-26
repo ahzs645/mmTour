@@ -74,6 +74,8 @@ ctx.soundLibrary = discoverSoundLibrary();
 ctx.rootSoundLibrary = discoverRootSoundLibrary();
 ctx.globalDefaults = discoverGlobalDefaults();
 
+applyFontOverrides();
+
 ctx.assets = discoverAssets(ctx.tags);
 ctx.frames = buildFrames(ctx.tags);
 attachSpriteTimelines(ctx.assets, ctx.tags);
@@ -180,6 +182,27 @@ console.log(`Wrote ${join(ctx.publicDir, "timeline.json")} and control-flow.json
  * of the rewritten SVGs. Lossless: only data URIs whose bytes are byte-identical to
  * an extracted image are dereferenced; anything unmatched is left embedded.
  */
+/**
+ * Copy committed font overrides (tools/font-overrides/<scene>/*.ttf) over the
+ * FFDec-extracted fonts BEFORE asset discovery. Some SWF fonts decompile to a TTF
+ * whose cmap is malformed (browser "Failed to decode" → Arial fallback, and the
+ * build flags fontLoadable:false) — e.g. bnl's font 35. The override is a repaired
+ * copy with a clean cmap; placing it in the extracted dir lets the same metrics
+ * drive both fontLoadable detection and the copied public output. The filename must
+ * match the FFDec export exactly. See tools/font-overrides/README.md.
+ */
+function applyFontOverrides() {
+  const overrideDir = join(ctx.root, "tools/font-overrides", ctx.scene);
+  if (!existsSync(overrideDir)) return;
+  const fontsDir = join(ctx.extractedDir, "fonts");
+  mkdirSync(fontsDir, { recursive: true });
+  for (const file of readdirSync(overrideDir)) {
+    if (!file.toLowerCase().endsWith(".ttf")) continue;
+    cpSync(join(overrideDir, file), join(fontsDir, file));
+    console.log(`Applied font override: ${ctx.scene}/fonts/${file}`);
+  }
+}
+
 function dereferenceBitmapFills(ctx) {
   const imagesDir = join(ctx.publicDir, "images");
   if (!existsSync(imagesDir)) return [];
