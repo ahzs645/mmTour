@@ -130,10 +130,46 @@ name** (`"topNavButton"`, `"subsectionClip"`, …). `Model.init()` then loads th
   headline + article bodies, the news-link list, robot names, and the contact privacy
   text — matching the Ruffle reference.
 
-  **Remaining (fidelity, not blocking):** layout/positioning of some runtime-attached rows
-  isn't pixel-matched to Ruffle yet (e.g. nav-bar placement, animation timing of the reveal
-  panel), and the left-nav/ticker loops attach fewer rows than Ruffle in some states. These
-  are rendering-fidelity refinements on top of a working render, not architectural gaps.
+## Stage 4 — rendering fidelity (DONE — the home view matches Ruffle)
+
+Four fidelity bugs that made the working render diverge from Ruffle, each fixed
+generically (no scene-specific code):
+
+- **Embedded fonts were all rejected → everything fell back to Arial.** SWF
+  `DefineFont3` uses a 20480-unit em square, but OpenType/OTS (Chrome's font
+  sanitizer) caps `unitsPerEm` at 16384, so every in-browser-built bnl face
+  ("TradeGothic Bold" for the nav/headlines, the Frutiger faces, …) failed to
+  decode and the browser silently used Arial — losing the bold weight and the
+  correct glyph metrics. `convert/fontBuilder.ts` now scales any oversized font
+  (outlines + advances + vertical metrics) down to a valid 2048-unit em. This was
+  the dominant visible defect; with it the text renders in the real faces.
+
+- **The top-nav overflowed ("Contact Us" fell off the bar).** The nav positions
+  each item by the previous item's `_width`/`textWidth` (autoSize), which the
+  player estimated as `0.62 × fontHeight × chars`. TradeGothic Bold is condensed,
+  so every label was over-measured and the drift accumulated. `Player` now measures
+  with the field's real embedded font via canvas (advance widths, like Flash's
+  `textWidth`), gated on the face having loaded.
+
+- **The privacy footer lost three of its four lines.** Flash's soft break
+  `<sbr />` is an unknown, non-void tag; the HTML parser nested every following
+  sibling inside it and the serializer dropped them. `render/DomRenderer.ts`
+  normalizes `<sbr>` to a real void `<br>` first.
+
+- **The robotics roster leaked onto the home view.** Section reveal panels are
+  placed on the timeline and bound to their AS2 component classes, but only
+  `attachMovie`'d clips ran their constructor — and the constructor is where a
+  Section hides itself until activated. `player/avm1App.ts` now runs the AS2
+  constructor once for any timeline-placed class-linked clip (matching Flash's
+  instantiation semantics), so the robotics section stays hidden until opened and
+  the top-right panel is empty, as in Ruffle.
+
+**Remaining (fidelity, not blocking):** animation timing/phase of the reveal panel
+and ticker is wall-clock rather than frame-locked, so a screenshot can catch a
+different phase than Ruffle; and repeating `setInterval` timers (e.g. the
+background feature rotation) are still disabled in `avm1App` pending Flash-style
+hit-testing. These are timing refinements on top of a render that now matches
+Ruffle on the static home view.
 
 ## Non-negotiable
 
