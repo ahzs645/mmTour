@@ -127,15 +127,29 @@ function checksum(b: Uint8Array): number {
 }
 
 /** Build a TrueType font from a parsed DefineFont. */
+// OpenType caps unitsPerEm at 16384 (OTS/Chrome reject anything larger), but
+// SWF DefineFont3 uses a 20480-unit em square. When the source em exceeds the
+// cap, scale the whole font (outlines + advances + vertical metrics) down to a
+// valid em so the generated face loads instead of silently falling back to a
+// system font. Scaling is uniform, so all metrics stay self-consistent.
+const MAX_UPM = 16384;
+const SCALED_UPM = 2048;
+
 export function buildTtf(font: FontTag): Uint8Array {
-  const upm = font.emSquareSize || 1024;
+  const srcUpm = font.emSquareSize || 1024;
+  const upm = srcUpm > MAX_UPM ? SCALED_UPM : srcUpm;
+  const scale = upm / srcUpm;
+  const sc = (v: number) => Math.round(v * scale);
   // gid 0 must be .notdef — renderers treat any char that maps to glyph 0 as
   // "missing" and fall back to a system font. So prepend an empty .notdef and
   // shift every SWF glyph to gid+1 (cmap below compensates).
-  const swfContours = font.glyphs.map((g) => glyphContours(g.records));
+  const swfContours = font.glyphs.map((g) => {
+    const contours = glyphContours(g.records);
+    return scale === 1 ? contours : contours.map((c) => c.map((p) => ({ x: sc(p.x), y: sc(p.y), on: p.on })));
+  });
   const glyphs: Pt[][][] = [[], ...swfContours];
   const numGlyphs = glyphs.length;
-  const swfAdvances: number[] = font.layout?.advances ?? new Array(swfContours.length).fill(upm);
+  const swfAdvances: number[] = (font.layout?.advances ?? new Array(swfContours.length).fill(srcUpm)).map(sc);
   const advances: number[] = [Math.round(upm * 0.5), ...swfAdvances];
 
   // --- glyf + loca ---
@@ -196,9 +210,9 @@ export function buildTtf(font: FontTag): Uint8Array {
   for (let i = 0; i < numGlyphs; i++) hmtx.u16(Math.max(0, Math.round(advances[i] ?? upm))).i16(glyphXMin[i] ?? 0);
   const hmtxTable = hmtx.build();
 
-  const ascent = Math.round(font.layout?.ascent ?? fyMax);
-  const descent = Math.round(font.layout?.descent ?? -fyMin);
-  const lineGap = Math.round(font.layout?.leading ?? 0);
+  const ascent = Math.round(font.layout?.ascent != null ? font.layout.ascent * scale : fyMax);
+  const descent = Math.round(font.layout?.descent != null ? font.layout.descent * scale : -fyMin);
+  const lineGap = Math.round((font.layout?.leading ?? 0) * scale);
   const advanceMax = advances.reduce((m, a) => Math.max(m, Math.round(a)), 0);
 
   const hhea = new Writer();
