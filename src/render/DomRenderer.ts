@@ -472,7 +472,11 @@ export class DomRenderer {
 
 function flashHtmlTextToBrowserHtml(value: string): string {
   const template = document.createElement("template");
-  template.innerHTML = value;
+  // Flash's soft break is `<sbr />`, which the HTML parser treats as an unknown,
+  // non-void element: it nests every following sibling *inside* the <sbr>, and the
+  // serializer below then drops them. Normalize it to a real void <br> first so
+  // multi-line html fields (e.g. the BnL privacy footer) keep all their lines.
+  template.innerHTML = value.replace(/<sbr\b[^>]*\/?>/gi, "<br>");
   const serializeNode = (node: Node): string => {
     if (node.nodeType === Node.TEXT_NODE) return escapeHtml(node.textContent ?? "");
     if (!(node instanceof Element)) return "";

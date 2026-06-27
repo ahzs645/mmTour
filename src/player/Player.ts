@@ -100,6 +100,9 @@ export type PlayerOptions = {
   /** Frame to start at. Overrides `timeline.entryFrame` — a movie LOADED via loadMovieNum
    *  must start at 0 to run its gating logic; entryFrame is only the standalone preview frame. */
   startFrame?: number;
+  /** Resolve a text field's fontId to its CSS font-family stack (shared with the renderer),
+   *  so the player can measure `textWidth`/autoSize `_width` with the real embedded metrics. */
+  resolveFontFamily?: (fontId?: number) => string | undefined;
 };
 
 const ROOT_ID = -1;
@@ -493,13 +496,49 @@ export class Player {
           : fallbackHeight || 12,
     );
     const autoSize = props?.autoSize !== undefined ? avm1Boolean(props.autoSize) : false;
-    const width = measuredTextWidth(text.text ?? "", text.fontHeight, fallbackWidth, autoSize);
+    const realWidth = this.measureTextWidthPx(text.text ?? "", Number(text.fontHeight), text.fontId ?? asset.text?.fontId);
+    const width = realWidth != null
+      // Flash autoSize fields are textWidth + a 2px gutter on each side; non-autoSize
+      // fields keep their authored bounds unless the text is wider (then it reports the
+      // text width, matching the heuristic path the app already relied on).
+      ? (autoSize ? realWidth + 4 : Math.max(fallbackWidth, realWidth))
+      : measuredTextWidth(text.text ?? "", text.fontHeight, fallbackWidth, autoSize);
     const charsPerLine = Math.max(1, Math.floor(Math.max(1, autoSize ? fallbackWidth || width : fallbackWidth || width) / Math.max(1, lineHeight * 0.62)));
     const plain = (text.text ?? "").replace(/<[^>]+>/g, "").trim();
     const explicitLines = plain ? plain.split(/\r?\n/).length : 1;
     const wrappedLines = plain ? Math.ceil(plain.length / charsPerLine) : 1;
     const contentHeight = Math.max(lineHeight, Math.max(explicitLines, wrappedLines) * lineHeight);
     return { width, height: autoSize ? contentHeight : Math.max(fallbackHeight, contentHeight) };
+  }
+
+  private measureCtx?: CanvasRenderingContext2D | null;
+  /** Measure a line's pixel width with the field's real embedded font (its advance
+   *  widths, like Flash's `textWidth`) so autoSize/`_width`-driven layouts — e.g. the
+   *  bnl top-nav, which positions each item by the previous one's measured width —
+   *  match Ruffle instead of a fixed char-count estimate. Returns undefined when no
+   *  DOM/canvas is available or the embedded face has not loaded yet (the caller then
+   *  falls back to the estimate), and the widest line's width for multi-line text. */
+  private measureTextWidthPx(text: string, fontHeightPx: number, fontId?: number): number | undefined {
+    if (typeof document === "undefined" || typeof document.createElement !== "function") return undefined;
+    if (!Number.isFinite(fontHeightPx) || fontHeightPx <= 0) return undefined;
+    const family = this.options.resolveFontFamily?.(fontId);
+    if (!family) return undefined;
+    const stripped = text.replace(/<[^>]+>/g, "");
+    if (!stripped.trim()) return 0;
+    // Only trust real metrics once the embedded face has loaded; otherwise canvas would
+    // measure a fallback system font and report the wrong width.
+    const primary = family.split(",")[0].trim().replace(/^["']|["']$/g, "");
+    try { if (document.fonts && !document.fonts.check(`${fontHeightPx}px "${primary}"`)) return undefined; } catch { return undefined; }
+    if (this.measureCtx === undefined) this.measureCtx = document.createElement("canvas").getContext("2d");
+    const ctx = this.measureCtx;
+    if (!ctx) return undefined;
+    ctx.font = `${fontHeightPx}px ${family}`;
+    let max = 0;
+    for (const line of stripped.split(/\r?\n/)) {
+      const w = ctx.measureText(line.replace(/\s+$/, "")).width;
+      if (w > max) max = w;
+    }
+    return max;
   }
 
   get frameCount(): number {
