@@ -103,6 +103,9 @@ export type PlayerOptions = {
   /** Resolve a text field's fontId to its CSS font-family stack (shared with the renderer),
    *  so the player can measure `textWidth`/autoSize `_width` with the real embedded metrics. */
   resolveFontFamily?: (fontId?: number) => string | undefined;
+  /** Resolves once the scene's embedded fonts have loaded. A data-driven app's bootstrap
+   *  waits on this so its one-shot, `textWidth`-driven layout measures the real faces. */
+  awaitFonts?: () => Promise<void>;
 };
 
 const ROOT_ID = -1;
@@ -126,6 +129,7 @@ export class Player {
   private readonly renderer: DomRenderer;
   private readonly options: PlayerOptions;
   private readonly ticker: Ticker;
+  private destroyed = false;
 
   private readonly assets: Record<string, TimelineAsset>;
   private readonly linkageAssetIds = new Map<string, number>();
@@ -241,9 +245,24 @@ export class Player {
   private tryRunDataDrivenApp() {
     const control = this.timeline.control as { initActions?: unknown[]; frameBytecode?: { frame: number }[] } | undefined;
     if (!control?.initActions?.length || !control?.frameBytecode?.length) return;
+    // The app lays itself out from `textWidth` (e.g. the top-nav positions each item
+    // by the previous label's measured width). Those measurements are only correct
+    // once the embedded fonts have loaded, and the layout runs once — so wait for the
+    // fonts first. Without this the layout can measure the fallback face and the bar
+    // drifts permanently. Falls through synchronously when no awaitFonts is provided.
+    const fontsReady = this.options.awaitFonts?.();
+    if (fontsReady) {
+      fontsReady.then(() => this.runDataDrivenAppNow(control)).catch(() => this.runDataDrivenAppNow(control));
+      return;
+    }
+    this.runDataDrivenAppNow(control);
+  }
+
+  private runDataDrivenAppNow(control: { initActions?: unknown[]; frameBytecode?: { frame: number }[] }) {
+    if (this.destroyed) return; // torn down during the async font wait
     // The app's entry script (e.g. App.main) lives on a later root frame that also
     // places the View container instances. Advance the root there so they exist.
-    const bootFrame = Math.max(0, ...control.frameBytecode.map((f) => Number(f.frame) || 0));
+    const bootFrame = Math.max(0, ...control.frameBytecode!.map((f) => Number(f.frame) || 0));
     if (this.root.currentFrame !== bootFrame) this.root = this.buildRoot(bootFrame);
     const idToLinkage = new Map<number, string>();
     for (const [name, id] of Object.entries((this.timeline as { linkage?: Record<string, number> }).linkage ?? {})) {
@@ -598,6 +617,7 @@ export class Player {
   }
 
   destroy() {
+    this.destroyed = true;
     this.ticker.destroy();
     this.clearRuntimeTimers();
     this.buttonVisualStates.clear();

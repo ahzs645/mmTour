@@ -249,6 +249,7 @@ export class PlayerController {
       // e.g. segment4's `if(doAttractLoop) stay blank`); entryFrame is only the standalone preview.
       startFrame: level > 0 ? 0 : undefined,
       resolveFontFamily: (fontId) => this.fonts.resolveFamily(fontId),
+      awaitFonts: () => this.fonts.ready(),
     });
     this.levels.set(level, { player, layer, swf });
     // Levels loaded after playback has started must catch up (e.g. the shell's
