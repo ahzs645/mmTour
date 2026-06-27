@@ -24,7 +24,7 @@ import {
   type ButtonVisualState,
 } from "./renderNodes";
 import { ClipInstance } from "./ClipInstance";
-import { runDataDrivenApp, type AppClip, type AppText, type PlayerBridge } from "./avm1App";
+import { runDataDrivenApp, type AppClip, type AppText, type DataDrivenApp, type PlayerBridge } from "./avm1App";
 import { evalCondition } from "./conditions";
 import { IDENTITY, multiplyMatrix } from "./matrix";
 import { Ticker } from "./Ticker";
@@ -130,6 +130,8 @@ export class Player {
   private readonly options: PlayerOptions;
   private readonly ticker: Ticker;
   private destroyed = false;
+  /** Frame driver for a running data-driven app (bnl), advanced on each tick. */
+  private dataApp: DataDrivenApp | null = null;
 
   private readonly assets: Record<string, TimelineAsset>;
   private readonly linkageAssetIds = new Map<string, number>();
@@ -274,7 +276,7 @@ export class Player {
       idToLinkage.set(asset.id, names[0]);
     }
     try {
-      runDataDrivenApp(control as never, this.makeAppBridge(idToLinkage));
+      this.dataApp = runDataDrivenApp(control as never, this.makeAppBridge(idToLinkage));
     } catch (error) {
       console.warn("[avm1App] data-driven app bootstrap failed", error);
     }
@@ -618,6 +620,7 @@ export class Player {
 
   destroy() {
     this.destroyed = true;
+    this.dataApp = null;
     this.ticker.destroy();
     this.clearRuntimeTimers();
     this.buttonVisualStates.clear();
@@ -2129,6 +2132,9 @@ export class Player {
 
   private onTick() {
     this.tickClip(this.root);
+    // Drive a data-driven app's timers/tweens/onEnterFrame on the frame clock so
+    // its animations stay in lockstep with the SWF frame rate (and Ruffle).
+    this.dataApp?.enterFrame(1000 / this.ticker.fps);
     this.render();
     this.options.onFrame?.(this.root.currentFrame, this.ticker.isPlaying);
   }
