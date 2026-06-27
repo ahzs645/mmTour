@@ -164,12 +164,37 @@ generically (no scene-specific code):
   instantiation semantics), so the robotics section stays hidden until opened and
   the top-right panel is empty, as in Ruffle.
 
-**Remaining (fidelity, not blocking):** animation timing/phase of the reveal panel
-and ticker is wall-clock rather than frame-locked, so a screenshot can catch a
-different phase than Ruffle; and repeating `setInterval` timers (e.g. the
-background feature rotation) are still disabled in `avm1App` pending Flash-style
-hit-testing. These are timing refinements on top of a render that now matches
-Ruffle on the static home view.
+## Stage 5 — frame-locked animation + interactive navigation (DONE)
+
+- **Animations ran on wall-clock, not the frame clock.** The app drove its timers,
+  tweens and `onEnterFrame` from `setTimeout`/`setInterval`/`Date.now`, decoupled
+  from the SWF frame rate, so its phase drifted from Ruffle; repeating timers were
+  disabled outright; and frame-based tweens snapped to their end instead of
+  animating. `runDataDrivenApp` now returns an `enterFrame(dtMs)` hook the Player
+  calls from `onTick`, and a frame-locked scheduler advances everything in lockstep
+  with the frame rate: timeouts/intervals fire off an accumulated frame clock
+  (`getTimer` returns it), `mx.transitions.Tween` animates over its real duration
+  with its easing applied, clip `onEnterFrame` handlers run each frame, and per-tick
+  mutations coalesce into the Player's single post-tick render. Repeating intervals
+  are re-enabled, so the background feature rotation runs as in Flash.
+
+- **The top-nav layout could drift on a font-load race.** The nav lays out once
+  from `textWidth`; if the embedded face hadn't loaded yet, the measurement fell
+  back to the char-count estimate and the bar stayed mis-spaced. `FontRegistry`
+  now exposes `ready()` and the data-driven bootstrap waits on it, so the layout
+  always measures the real face — matching Ruffle's bullets to within a pixel.
+
+With these, **section navigation works and animates**: clicking a top-nav item
+transitions to that section with its left subnav, header and themed background, as
+in Ruffle (verified against Ruffle for the Robotics section).
+
+**Remaining (section content, not blocking):** inside an opened section the reveal
+panel's subsection body text isn't routed to the visible content area yet (the data
+is present in the tree but several sections' subsection clips overlap at the same
+position and the active one isn't surfaced), and a section's robot/preview bitmap
+renders with an opaque matte instead of its alpha. These are section-content
+routing/image-alpha refinements on top of a home view and navigation that now match
+Ruffle.
 
 ## Non-negotiable
 
