@@ -110,6 +110,7 @@ export function runDataDrivenApp(
   const registry: Record<string, any> = Object.create(null); // linkage → class fn
   const clipClass = new WeakMap<object, any>();              // clip → bound AS2 class fn
   const clipMethodDispatchers = new WeakSet<object>();
+  const constructed = new WeakSet<object>();                 // clips whose AS2 constructor has run
   const listeners = new WeakMap<object, Record<string, any[]>>();
   const root = bridge.root();
   const timers = new Map<number, ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>>();
@@ -149,6 +150,16 @@ export function runDataDrivenApp(
         if (!clipMethodDispatchers.has(clip)) {
           clipMethodDispatchers.add(clip);
           bridge.setClipMethodDispatcher?.(clip, (method, args) => callObjectMethod(clip, method, args));
+        }
+        // A class-linked clip placed on the timeline (a section reveal panel, a
+        // robot subnav, …) gets its AS2 constructor exactly once, like an
+        // attachMovie'd one — Flash runs it on instantiation, and it is where a
+        // component sets its initial state (e.g. a Section hides itself until shown).
+        // Isolated: a single component's constructor failing must not break method
+        // dispatch on this clip or the rest of the bootstrap.
+        if (!constructed.has(clip)) {
+          constructed.add(clip);
+          try { invoke(c, [], clip); } catch (error) { console.warn("[avm1App] placed-clip constructor failed", error); }
         }
       }
     }
@@ -489,7 +500,7 @@ export function runDataDrivenApp(
       // clip natives
       if (isClip(obj)) {
         switch (key) {
-          case "attachMovie": { const c = bridge.attachMovie(obj, String(args[0]), String(args[1]), Number(args[2] ?? bridge.nextDepth(obj))); if (c) { const cls = classFor(c); if (cls) invoke(cls, [], c); } return c ?? Object.create(null); }
+          case "attachMovie": { const c = bridge.attachMovie(obj, String(args[0]), String(args[1]), Number(args[2] ?? bridge.nextDepth(obj))); if (c) classFor(c); return c ?? Object.create(null); }
           case "createEmptyMovieClip": return bridge.createEmptyMovieClip(obj, String(args[0]), Number(args[1] ?? bridge.nextDepth(obj)));
           case "createTextField": return bridge.createEmptyMovieClip(obj, String(args[0]), Number(args[2] ?? bridge.nextDepth(obj)));
           case "getNextHighestDepth": return bridge.nextDepth(obj);
