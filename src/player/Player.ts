@@ -545,7 +545,11 @@ export class Player {
       ? (realWidth != null && realWidth > 0 ? Math.max(1, Math.ceil(realWidth / wrapWidth)) : Math.ceil(plain.length / charsPerLine))
       : 1;
     const contentHeight = Math.max(lineHeight, Math.max(explicitLines, wrappedLines) * lineHeight);
-    return { width, height: autoSize ? contentHeight : Math.max(fallbackHeight, contentHeight) };
+    // A Flash TextField's _height is its text height plus a 2px gutter top and bottom; the
+    // LeftNav stacks subnav buttons by that reported height, so omitting the gutter packed
+    // the items ~4px too tightly vs Ruffle. Include it for autoSize fields (which report
+    // their fitted height); fixed-height fields keep their authored bounds.
+    return { width, height: autoSize ? contentHeight + 4 : Math.max(fallbackHeight, contentHeight) };
   }
 
   private measureCtx?: CanvasRenderingContext2D | null;
