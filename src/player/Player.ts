@@ -319,6 +319,13 @@ export class Player {
         const owner = toClip(t.clip);
         this.setLeafDisplayProp(owner, t.field, normalizeAvm1PropertyName(key) ?? key, value as VarValue);
       },
+      setTextFormat: (t, format) => {
+        const owner = toClip(t.clip);
+        const id = this.findTextChildByName(owner, t.field);
+        if (id === undefined) return;
+        Object.assign(this.textOverrideFor({ id, owner, name: t.field }), dynamicTextFromTextFormat(format as Record<string, VarValue | undefined>));
+        owner.mutatedLeaves.add(t.field);
+      },
       getClipProp: (clip, key) => this.getAppClipProp(toClip(clip), normalizeAvm1PropertyName(key) ?? key),
       setClipProp: (clip, key, value) => { setClipProperty(toClip(clip), normalizeAvm1PropertyName(key) ?? key, value as VarValue); },
       clipField: (clip, key) => toClip(clip).props[key],

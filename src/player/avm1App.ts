@@ -31,6 +31,8 @@ export interface PlayerBridge {
   /** Read/write AS2 display fields on a text leaf (`_height`, `_width`, `autoSize`, ...). */
   getTextProp?(t: AppText, key: string): Avm1Value;
   setTextProp?(t: AppText, key: string, value: Avm1Value): void;
+  /** Apply a TextFormat ({color,size,align,leading,…}) to a text leaf. */
+  setTextFormat?(t: AppText, format: Record<string, Avm1Value>): void;
   /** Read/write a clip display property (_x,_y,_alpha,_width,…). */
   getClipProp(clip: AppClip, key: string): Avm1Value;
   setClipProp(clip: AppClip, key: string, value: Avm1Value): void;
@@ -509,6 +511,17 @@ export function runDataDrivenApp(
       if (isXmlNode(obj)) {
         if (key === "selectNodes") return xmlSelect(obj, String(args[0]));
         if (key === "selectSingleNode") return xmlSelect(obj, String(args[0]))[0];
+      }
+      // A text field's setTextFormat({color,size,align,…}) — AS2 components use it to
+      // restyle a field at runtime (e.g. the top-nav turns the selected item's label
+      // white). The format's properties live on the VM object directly and/or in its
+      // props bag, so merge both before handing it to the player's text override.
+      if (isText(obj) && key === "setTextFormat") {
+        const f = args[0];
+        const fmt = f && typeof f === "object" ? { ...f, ...(f.props ?? {}) } : {};
+        bridge.setTextFormat?.(obj, fmt as Record<string, Avm1Value>);
+        render();
+        return undefined;
       }
       if (typeof obj === "string" || obj instanceof String) {
         const s = avmCoerce(obj);
