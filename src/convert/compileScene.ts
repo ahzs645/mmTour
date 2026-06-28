@@ -12,7 +12,7 @@ import { ffdecModelFromMovie } from "../../scripts/lib/swfParserAdapter.mjs";
 import { buildFrames, attachSpriteTimelines, discoverEntryFrame } from "../../scripts/lib/frames.mjs";
 import {
   defineShapeToSvg,
-  collectBitmaps, isJpegBitmap, mergeJpeg, decodeLossless,
+  collectBitmaps, isJpegBitmap, isAlphaJpegBitmap, mergeJpeg, decodeJpegAlpha, decodeLossless, type RawImage,
   collectFonts, buildTtf,
   collectSounds, extractSound,
   collectButtons, composeButton,
@@ -460,10 +460,21 @@ function svgOrigin(svg: string) {
 
 async function bitmapBytes(tag: any, jpegTables?: Uint8Array): Promise<{ ext: string; mime: string; bytes: Uint8Array }> {
   if (isJpegBitmap(tag)) {
+    // DefineBitsJPEG3/4 carry a separate zlib alpha channel after the JPEG. mergeJpeg
+    // only keeps the (opaque) JPEG, so a cutout image — e.g. the Robotics robot arm —
+    // would show its black matte. Decode the alpha and emit RGBA→PNG, like the lossless
+    // path; plain JPEGs (no alpha) stay as JPEG.
+    if (isAlphaJpegBitmap(tag)) {
+      const img = await decodeJpegAlpha(tag, jpegTables);
+      if (img) return rgbaToPngBytes(img);
+    }
     const bytes = mergeJpeg(tag.data, tag.mediaType === "image/x-swf-partial-jpeg" ? jpegTables : undefined);
     return { ext: "jpg", mime: "image/jpeg", bytes };
   }
-  const img = await decodeLossless(tag);
+  return rgbaToPngBytes(await decodeLossless(tag));
+}
+
+async function rgbaToPngBytes(img: RawImage): Promise<{ ext: string; mime: string; bytes: Uint8Array }> {
   const canvas = new OffscreenCanvas(img.width, img.height);
   const ctx = canvas.getContext("2d")!;
   ctx.putImageData(new ImageData(new Uint8ClampedArray(img.rgba), img.width, img.height), 0, 0);

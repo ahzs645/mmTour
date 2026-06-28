@@ -209,17 +209,28 @@ in Ruffle (verified against Ruffle for the Robotics section).
   `setTextFormat` bridge path now applies the format (color/size/align/leading)
   through the existing text override, so the selected item turns white like Ruffle.
 
-**Remaining (cosmetic, not blocking):** a section's decorative robot/preview bitmap
-(an opaque partial-JPEG, char 234) is clipped in Flash by char 232 — a silhouette
-shape placed with `clipDepth=3` — so only the robot shape shows and its black JPEG
-background is masked away. The mask *is* captured (the flatten builds the mask
-group and the clip SVG), but the clip's baked coordinate transform misaligns for
-in-browser-compiled shape SVGs (`svgEmit`'s `<g transform>` origin-shift vs the
-FFDec convention `loadMaskShape`/`maskGroupSvg` were written against), so the clip
-doesn't restrict the robot and its black rectangle shows. The fix is in the shared
-mask transform and must be validated against the tour's FFDec masks (which need the
-generated pipeline), so it's deferred. The section's actual content — titles, body
-text, subnav, themed background, leaves image — renders correctly.
+## Stage 7 — robot image matte (DONE)
+
+- **A section's decorative robot bitmap showed a black box instead of a cutout.**
+  The Robotics robot arm is char **236**, a `DefineBitsJPEG3` — a JPEG plus a
+  *separate* zlib-compressed alpha channel that cuts the arm out of its background.
+  (An earlier diagnosis blamed a `clipDepth` mask on char 234/232; that was wrong —
+  the image carries its own alpha and needs no mask.) The in-browser compiler's
+  `bitmapBytes` (`src/convert/compileScene.ts`) routed *every* JPEG variant through
+  `mergeJpeg`, which keeps only the opaque JPEG and discards the JPEG3/4 alpha. So
+  the arm rendered as an opaque rectangle — the black JPEG matte — over the leaves.
+  `bitmapBytes` now detects alpha JPEGs (`isAlphaJpegBitmap`), decodes them via the
+  existing `decodeJpegAlpha` (JPEG → RGBA, then zlib-inflated alpha applied per
+  pixel) and emits an RGBA **PNG**, exactly like the lossless path; plain JPEGs with
+  no alpha stay JPEG. Verified end-to-end: char 236 now emits `images/236.png`
+  (456×309) whose alpha channel is ~62% fully transparent with soft (partial) edges
+  and an opaque arm — so the robot shows cut out over the leaf background, matching
+  Ruffle. This mirrors `bitmapToDataUrl`, which already handled alpha JPEGs; only the
+  compile-to-file path had the gap.
+
+All known bnl rendering issues are resolved. The section's content — titles, body
+text, subnav, themed background, leaves image, and the alpha-cutout robot — renders
+as in Ruffle.
 
 ## Non-negotiable
 
