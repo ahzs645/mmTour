@@ -24,6 +24,8 @@ export interface PlayerBridge {
   attachMovie(parent: AppClip, linkage: string, name: string, depth: number): AppClip | undefined;
   /** createEmptyMovieClip(name,depth) → the new (empty) clip. */
   createEmptyMovieClip(parent: AppClip, name: string, depth: number): AppClip;
+  /** removeMovieClip() — detach a runtime-attached clip from its parent's display list. */
+  removeClip?(clip: AppClip): void;
   /** Set a text leaf's text (string or html). */
   setText(t: AppText, value: string, html: boolean): void;
   /** Read a text leaf's current text. */
@@ -544,6 +546,7 @@ export function runDataDrivenApp(
         switch (key) {
           case "attachMovie": { const c = bridge.attachMovie(obj, String(args[0]), String(args[1]), Number(args[2] ?? bridge.nextDepth(obj))); if (c) classFor(c); return c ?? Object.create(null); }
           case "createEmptyMovieClip": return bridge.createEmptyMovieClip(obj, String(args[0]), Number(args[1] ?? bridge.nextDepth(obj)));
+          case "removeMovieClip": case "unloadMovie": bridge.removeClip?.(obj); return undefined;
           case "createTextField": return bridge.createEmptyMovieClip(obj, String(args[0]), Number(args[2] ?? bridge.nextDepth(obj)));
           case "getNextHighestDepth": return bridge.nextDepth(obj);
           case "getBytesLoaded": case "getBytesTotal": return 100;

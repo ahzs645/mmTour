@@ -300,6 +300,7 @@ export class Player {
         return child ? asClip(child) : undefined;
       },
       createEmptyMovieClip: (parent, name, depth) => asClip(this.createEmptyClip(toClip(parent), name, depth)),
+      removeClip: (clip) => this.removeMovieClip(toClip(clip)),
       setText: (t, value, html) => {
         const owner = toClip(t.clip);
         const id = this.findTextChildByName(owner, t.field);
