@@ -274,6 +274,25 @@ The Robotics section now matches Ruffle: alpha-cutout robot, full-size title, ti
 wordmark, the "New Robots!" badge in its embedded face, body text, subnav, themed
 background, and the hover-only nav pill.
 
+## Stage 9 — left-subnav vertical spacing (DONE)
+
+The left-column subnav (e.g. Business Divisions → SYNOPSIS / BUSINESS COMMUNITIES /
+BUSINESS ETHICS) stacked ~3px too tight per item, so the labels crept upward relative
+to their separator lines and drifted further with each row. `LeftNav.populate` stacks
+the attached `left nav button` clips by each one's `_height` (`_loc6_ += _loc2_._height`),
+and `LeftNavButton.set title` first sets `title_txt._y = 8`, then
+`bottomBar._y = title_txt._height + 15` — so a button's height is defined by its
+runtime-moved `bottomBar`. Our `liveClipBounds` (which backs the `_height` the component
+reads) measured each child from its **static** `instance.matrix`, ignoring the runtime
+`bottomBar._y` override, so every button reported ~30px instead of ~33px. Fix:
+`liveClipBounds` now applies `applyClipMatrixOverrides(instance.matrix, child)` — the same
+runtime child transform the `flatten()` render path already uses — so the reported height
+reflects the moved `bottomBar`. The separator lines now land exactly on Ruffle's and the
+per-row drift is gone. (The `title_txt._y = 8` itself was already honored; a residual
+~3px uniform text-baseline gutter offset remains and is left alone to avoid perturbing
+every other text field.) This is a general bounds-vs-render consistency fix, not a
+bnl-specific tweak.
+
 ## Non-negotiable
 
 Per `AGENTS.md`: nothing scene-specific is hardcoded. The VM interprets each SWF's own

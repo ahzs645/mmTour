@@ -471,7 +471,12 @@ export class Player {
         origin = applyLeafOriginOverrides(asset, props);
       }
       if (!origin.width && !origin.height) continue;
-      boxes.push(transformedBounds(origin, instance.matrix));
+      // Honor runtime child-clip transforms (attachMovie'd buttons set e.g.
+      // bottomBar._y at runtime); the static instance.matrix alone misses them, so a
+      // component that stacks children by their reported _height (bnl's LeftNav) would
+      // pack them too tightly. Mirrors the flatten() render path.
+      const child = clip.childClips.get(instance.depth);
+      boxes.push(transformedBounds(origin, applyClipMatrixOverrides(instance.matrix, child)));
     }
     if (!boxes.length) return undefined;
     const minX = Math.min(...boxes.map((box) => box.x));
