@@ -3212,6 +3212,18 @@ export class Player {
     return false;
   }
 
+  /** Alpha contribution of a placed instance. A clip's design alpha (the placement's
+   *  color-transform alpha) and a runtime `_alpha` are the SAME Flash property, so a
+   *  runtime `_alpha` REPLACES the design alpha rather than multiplying with it. The
+   *  legacy multiply is kept for the tour (where nothing sets `_alpha` over a faded
+   *  placement); the override is applied in data-driven app mode, where a section's
+   *  content panel is authored hidden (cxform alpha 0) and revealed at runtime — the
+   *  multiply would otherwise keep it at 0 even after the app sets `_alpha = 100`. */
+  private placedAlpha(instanceOpacity: number, child: ClipInstance | undefined): number {
+    if (this.dataApp && child?.alpha !== undefined) return clipAlpha(child);
+    return instanceOpacity * clipAlpha(child);
+  }
+
   private flatten(
     clip: ClipInstance,
     world: RenderNode["matrix"],
@@ -3293,7 +3305,7 @@ export class Player {
       if (child && runtimeMaskClips.has(child)) continue;
       if (child?.visible === false) continue;
       const matrix = multiplyMatrix(world, applyClipMatrixOverrides(instance.matrix, child));
-      const opacity = worldOpacity * instance.opacity * clipAlpha(child);
+      const opacity = worldOpacity * this.placedAlpha(instance.opacity, child);
       const colorTransform = composeRenderColorTransform(worldColorTransform, instance.colorTransform);
       const key = `${path}/${instance.depth}`;
       if (!asset) {
@@ -3414,7 +3426,7 @@ export class Player {
       const child = clip.childClips.get(instance.depth);
       if (child?.visible === false) continue;
       const matrix = multiplyMatrix(world, applyClipMatrixOverrides(instance.matrix, child));
-      const instanceOpacity = opacity * instance.opacity * clipAlpha(child);
+      const instanceOpacity = opacity * this.placedAlpha(instance.opacity, child);
       const colorTransform = composeRenderColorTransform(worldColorTransform, instance.colorTransform);
       const key = `${path}/${instance.depth}`;
       if (asset.kind === "button") {
