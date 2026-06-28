@@ -98,8 +98,11 @@ function svgText(v: MaskVisual, extra = "", resolveFontFamily?: (fontId?: number
     `white-space:${whiteSpace}`,
     // Composed (masked/clipped) text fields must use their embedded face like the
     // plain path does — otherwise e.g. the Robotics "New Robots!" badge falls back to
-    // a wider system sans, overruns its field, and spills off the badge.
-    `font-family:${resolveFontFamily?.(text.fontId) ?? "sans-serif"}`,
+    // a wider system sans, overruns its field, and spills off the badge. The family
+    // stack is interpolated into a double-quoted style="" attribute, so swap the font
+    // names' double quotes for single quotes — otherwise the first `"` closes the
+    // attribute and the whole font-family (and everything after) is dropped.
+    `font-family:${(resolveFontFamily?.(text.fontId) ?? "sans-serif").replace(/"/g, "'")}`,
   ].join(";");
   return (
     // A Flash text field draws past its own bounds (no clip), but an SVG <foreignObject>
