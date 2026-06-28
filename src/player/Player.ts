@@ -532,10 +532,18 @@ export class Player {
       // text width, matching the heuristic path the app already relied on).
       ? (autoSize ? realWidth + 4 : Math.max(fallbackWidth, realWidth))
       : measuredTextWidth(text.text ?? "", text.fontHeight, fallbackWidth, autoSize);
-    const charsPerLine = Math.max(1, Math.floor(Math.max(1, autoSize ? fallbackWidth || width : fallbackWidth || width) / Math.max(1, lineHeight * 0.62)));
+    const wrapWidth = Math.max(1, fallbackWidth || width);
+    const charsPerLine = Math.max(1, Math.floor(wrapWidth / Math.max(1, lineHeight * 0.62)));
     const plain = (text.text ?? "").replace(/<[^>]+>/g, "").trim();
     const explicitLines = plain ? plain.split(/\r?\n/).length : 1;
-    const wrappedLines = plain ? Math.ceil(plain.length / charsPerLine) : 1;
+    // Only a word-wrapping field breaks onto extra lines; a single-line field stays one line.
+    // For wrappers, estimate the line count from the real measured text width vs the wrap
+    // width — the old char-count heuristic over-counted labels that comfortably fit one line
+    // (e.g. "BUSINESS COMMUNITIES"), so the LeftNav, which stacks subnav buttons by their
+    // reported height, dropped the next item an extra row.
+    const wrappedLines = text.wordWrap && plain
+      ? (realWidth != null && realWidth > 0 ? Math.max(1, Math.ceil(realWidth / wrapWidth)) : Math.ceil(plain.length / charsPerLine))
+      : 1;
     const contentHeight = Math.max(lineHeight, Math.max(explicitLines, wrappedLines) * lineHeight);
     return { width, height: autoSize ? contentHeight : Math.max(fallbackHeight, contentHeight) };
   }
