@@ -3704,15 +3704,26 @@ export class Player {
    *  e.g. bnl's section-title tab authors the field ~10px wide and lets "Robotics" expand
    *  it. We render a fixed box and would otherwise squeeze the text to a sliver, so for a
    *  single-line autoSize field measure the real text and widen the box, shifting x by the
-   *  field's alignment anchor (center/right) so it grows the way Flash does. Returns
-   *  undefined when it shouldn't apply (multiline, empty, or the font hasn't loaded yet). */
+   *  autoSize *direction* (left/center/right — a separate property from text alignment; the
+   *  default `true` is left-anchored) so it grows the way Flash does. Returns undefined when
+   *  it shouldn't apply (multiline, empty, already-fitting, or the font hasn't loaded yet). */
   private autoSizeTextLayout(
     asset: TimelineAsset,
     text: NonNullable<ReturnType<Player["resolveTextField"]>>,
     leafProps?: Record<string, VarValue | undefined>,
   ): { text: NonNullable<ReturnType<Player["resolveTextField"]>>; x: number; width: number } | undefined {
-    const autoSize = leafProps?.autoSize !== undefined ? avm1Boolean(leafProps.autoSize) : Boolean(text.autoSize);
-    if (!autoSize || text.wordWrap || text.multiline || text.staticLines?.length) return undefined;
+    // Flash's TextField.autoSize is a *direction* ("left"/"center"/"right"), independent
+    // of text alignment, and `true` means "left". The field grows from that anchor:
+    // "left" keeps the left edge fixed (grows right), "center" grows both ways, "right"
+    // keeps the right edge. Using the anchor (not text.align) matters — the top-nav labels
+    // are center-*aligned* but autoSize="left", so they must keep their left edge so the
+    // leading bullet stays put; center-shifting them (the old bug) slid them under the bullet.
+    const raw = leafProps?.autoSize !== undefined ? leafProps.autoSize : (text.autoSize ? "left" : undefined);
+    if (raw === undefined || raw === null) return undefined;
+    const rawStr = typeof raw === "string" ? raw.toLowerCase() : "";
+    const on = rawStr ? rawStr !== "none" : avm1Boolean(raw);
+    if (!on || text.wordWrap || text.multiline || text.staticLines?.length) return undefined;
+    const anchor = rawStr === "center" ? "center" : rawStr === "right" ? "right" : "left";
     const content = (text.text ?? "").replace(/<[^>]+>/g, "");
     if (!content.trim() || content.includes("\n")) return undefined;
     const natural = this.measureTextWidthPx(content, Number(text.fontHeight), text.fontId ?? asset.text?.fontId);
@@ -3722,8 +3733,8 @@ export class Player {
     const authoredWidth = text.width ?? asset.text?.width ?? asset.origin.width ?? 0;
     if (measured <= authoredWidth) return undefined; // already fits — leave the authored box
     const x =
-      text.align === "center" ? authoredX + (authoredWidth - measured) / 2
-      : text.align === "right" ? authoredX + (authoredWidth - measured)
+      anchor === "center" ? authoredX + (authoredWidth - measured) / 2
+      : anchor === "right" ? authoredX + (authoredWidth - measured)
       : authoredX;
     return { text: { ...text, x, width: measured }, x, width: measured };
   }
