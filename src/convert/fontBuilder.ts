@@ -220,8 +220,14 @@ export function buildTtf(font: FontTag): Uint8Array {
   for (let i = 0; i < numGlyphs; i++) hmtx.u16(Math.max(0, Math.round(advances[i] ?? upm))).i16(glyphXMin[i] ?? 0);
   const hmtxTable = hmtx.build();
 
-  const ascent = Math.round(font.layout?.ascent != null ? font.layout.ascent * scale : fyMax);
-  const descent = Math.round(font.layout?.descent != null ? font.layout.descent * scale : -fyMin);
+  // With a FontLayout, use its real vertical metrics. Without one, the old fallback used the
+  // glyph-bbox extremes (ascent = cap height, descent ~ 0); but a caps-only ascent under a
+  // line-height of one em leaves ~0.14em of half-leading above the text, so static lines
+  // (positioned at `top = baseline - fontHeight`) render a couple px too high. Reporting a
+  // full-em ascent with no descent makes the CSS baseline land exactly on `line.y`, matching
+  // Flash's vector baseline. These table-less faces are decorative single-line wordmarks.
+  const ascent = Math.round(font.layout?.ascent != null ? font.layout.ascent * scale : upm);
+  const descent = Math.round(font.layout?.descent != null ? font.layout.descent * scale : 0);
   const lineGap = Math.round((font.layout?.leading ?? 0) * scale);
   const advanceMax = advances.reduce((m, a) => Math.max(m, Math.round(a)), 0);
 

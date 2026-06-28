@@ -243,6 +243,19 @@ export class DomRenderer {
         this.hoveredButtonKeys.delete(key);
       }
     }
+
+    this.scheduleStaticFit();
+  }
+
+  private staticFitQueued = false;
+  /** Coalesce static-line fitting to one rAF per render burst (and once fonts load), so we
+   *  don't force a layout reflow every frame. */
+  private scheduleStaticFit() {
+    if (this.staticFitQueued) return;
+    this.staticFitQueued = true;
+    const run = () => { this.staticFitQueued = false; fitStaticLines(this.layer); };
+    requestAnimationFrame(run);
+    document.fonts?.ready.then(() => fitStaticLines(this.layer)).catch(() => {});
   }
 
   /**
@@ -568,12 +581,35 @@ function staticLineHtml(
     const left = text.align === "center" ? line.x + (boxWidth - lineWidth) / 2 : line.x;
     const top = line.y - text.fontHeight;
     const align = text.align ?? "left";
+    // The true per-glyph advances of a DefineText live in its records (`line.width` is their
+    // sum), not in the font. When the embedded face's own advances are wider (e.g. the
+    // table-less "Impact" wordmark), the rendered line overruns `line.width`; mark it so a
+    // post-render pass scales it back to the recorded width — matching Flash's spacing.
+    // Scale from the left: a record's glyphs are anchored at `line.x` and advance rightward,
+    // so the left edge must stay put (origin:center would slide the line right as it shrinks).
     return (
-      `<span style="position:absolute;left:${left}px;top:${top}px;width:${lineWidth}px;` +
-      `height:${text.fontHeight}px;line-height:${text.fontHeight}px;white-space:pre;` +
+      `<span class="player-static-line" data-sw="${lineWidth}" style="position:absolute;left:${left}px;top:${top}px;width:${lineWidth}px;` +
+      `height:${text.fontHeight}px;line-height:${text.fontHeight}px;white-space:pre;transform-origin:left top;` +
       `color:${text.color ?? "#000"};text-align:${align}">${escapeHtml(line.text.trimEnd())}</span>`
     );
   }).join("");
+}
+
+/** Scale each static DefineText line back to its recorded advance width. A SWF text record
+ *  carries its own glyph advances; we render the string with the embedded font's advances,
+ *  which can be wider (table-less faces) — so squeeze the line horizontally to the recorded
+ *  width so spacing matches Flash. A no-op for faces whose advances already match. */
+function fitStaticLines(root: ParentNode) {
+  const spans = root.querySelectorAll<HTMLElement>("span.player-static-line");
+  for (const span of spans) {
+    const target = parseFloat(span.dataset.sw ?? "");
+    if (!Number.isFinite(target) || target <= 0) continue;
+    span.style.transform = "";
+    const natural = span.scrollWidth || span.getBoundingClientRect().width;
+    if (Number.isFinite(natural) && natural > target + 0.5) {
+      span.style.transform = `scaleX(${target / natural})`;
+    }
+  }
 }
 
 function suppressDuplicateTextNodes(nodes: RenderNode[]): RenderNode[] {
