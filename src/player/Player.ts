@@ -3677,6 +3677,12 @@ export class Player {
     parentClip?: ClipInstance,
     leafProps?: Record<string, VarValue | undefined>,
   ): RenderNode {
+    let origin = applyLeafOriginOverrides(asset, leafProps);
+    let text = asset.kind === "text" ? this.resolveTextField(asset.id, asset, parentClip, instance.name) : undefined;
+    if (text) {
+      const grown = this.autoSizeTextLayout(asset, text, leafProps);
+      if (grown) ({ text, origin } = { text: grown.text, origin: { ...origin, x: grown.x, width: grown.width } });
+    }
     return {
       key,
       order,
@@ -3684,14 +3690,42 @@ export class Player {
       kind: asset.kind,
       name: instance.name,
       src,
-      origin: applyLeafOriginOverrides(asset, leafProps),
+      origin,
       matrix,
       opacity,
       colorTransform,
       ...renderMetadataFromInstance(instance),
       clipDepth: instance.clipDepth,
-      text: asset.kind === "text" ? this.resolveTextField(asset.id, asset, parentClip, instance.name) : undefined,
+      text,
     };
+  }
+
+  /** A Flash autoSize text field grows to fit its text instead of clipping/compressing —
+   *  e.g. bnl's section-title tab authors the field ~10px wide and lets "Robotics" expand
+   *  it. We render a fixed box and would otherwise squeeze the text to a sliver, so for a
+   *  single-line autoSize field measure the real text and widen the box, shifting x by the
+   *  field's alignment anchor (center/right) so it grows the way Flash does. Returns
+   *  undefined when it shouldn't apply (multiline, empty, or the font hasn't loaded yet). */
+  private autoSizeTextLayout(
+    asset: TimelineAsset,
+    text: NonNullable<ReturnType<Player["resolveTextField"]>>,
+    leafProps?: Record<string, VarValue | undefined>,
+  ): { text: NonNullable<ReturnType<Player["resolveTextField"]>>; x: number; width: number } | undefined {
+    const autoSize = leafProps?.autoSize !== undefined ? avm1Boolean(leafProps.autoSize) : Boolean(text.autoSize);
+    if (!autoSize || text.wordWrap || text.multiline || text.staticLines?.length) return undefined;
+    const content = (text.text ?? "").replace(/<[^>]+>/g, "");
+    if (!content.trim() || content.includes("\n")) return undefined;
+    const natural = this.measureTextWidthPx(content, Number(text.fontHeight), text.fontId ?? asset.text?.fontId);
+    if (natural == null || natural <= 0) return undefined;
+    const measured = natural + 4; // Flash autoSize adds a 2px gutter each side
+    const authoredX = text.x ?? asset.text?.x ?? asset.origin.x ?? 0;
+    const authoredWidth = text.width ?? asset.text?.width ?? asset.origin.width ?? 0;
+    if (measured <= authoredWidth) return undefined; // already fits — leave the authored box
+    const x =
+      text.align === "center" ? authoredX + (authoredWidth - measured) / 2
+      : text.align === "right" ? authoredX + (authoredWidth - measured)
+      : authoredX;
+    return { text: { ...text, x, width: measured }, x, width: measured };
   }
 
   /** Merge loadVariables() text into the player and re-render bound fields. */

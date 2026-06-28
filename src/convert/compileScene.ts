@@ -570,6 +570,7 @@ function editTextStyle(t: any, scene: string) {
     height: h || undefined,
     multiline: !!t.multiline,
     wordWrap: !!t.wordWrap,
+    autoSize: !!t.autoSize,
     html: !!t.html,
     text: undefined as string | undefined,
     variableName: t.variableName || undefined,

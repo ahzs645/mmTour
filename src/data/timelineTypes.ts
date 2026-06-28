@@ -352,6 +352,8 @@ export type DynamicText = {
   align?: "left" | "center" | "right" | string;
   multiline?: boolean;
   wordWrap?: boolean;
+  /** DefineEditText autoSize flag: the field grows to fit its text (direction from `align`). */
+  autoSize?: boolean;
   html?: boolean;
   fontId?: number;
   /** Text-field box in stage pixels (from the DefineEditText bounds). */

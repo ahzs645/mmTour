@@ -58,9 +58,9 @@ function loadMaskShape(src: string): ParsedShape | null | undefined {
   return undefined;
 }
 
-function svgImage(v: MaskVisual, extra = "", dimensions: { width: number; height: number }, key: string): string {
-  if (v.maskGroup) return `<g${extra}>${maskGroupSvg(v.maskGroup, key, dimensions)}</g>`;
-  if (v.text) return svgText(v, extra);
+function svgImage(v: MaskVisual, extra = "", dimensions: { width: number; height: number }, key: string, resolveFontFamily?: (fontId?: number) => string | undefined): string {
+  if (v.maskGroup) return `<g${extra}>${maskGroupSvg(v.maskGroup, key, dimensions, resolveFontFamily)}</g>`;
+  if (v.text) return svgText(v, extra, resolveFontFamily);
   const m = v.matrix;
   const url = assetUrl(v.src);
   const filter = v.colorTransform ? ` filter="url(#${maskColorFilterId(v.colorTransform)})"` : "";
@@ -71,7 +71,7 @@ function svgImage(v: MaskVisual, extra = "", dimensions: { width: number; height
   );
 }
 
-function svgText(v: MaskVisual, extra = ""): string {
+function svgText(v: MaskVisual, extra = "", resolveFontFamily?: (fontId?: number) => string | undefined): string {
   const text = v.text!;
   const m = v.matrix;
   const x = text.x ?? v.origin.x;
@@ -96,23 +96,31 @@ function svgText(v: MaskVisual, extra = ""): string {
     `color:${text.color ?? "#000"}`,
     `text-align:${align}`,
     `white-space:${whiteSpace}`,
-    "font-family:sans-serif",
+    // Composed (masked/clipped) text fields must use their embedded face like the
+    // plain path does — otherwise e.g. the Robotics "New Robots!" badge falls back to
+    // a wider system sans, overruns its field, and spills off the badge.
+    `font-family:${resolveFontFamily?.(text.fontId) ?? "sans-serif"}`,
   ].join(";");
   return (
+    // A Flash text field draws past its own bounds (no clip), but an SVG <foreignObject>
+    // clips content to its width/height — which truncated e.g. "New Robots!" to "New Robot".
+    // overflow:visible lets the text render in full; the surrounding mask clip-path still
+    // bounds it to the artwork.
     `<foreignObject class="player-text player-mask-text" x="${x}" y="${y}" width="${width}" height="${height}" ` +
+    `overflow="visible" style="overflow:visible" ` +
     `transform="matrix(${m.a},${m.b},${m.c},${m.d},${m.tx},${m.ty})"${extra}>` +
     `<div xmlns="http://www.w3.org/1999/xhtml" style="${style}">${staticLines || content}</div></foreignObject>`
   );
 }
 
 /** Build an inline SVG string that clips `items` to the `mask` shape's geometry. */
-function maskGroupSvg(group: { mask: MaskVisual; items: MaskVisual[] }, key: string, dimensions: { width: number; height: number }): string {
+function maskGroupSvg(group: { mask: MaskVisual; items: MaskVisual[] }, key: string, dimensions: { width: number; height: number }, resolveFontFamily?: (fontId?: number) => string | undefined): string {
   const open = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${dimensions.width}" height="${dimensions.height}" style="position:absolute;left:0;top:0;overflow:visible">`;
   const filterDefs = maskColorFilterDefs(group.items);
   const shape = loadMaskShape(group.mask.src);
   // Until the mask shape loads (or if it failed), show the items unclipped.
   if (!shape) {
-    return `${open}${filterDefs ? `<defs>${filterDefs}</defs>` : ""}${group.items.map((it, index) => svgImage(it, "", dimensions, `${key}_${it.key ?? index}`)).join("")}</svg>`;
+    return `${open}${filterDefs ? `<defs>${filterDefs}</defs>` : ""}${group.items.map((it, index) => svgImage(it, "", dimensions, `${key}_${it.key ?? index}`, resolveFontFamily)).join("")}</svg>`;
   }
 
   // Bake mask-matrix ∘ origin-shift ∘ shape-g into ONE matrix on a single <g>, so the
@@ -125,7 +133,7 @@ function maskGroupSvg(group: { mask: MaskVisual; items: MaskVisual[] }, key: str
   // <path>/<polygon> directly (the only reliable form).
   const tf = `matrix(${combined.a},${combined.b},${combined.c},${combined.d},${combined.tx},${combined.ty})`;
   const clipBody = shape.body.replace(/<(path|polygon|rect|ellipse|circle)\b/g, `<$1 transform="${tf}"`);
-  const items = group.items.map((it, index) => svgImage(it, it.opacity !== 1 ? ` opacity="${it.opacity}"` : "", dimensions, `${key}_${it.key ?? index}`)).join("");
+  const items = group.items.map((it, index) => svgImage(it, it.opacity !== 1 ? ` opacity="${it.opacity}"` : "", dimensions, `${key}_${it.key ?? index}`, resolveFontFamily)).join("");
   return `${open}<defs>${filterDefs}<clipPath id="${clipId}" clipPathUnits="userSpaceOnUse">${clipBody}</clipPath></defs><g clip-path="url(#${clipId})">${items}</g></svg>`;
 }
 
@@ -250,7 +258,7 @@ export class DomRenderer {
     }
     rendered.element.style.zIndex = String(node.order);
     rendered.element.style.transform = "none";
-    rendered.element.innerHTML = maskGroupSvg(node.maskGroup!, node.key, this.options.stageDimensions ?? { width: 640, height: 480 });
+    rendered.element.innerHTML = maskGroupSvg(node.maskGroup!, node.key, this.options.stageDimensions ?? { width: 640, height: 480 }, this.options.resolveFontFamily);
   }
 
   private createNode(node: RenderNode): RenderedNode {
