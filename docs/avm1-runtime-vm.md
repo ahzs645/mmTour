@@ -228,9 +228,41 @@ in Ruffle (verified against Ruffle for the Robotics section).
   Ruffle. This mirrors `bitmapToDataUrl`, which already handled alpha JPEGs; only the
   compile-to-file path had the gap.
 
-All known bnl rendering issues are resolved. The section's content — titles, body
-text, subnav, themed background, leaves image, and the alpha-cutout robot — renders
-as in Ruffle.
+## Stage 8 — Robotics-section text polish (DONE)
+
+Three more text fields in the Robotics section drifted from Ruffle:
+
+- **The "New Robots!" badge truncated to "New Robot".** The badge label is a
+  *composed* (clipped) text field, rendered by `DomRenderer.svgText` inside an SVG
+  `<foreignObject>`. That path hardcoded `font-family:sans-serif` (so the label fell
+  back to a wide system font) and let the foreignObject clip text to its own box (a
+  Flash field draws past its bounds). `svgText` now resolves the field's embedded face
+  (threaded through `maskGroupSvg`/`svgImage`) and sets `overflow:visible`, so the
+  full label renders in its real font and the surrounding mask clip-path still bounds it.
+
+- **The section-title tab showed a squished sliver instead of "Robotics".** bnl authors
+  the title field ~10px wide and lets it autoSize to its text. We rendered the fixed box
+  and compressed "Robotics" to fit. `Player.leafNode` now measures a single-line autoSize
+  field (flag captured from `DefineEditText` in `editTextStyle`, or set at runtime via
+  `leafProps.autoSize`) and grows the box, shifting `x` by the field's alignment anchor so
+  it expands the way Flash does. The tab now shows a full-size "Robotics".
+
+- **The "ROBOTICS" wordmark rendered letter-spaced ("R O B O T I C S").** Its font
+  (char 240, "Impact") ships *no* `FontAdvanceTable`; `buildTtf` then gave every glyph a
+  full-em advance, so each letter sat an em apart. `buildTtf` now derives a glyph's
+  advance from its own outline (`xMax` + a small right bearing) when no table is present,
+  matching the condensed face. This also tightened the "New Robots!" font (char 43, also
+  table-less). Fonts that ship advances are unchanged.
+
+**Remaining:** the *selected* top-nav item doesn't keep its blue "pill" highlight. The
+pill is the hover/over state of the `topNavButton` component (`com.buynlarge.components.TopNavButton`,
+char 63) — our VM shows it on rollover but doesn't persist it for the active section, which
+needs the component's AS2 selection logic to drive a persistent visual state. Diagnosed,
+not yet implemented.
+
+The Robotics section now matches Ruffle except the selected-nav pill: alpha-cutout robot,
+full-size title, tight wordmark, the "New Robots!" badge, body text, subnav, and themed
+background all render correctly.
 
 ## Non-negotiable
 
