@@ -188,13 +188,25 @@ With these, **section navigation works and animates**: clicking a top-nav item
 transitions to that section with its left subnav, header and themed background, as
 in Ruffle (verified against Ruffle for the Robotics section).
 
-**Remaining (section content, not blocking):** inside an opened section the reveal
-panel's subsection body text isn't routed to the visible content area yet (the data
-is present in the tree but several sections' subsection clips overlap at the same
-position and the active one isn't surfaced), and a section's robot/preview bitmap
-renders with an opaque matte instead of its alpha. These are section-content
-routing/image-alpha refinements on top of a home view and navigation that now match
-Ruffle.
+## Stage 6 — section reveal-panel content (DONE)
+
+- **A section's body text stayed invisible.** Each section's content panel
+  (`subsectionHolder` → `subsection_N` → `body_txt`) is authored hidden in the SWF
+  — placed with a color-transform alpha of 0 — and revealed at runtime when the
+  section opens by setting `_alpha = 100`. The flatten *multiplied* the placement's
+  design alpha by the runtime clip alpha, but in Flash they are the same property:
+  `_alpha` REPLACES the placement alpha. So `design(0) × runtime(100)` stayed 0 and
+  the revealed copy never showed. `Player.placedAlpha` now lets a runtime `_alpha`
+  override the design alpha (in data-driven app mode; the tour keeps the legacy
+  multiply). Opening a section now shows its subsection body text — e.g. the
+  Robotics "About" copy — matching Ruffle.
+
+**Remaining (cosmetic, not blocking):** a section's decorative robot/preview bitmap
+(an opaque partial-JPEG) is clipped in Flash by a *soft gradient* mask
+(`clipDepth` over a gradient shape) that fades its edges into the themed
+background; our renderer applies hard SVG `clipPath` masks but not soft alpha/
+gradient masks, so that one decorative image shows with a hard matte. The section's
+actual content (titles, body text, subnav, background) renders correctly.
 
 ## Non-negotiable
 
