@@ -232,20 +232,29 @@ in Ruffle (verified against Ruffle for the Robotics section).
 
 Three more text fields in the Robotics section drifted from Ruffle:
 
-- **The "New Robots!" badge truncated to "New Robot".** The badge label is a
-  *composed* (clipped) text field, rendered by `DomRenderer.svgText` inside an SVG
-  `<foreignObject>`. That path hardcoded `font-family:sans-serif` (so the label fell
-  back to a wide system font) and let the foreignObject clip text to its own box (a
-  Flash field draws past its bounds). `svgText` now resolves the field's embedded face
-  (threaded through `maskGroupSvg`/`svgImage`) and sets `overflow:visible`, so the
-  full label renders in its real font and the surrounding mask clip-path still bounds it.
+- **The "New Robots!" badge truncated to "New Robot" and used the wrong font.** The
+  badge label is a *composed* (clipped) text field, rendered by `DomRenderer.svgText`
+  inside an SVG `<foreignObject>`. Three things were wrong: (1) the path hardcoded
+  `font-family:sans-serif`; (2) the foreignObject clipped text to its own box (a Flash
+  field draws past its bounds); (3) most importantly, `svgText` builds the `<div>` as an
+  innerHTML string with a **double-quoted** `style=""` attribute, and the resolved family
+  stack contains double-quoted names (`"swf-font-43", …`) — so the first quote closed the
+  attribute and the whole `font-family` (plus everything after) was silently dropped,
+  leaving the label in a system sans. Fix: resolve the embedded face (threaded through
+  `maskGroupSvg`/`svgImage`), set `overflow:visible`, and **single-quote the font names**
+  so the attribute survives. The badge now renders in its embedded TradeGothic Bold,
+  matching Ruffle. (The normal text path was unaffected because it sets
+  `element.style.fontFamily` as a DOM property, not an attribute string.)
 
 - **The section-title tab showed a squished sliver instead of "Robotics".** bnl authors
   the title field ~10px wide and lets it autoSize to its text. We rendered the fixed box
   and compressed "Robotics" to fit. `Player.leafNode` now measures a single-line autoSize
   field (flag captured from `DefineEditText` in `editTextStyle`, or set at runtime via
-  `leafProps.autoSize`) and grows the box, shifting `x` by the field's alignment anchor so
-  it expands the way Flash does. The tab now shows a full-size "Robotics".
+  `leafProps.autoSize`) and grows the box. Note the grow anchor comes from the autoSize
+  *direction* ("left"/"center"/"right", `true`=left) — **not** text alignment: an early
+  version shifted by text-align, which slid the center-aligned-but-autoSize="left" top-nav
+  labels left under their bullets and broke nav spacing. The tab now shows a full-size
+  "Robotics" and the nav stays aligned.
 
 - **The "ROBOTICS" wordmark rendered letter-spaced ("R O B O T I C S").** Its font
   (char 240, "Impact") ships *no* `FontAdvanceTable`; `buildTtf` then gave every glyph a
@@ -254,15 +263,16 @@ Three more text fields in the Robotics section drifted from Ruffle:
   matching the condensed face. This also tightened the "New Robots!" font (char 43, also
   table-less). Fonts that ship advances are unchanged.
 
-**Remaining:** the *selected* top-nav item doesn't keep its blue "pill" highlight. The
-pill is the hover/over state of the `topNavButton` component (`com.buynlarge.components.TopNavButton`,
-char 63) — our VM shows it on rollover but doesn't persist it for the active section, which
-needs the component's AS2 selection logic to drive a persistent visual state. Diagnosed,
-not yet implemented.
+**On the top-nav "pill":** an earlier note here flagged the selected item not keeping its
+blue pill. That was a misread — bnl has **no persistent selected state**. The pill is
+`topNavButton.background._visible`, set `true` only on rollover and `false` on rollout (no
+"selected"/"enabled" gate anywhere in the component). Verified against Ruffle: with the
+pointer moved away, Ruffle shows plain text for every item, exactly like our player; on
+hover both show the blue pill + white label + white bullet. The nav already matches.
 
-The Robotics section now matches Ruffle except the selected-nav pill: alpha-cutout robot,
-full-size title, tight wordmark, the "New Robots!" badge, body text, subnav, and themed
-background all render correctly.
+The Robotics section now matches Ruffle: alpha-cutout robot, full-size title, tight
+wordmark, the "New Robots!" badge in its embedded face, body text, subnav, themed
+background, and the hover-only nav pill.
 
 ## Non-negotiable
 
