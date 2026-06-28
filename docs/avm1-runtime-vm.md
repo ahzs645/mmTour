@@ -201,12 +201,25 @@ in Ruffle (verified against Ruffle for the Robotics section).
   multiply). Opening a section now shows its subsection body text — e.g. the
   Robotics "About" copy — matching Ruffle.
 
+- **The selected top-nav label didn't turn white.** AS2 components restyle fields
+  at runtime via `TextField.setTextFormat(...)`; the top-nav whitens the selected
+  item's label (and reverts the previous one) with
+  `label_txt.setTextFormat({color})`. The VM didn't handle `setTextFormat`, so the
+  selected label kept its dark colour — dark-on-blue, which read as "off". A
+  `setTextFormat` bridge path now applies the format (color/size/align/leading)
+  through the existing text override, so the selected item turns white like Ruffle.
+
 **Remaining (cosmetic, not blocking):** a section's decorative robot/preview bitmap
-(an opaque partial-JPEG) is clipped in Flash by a *soft gradient* mask
-(`clipDepth` over a gradient shape) that fades its edges into the themed
-background; our renderer applies hard SVG `clipPath` masks but not soft alpha/
-gradient masks, so that one decorative image shows with a hard matte. The section's
-actual content (titles, body text, subnav, background) renders correctly.
+(an opaque partial-JPEG, char 234) is clipped in Flash by char 232 — a silhouette
+shape placed with `clipDepth=3` — so only the robot shape shows and its black JPEG
+background is masked away. The mask *is* captured (the flatten builds the mask
+group and the clip SVG), but the clip's baked coordinate transform misaligns for
+in-browser-compiled shape SVGs (`svgEmit`'s `<g transform>` origin-shift vs the
+FFDec convention `loadMaskShape`/`maskGroupSvg` were written against), so the clip
+doesn't restrict the robot and its black rectangle shows. The fix is in the shared
+mask transform and must be validated against the tour's FFDec masks (which need the
+generated pipeline), so it's deferred. The section's actual content — titles, body
+text, subnav, themed background, leaves image — renders correctly.
 
 ## Non-negotiable
 
