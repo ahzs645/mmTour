@@ -288,10 +288,20 @@ reads) measured each child from its **static** `instance.matrix`, ignoring the r
 `liveClipBounds` now applies `applyClipMatrixOverrides(instance.matrix, child)` — the same
 runtime child transform the `flatten()` render path already uses — so the reported height
 reflects the moved `bottomBar`. The separator lines now land exactly on Ruffle's and the
-per-row drift is gone. (The `title_txt._y = 8` itself was already honored; a residual
-~3px uniform text-baseline gutter offset remains and is left alone to avoid perturbing
-every other text field.) This is a general bounds-vs-render consistency fix, not a
-bnl-specific tweak.
+per-row drift is gone. (The `title_txt._y = 8` itself was already honored.) This is a
+general bounds-vs-render consistency fix, not a bnl-specific tweak.
+
+A second, smaller offset remained after that: every dynamic field sat ~2px high and ~2px
+left of Ruffle. Flash insets an editText field's content by a fixed **2px gutter** inside
+its bounds, on all four sides; our box is derived straight from the SWF `DefineEditText`
+bounds (`editTextStyle` sets `x/y = bounds.{x,y}Min/20`) and omitted it — the field's
+`_height`/autoSize metrics already budgeted the gutter (`textWidth + 4`), only the drawn
+position lacked it. `DomRenderer.styleText` now applies a symmetric `box-sizing:border-box`
++ `padding:2px` on the flowing-text path, which reproduces the gutter without disturbing
+center/right alignment or the wrap width. Static `DefineText` (the wordmark, section
+titles) carries its own per-record positions via `staticLineHtml` and is left untouched.
+Subnav labels now match Ruffle's baseline (and left edge exactly); nav labels, news
+headlines, and body copy are unaffected (the inset moves them onto Ruffle, not off it).
 
 ## Non-negotiable
 

@@ -9,6 +9,9 @@ import { applyColorTransform } from "./colorTransform";
 // instead of a broken-image box.
 const TRANSPARENT_PIXEL = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
+// Flash insets a dynamic TextField's content by a fixed 2px gutter inside its bounds.
+const TEXT_GUTTER = 2;
+
 // Mask shapes are inlined into the <mask> (Chrome won't rasterize an <image>-
 // referenced SVG inside a mask). Their fills are forced white → a robust
 // Mask shapes are inlined into the <clipPath>. CRITICAL: Chrome ignores nested
@@ -459,6 +462,16 @@ export class DomRenderer {
     if (width > 0) element.style.width = `${width}px`;
     const height = text.height ?? node.origin.height;
     if (height > 0) element.style.height = `${height}px`;
+    // Flash insets a dynamic TextField's content by a 2px gutter inside its bounds, on all
+    // four sides; our bounds-derived box omits it, so dynamic fields rendered ~2px high and
+    // ~2px left (the field _height/autoSize metrics already budget the gutter — only the
+    // drawn position lacked it). A symmetric border-box pad reproduces it without disturbing
+    // center/right alignment or the wrap width. Static DefineText carries its own per-record
+    // positions via staticLineHtml, so it is left untouched.
+    if (!text.staticLines?.length) {
+      element.style.boxSizing = "border-box";
+      element.style.padding = `${TEXT_GUTTER}px`;
+    }
     element.style.fontSize = `${text.fontHeight}px`;
     element.style.lineHeight = `${text.lineHeight ?? text.fontHeight + (text.leading ?? 0)}px`;
     element.style.color = text.color ?? "#000";
