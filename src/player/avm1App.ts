@@ -24,6 +24,8 @@ export interface PlayerBridge {
   attachMovie(parent: AppClip, linkage: string, name: string, depth: number): AppClip | undefined;
   /** createEmptyMovieClip(name,depth) → the new (empty) clip. */
   createEmptyMovieClip(parent: AppClip, name: string, depth: number): AppClip;
+  /** removeMovieClip() — detach a runtime-attached clip from its parent's display list. */
+  removeClip?(clip: AppClip): void;
   /** Set a text leaf's text (string or html). */
   setText(t: AppText, value: string, html: boolean): void;
   /** Read a text leaf's current text. */
@@ -31,6 +33,8 @@ export interface PlayerBridge {
   /** Read/write AS2 display fields on a text leaf (`_height`, `_width`, `autoSize`, ...). */
   getTextProp?(t: AppText, key: string): Avm1Value;
   setTextProp?(t: AppText, key: string, value: Avm1Value): void;
+  /** Apply a TextFormat ({color,size,align,leading,…}) to a text leaf. */
+  setTextFormat?(t: AppText, format: Record<string, Avm1Value>): void;
   /** Read/write a clip display property (_x,_y,_alpha,_width,…). */
   getClipProp(clip: AppClip, key: string): Avm1Value;
   setClipProp(clip: AppClip, key: string, value: Avm1Value): void;
@@ -97,23 +101,43 @@ const DIRECT_POINTER_HANDLERS = new Map([
   ["onPress", "press"],
 ]);
 
+/** Handle returned to the player to drive the running app on the frame clock. */
+export interface DataDrivenApp {
+  /** Advance the app by one SWF frame (dtMs = frame duration in ms). */
+  enterFrame(dtMs: number): void;
+}
+
 export function runDataDrivenApp(
   control: { initActions?: Avm1Op[][]; frameBytecode?: { frame: number; ops: Avm1Op[] }[]; registeredClasses?: Record<string, string> },
   bridge: PlayerBridge,
-): boolean {
+): DataDrivenApp | null {
   const initActions = control.initActions ?? [];
   const frameBytecode = control.frameBytecode ?? [];
   const registeredClasses = control.registeredClasses ?? {};
-  if (!initActions.length || !frameBytecode.length) return false;
+  if (!initActions.length || !frameBytecode.length) return null;
 
   const globals: any = Object.create(null);
   const registry: Record<string, any> = Object.create(null); // linkage → class fn
   const clipClass = new WeakMap<object, any>();              // clip → bound AS2 class fn
   const clipMethodDispatchers = new WeakSet<object>();
+  const constructed = new WeakSet<object>();                 // clips whose AS2 constructor has run
   const listeners = new WeakMap<object, Record<string, any[]>>();
   const root = bridge.root();
-  const timers = new Map<number, ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>>();
   let nextTimerId = 1;
+
+  // --- Frame-locked scheduler --------------------------------------------------
+  // The app's timers, tweens and onEnterFrame handlers advance on the player's
+  // frame clock (via appEnterFrame below), not on wall-clock JS timers, so they
+  // run in lockstep with the SWF frame rate and match Ruffle's animation phase.
+  let clockMs = 0;
+  const timeouts = new Map<number, { due: number; target: any; method: string }>();
+  const intervals = new Map<number, { period: number; next: number; target: any; method: string }>();
+  const liveTweens = new Set<any>();
+  const enterFrameClips = new Set<any>();
+  // During a frame tick we mutate many clips; coalesce to a single render at the
+  // end of the tick. Outside the tick (pointer events, XML load) render eagerly.
+  let inFrameLoop = false;
+  const render = () => { if (!inFrameLoop) bridge.render(); };
 
   const vmRef: { vm?: Avm1Vm } = {};
   const invoke = (fn: any, args: any[], thisObj: any): any => {
@@ -150,6 +174,16 @@ export function runDataDrivenApp(
           clipMethodDispatchers.add(clip);
           bridge.setClipMethodDispatcher?.(clip, (method, args) => callObjectMethod(clip, method, args));
         }
+        // A class-linked clip placed on the timeline (a section reveal panel, a
+        // robot subnav, …) gets its AS2 constructor exactly once, like an
+        // attachMovie'd one — Flash runs it on instantiation, and it is where a
+        // component sets its initial state (e.g. a Section hides itself until shown).
+        // Isolated: a single component's constructor failing must not break method
+        // dispatch on this clip or the rest of the bootstrap.
+        if (!constructed.has(clip)) {
+          constructed.add(clip);
+          try { invoke(c, [], clip); } catch (error) { console.warn("[avm1App] placed-clip constructor failed", error); }
+        }
       }
     }
     return c;
@@ -162,13 +196,13 @@ export function runDataDrivenApp(
       const fn = cls ? resolveProto(cls, method) : undefined;
       if (!fn) return false;
       invoke(fn, args, obj);
-      bridge.render();
+      render();
       return true;
     }
     const fn = obj[method] ?? obj.props?.[method];
     if (isFn(fn)) {
       invoke(fn, args, obj);
-      bridge.render();
+      render();
       return true;
     }
     return false;
@@ -176,76 +210,84 @@ export function runDataDrivenApp(
   const scheduleCallback = (repeat: boolean, args: any[]): number => {
     const target = args[0];
     const method = String(args[1] ?? "");
-    const delay = Math.max(16, Number(args[2] ?? 0) || 0);
+    const delay = Math.max(0, Number(args[2] ?? 0) || 0);
     const id = nextTimerId++;
-    if (repeat) {
-      // Repeating AS2 timers often back mouse-tracking loops. Until the player
-      // emulates Flash hit-testing for those loops, firing them on wall-clock JS
-      // time can immediately undo visible state such as opened menus.
-      return id;
-    }
-    const callback = () => {
-      timers.delete(id);
-      callObjectMethod(target, method);
-    };
-    timers.set(id, setTimeout(callback, delay));
+    // Repeating timers fire on the frame clock now, so periodic animations (e.g. the
+    // background feature rotation) run as in Flash instead of being dropped.
+    if (repeat) intervals.set(id, { period: Math.max(1, delay), next: clockMs + Math.max(1, delay), target, method });
+    else timeouts.set(id, { due: clockMs + delay, target, method });
     return id;
   };
-  const clearTimer = (id: any) => {
-    const handle = timers.get(Number(id));
-    if (!handle) return;
-    clearTimeout(handle);
-    clearInterval(handle);
-    timers.delete(Number(id));
+  const clearTimer = (id: any) => { const n = Number(id); timeouts.delete(n); intervals.delete(n); };
+
+  const finishTween = (tween: any) => {
+    tween.completed = true;
+    liveTweens.delete(tween);
+    if (tween.target && tween.prop) host.setMember(tween.target, tween.prop, tween.finish);
+    const onChange = tween.onMotionChanged; if (isFn(onChange)) invoke(onChange, [tween], tween);
+    const onFinish = tween.onMotionFinished;
+    if (isFn(onFinish)) { tween.completed = false; invoke(onFinish, [tween], tween); }
+    render();
   };
   const createTween = (args: any[]) => {
+    // mx.transitions.Tween(target, prop, easing, begin, finish, duration, useSeconds)
     const target = args[0];
     const prop = String(args[1] ?? "");
-    const begin = args[3];
-    const finish = args[4];
-    const duration = Number(args[5] ?? 0);
-    const useSeconds = Boolean(args[6]);
-    const tween: any = { __tween: true, target, prop, begin, finish, duration, completed: false };
-    const finishTween = () => {
-      tween.completed = true;
-      if (target && prop) host.setMember(target, prop, finish);
-      const callback = tween.onMotionFinished;
-      if (callback) {
-        tween.completed = false;
-        invoke(callback, [tween], tween);
-      }
-      bridge.render();
+    const tween: any = {
+      __tween: true, target, prop, easing: args[2],
+      begin: Number(args[3]), finish: Number(args[4]),
+      duration: Number(args[5] ?? 0), useSeconds: Boolean(args[6]),
+      elapsed: 0, completed: false, position: Number(args[3]),
     };
-    if (!target || !prop) {
+    if (!target || !prop || !Number.isFinite(tween.begin) || !Number.isFinite(tween.finish)) {
       tween.completed = true;
+      if (target && prop && Number.isFinite(tween.finish)) host.setMember(target, prop, tween.finish);
       return tween;
     }
-    host.setMember(target, prop, begin);
-    if (!useSeconds || !Number.isFinite(duration) || duration <= 0) {
-      finishTween();
-      return tween;
-    }
-    const beginNumber = Number(begin);
-    const finishNumber = Number(finish);
-    const durationMs = Math.max(16, duration * 1000);
-    const start = Date.now();
-    const id = nextTimerId++;
-    const handle = setInterval(() => {
-      const progress = Math.min(1, (Date.now() - start) / durationMs);
-      if (Number.isFinite(beginNumber) && Number.isFinite(finishNumber)) {
-        host.setMember(target, prop, beginNumber + (finishNumber - beginNumber) * progress);
-      }
-      if (progress >= 1) {
-        clearTimer(id);
-        finishTween();
-      } else {
-        bridge.render();
-      }
-    }, 33);
-    timers.set(id, handle);
-    tween.__timerId = id;
-    bridge.render();
+    host.setMember(target, prop, tween.begin);
+    if (!Number.isFinite(tween.duration) || tween.duration <= 0) { finishTween(tween); return tween; }
+    liveTweens.add(tween);
+    render();
     return tween;
+  };
+  const advanceTween = (tween: any, dtMs: number) => {
+    // duration is in frames unless useSeconds (then seconds), matching mx.transitions.Tween.
+    tween.elapsed += tween.useSeconds ? dtMs / 1000 : 1;
+    const d = tween.duration;
+    const t = Math.min(tween.elapsed, d);
+    const c = tween.finish - tween.begin;
+    let value = tween.begin + c * (d ? t / d : 1);
+    if (isFn(tween.easing)) {
+      // mx easing signature: ease(time, begin, change, duration) -> position
+      const eased = Number(invoke(tween.easing, [t, tween.begin, c, d], null));
+      if (Number.isFinite(eased)) value = eased;
+    }
+    tween.position = value;
+    host.setMember(tween.target, tween.prop, value);
+    const onChange = tween.onMotionChanged; if (isFn(onChange)) invoke(onChange, [tween], tween);
+    if (tween.elapsed >= d) finishTween(tween);
+  };
+
+  // Advance one SWF frame: fire due timers, step tweens, run onEnterFrame handlers.
+  const appEnterFrame = (dtMs: number) => {
+    const dt = Number.isFinite(dtMs) && dtMs > 0 ? dtMs : 50;
+    clockMs += dt;
+    inFrameLoop = true;
+    try {
+      for (const [id, t] of [...timeouts]) if (clockMs >= t.due) { timeouts.delete(id); callObjectMethod(t.target, t.method); }
+      // Cap interval catch-up so a long stall (e.g. a background tab) can't spiral.
+      for (const [, iv] of [...intervals]) { let guard = 0; while (clockMs >= iv.next && guard++ < 4) { iv.next += iv.period; callObjectMethod(iv.target, iv.method); } }
+      for (const tween of [...liveTweens]) advanceTween(tween, dt);
+      for (const clip of [...enterFrameClips]) {
+        const fn = bridge.clipField(clip, "onEnterFrame");
+        if (isFn(fn)) invoke(fn, [], clip); else enterFrameClips.delete(clip);
+      }
+    } finally {
+      inFrameLoop = false;
+    }
+    // The player renders immediately after calling enterFrame, so don't double-render
+    // here — but if nothing on the player side will render (no caller render), the
+    // coalesced mutations would be lost. The player contract renders post-tick.
   };
   const hasPointerInterest = (clip: AppClip): boolean => {
     for (const [name] of DIRECT_POINTER_HANDLERS) if (bridge.clipField(clip, name)) return true;
@@ -349,6 +391,7 @@ export function runDataDrivenApp(
         if (setter) { invoke(setter, [value], obj); return; }
         if (key.startsWith("_")) { bridge.setClipProp(obj, key, value); return; }
         bridge.setClipField(obj, key as string, value);
+        if (key === "onEnterFrame") { if (isFn(value)) enterFrameClips.add(obj); else enterFrameClips.delete(obj); }
         if (DIRECT_POINTER_HANDLERS.has(key as string)) syncPointerClip(obj);
         return;
       }
@@ -362,6 +405,7 @@ export function runDataDrivenApp(
       }
       if (isClip(obj)) {
         bridge.setClipField(obj, key, undefined);
+        if (key === "onEnterFrame") enterFrameClips.delete(obj);
         if (DIRECT_POINTER_HANDLERS.has(key)) syncPointerClip(obj);
         return true;
       }
@@ -412,7 +456,7 @@ export function runDataDrivenApp(
         case "Boolean": return Boolean(args[0]);
         case "Array": return args.length === 1 && typeof args[0] === "number" ? new Array(args[0]) : [...args];
         case "Object": return Object.create(null);
-        case "getTimer": return 0;
+        case "getTimer": return clockMs;
         case "setTimeout": return scheduleCallback(false, args);
         case "setInterval": return scheduleCallback(true, args);
         case "clearInterval": case "clearTimeout": clearTimer(args[0]); return undefined;
@@ -470,6 +514,17 @@ export function runDataDrivenApp(
         if (key === "selectNodes") return xmlSelect(obj, String(args[0]));
         if (key === "selectSingleNode") return xmlSelect(obj, String(args[0]))[0];
       }
+      // A text field's setTextFormat({color,size,align,…}) — AS2 components use it to
+      // restyle a field at runtime (e.g. the top-nav turns the selected item's label
+      // white). The format's properties live on the VM object directly and/or in its
+      // props bag, so merge both before handing it to the player's text override.
+      if (isText(obj) && key === "setTextFormat") {
+        const f = args[0];
+        const fmt = f && typeof f === "object" ? { ...f, ...(f.props ?? {}) } : {};
+        bridge.setTextFormat?.(obj, fmt as Record<string, Avm1Value>);
+        render();
+        return undefined;
+      }
       if (typeof obj === "string" || obj instanceof String) {
         const s = avmCoerce(obj);
         switch (key) {
@@ -489,8 +544,9 @@ export function runDataDrivenApp(
       // clip natives
       if (isClip(obj)) {
         switch (key) {
-          case "attachMovie": { const c = bridge.attachMovie(obj, String(args[0]), String(args[1]), Number(args[2] ?? bridge.nextDepth(obj))); if (c) { const cls = classFor(c); if (cls) invoke(cls, [], c); } return c ?? Object.create(null); }
+          case "attachMovie": { const c = bridge.attachMovie(obj, String(args[0]), String(args[1]), Number(args[2] ?? bridge.nextDepth(obj))); if (c) classFor(c); return c ?? Object.create(null); }
           case "createEmptyMovieClip": return bridge.createEmptyMovieClip(obj, String(args[0]), Number(args[1] ?? bridge.nextDepth(obj)));
+          case "removeMovieClip": case "unloadMovie": bridge.removeClip?.(obj); return undefined;
           case "createTextField": return bridge.createEmptyMovieClip(obj, String(args[0]), Number(args[2] ?? bridge.nextDepth(obj)));
           case "getNextHighestDepth": return bridge.nextDepth(obj);
           case "getBytesLoaded": case "getBytesTotal": return 100;
@@ -550,5 +606,7 @@ export function runDataDrivenApp(
   }
   for (const k of Object.keys(registry)) registryNorm.set(normLinkage(k), registry[k]);
   bridge.render();
-  return ran;
+  // Hand back the per-frame driver so the player can advance the app's timers,
+  // tweens and onEnterFrame handlers on its own frame clock.
+  return ran ? { enterFrame: appEnterFrame } : null;
 }

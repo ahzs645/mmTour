@@ -127,16 +127,37 @@ function checksum(b: Uint8Array): number {
 }
 
 /** Build a TrueType font from a parsed DefineFont. */
+// OpenType caps unitsPerEm at 16384 (OTS/Chrome reject anything larger), but
+// SWF DefineFont3 uses a 20480-unit em square. When the source em exceeds the
+// cap, scale the whole font (outlines + advances + vertical metrics) down to a
+// valid em so the generated face loads instead of silently falling back to a
+// system font. Scaling is uniform, so all metrics stay self-consistent.
+const MAX_UPM = 16384;
+const SCALED_UPM = 2048;
+
 export function buildTtf(font: FontTag): Uint8Array {
-  const upm = font.emSquareSize || 1024;
+  const srcUpm = font.emSquareSize || 1024;
+  const upm = srcUpm > MAX_UPM ? SCALED_UPM : srcUpm;
+  const scale = upm / srcUpm;
+  const sc = (v: number) => Math.round(v * scale);
   // gid 0 must be .notdef — renderers treat any char that maps to glyph 0 as
   // "missing" and fall back to a system font. So prepend an empty .notdef and
   // shift every SWF glyph to gid+1 (cmap below compensates).
-  const swfContours = font.glyphs.map((g) => glyphContours(g.records));
+  const swfContours = font.glyphs.map((g) => {
+    const contours = glyphContours(g.records);
+    return scale === 1 ? contours : contours.map((c) => c.map((p) => ({ x: sc(p.x), y: sc(p.y), on: p.on })));
+  });
   const glyphs: Pt[][][] = [[], ...swfContours];
   const numGlyphs = glyphs.length;
-  const swfAdvances: number[] = font.layout?.advances ?? new Array(swfContours.length).fill(upm);
-  const advances: number[] = [Math.round(upm * 0.5), ...swfAdvances];
+  // A DefineFont may omit the FontAdvanceTable (font.layout). The old fallback gave
+  // every glyph a full-em advance, so e.g. the "Impact" wordmark (font has no layout)
+  // rendered each letter a whole em apart — "R O B O T I C S". When there is no table,
+  // derive each glyph's advance from its own outline (xMax + a small right bearing)
+  // so the spacing matches the condensed face. Fonts that DO ship advances are unchanged.
+  const hasAdvances = Array.isArray(font.layout?.advances) && font.layout.advances.length >= swfContours.length;
+  const swfAdvances: number[] = hasAdvances ? font.layout!.advances.slice(0, swfContours.length).map(sc) : [];
+  const advances: number[] = new Array(numGlyphs).fill(0);
+  advances[0] = Math.round(upm * 0.5); // .notdef
 
   // --- glyf + loca ---
   let fxMin = 32767, fyMin = 32767, fxMax = -32768, fyMax = -32768;
@@ -144,11 +165,13 @@ export function buildTtf(font: FontTag): Uint8Array {
   const glyf = new Writer();
   const loca: number[] = [0];
   const glyphXMin: number[] = []; // per-glyph left side bearing (= xMin)
-  for (const contours of glyphs) {
+  glyphs.forEach((contours, gi) => {
     if (contours.length === 0) {
       glyphXMin.push(0);
+      // Blank glyph (e.g. space): a table advance if present, else ~0.3em.
+      if (gi > 0) advances[gi] = hasAdvances ? (swfAdvances[gi - 1] ?? 0) : Math.round(upm * 0.3);
       loca.push(glyf.length);
-      continue;
+      return;
     }
     let gxMin = 32767, gyMin = 32767, gxMax = -32768, gyMax = -32768;
     let totalPts = 0;
@@ -164,6 +187,7 @@ export function buildTtf(font: FontTag): Uint8Array {
     fxMin = Math.min(fxMin, gxMin); fyMin = Math.min(fyMin, gyMin);
     fxMax = Math.max(fxMax, gxMax); fyMax = Math.max(fyMax, gyMax);
     glyphXMin.push(gxMin);
+    if (gi > 0) advances[gi] = hasAdvances ? (swfAdvances[gi - 1] ?? 0) : Math.max(1, gxMax + Math.round(upm * 0.04));
 
     glyf.i16(contours.length).i16(gxMin).i16(gyMin).i16(gxMax).i16(gyMax);
     let pt = 0;
@@ -180,7 +204,7 @@ export function buildTtf(font: FontTag): Uint8Array {
     for (const c of contours) for (const p of c) { glyf.i16(p.y - py); py = p.y; }
     while (glyf.length % 2 !== 0) glyf.u8(0);
     loca.push(glyf.length);
-  }
+  });
   if (fxMin > fxMax) { fxMin = fyMin = 0; fxMax = fyMax = upm; }
   const glyfTable = glyf.build();
 
@@ -196,9 +220,15 @@ export function buildTtf(font: FontTag): Uint8Array {
   for (let i = 0; i < numGlyphs; i++) hmtx.u16(Math.max(0, Math.round(advances[i] ?? upm))).i16(glyphXMin[i] ?? 0);
   const hmtxTable = hmtx.build();
 
-  const ascent = Math.round(font.layout?.ascent ?? fyMax);
-  const descent = Math.round(font.layout?.descent ?? -fyMin);
-  const lineGap = Math.round(font.layout?.leading ?? 0);
+  // With a FontLayout, use its real vertical metrics. Without one, the old fallback used the
+  // glyph-bbox extremes (ascent = cap height, descent ~ 0); but a caps-only ascent under a
+  // line-height of one em leaves ~0.14em of half-leading above the text, so static lines
+  // (positioned at `top = baseline - fontHeight`) render a couple px too high. Reporting a
+  // full-em ascent with no descent makes the CSS baseline land exactly on `line.y`, matching
+  // Flash's vector baseline. These table-less faces are decorative single-line wordmarks.
+  const ascent = Math.round(font.layout?.ascent != null ? font.layout.ascent * scale : upm);
+  const descent = Math.round(font.layout?.descent != null ? font.layout.descent * scale : 0);
+  const lineGap = Math.round((font.layout?.leading ?? 0) * scale);
   const advanceMax = advances.reduce((m, a) => Math.max(m, Math.round(a)), 0);
 
   const hhea = new Writer();

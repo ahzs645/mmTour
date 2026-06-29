@@ -13,6 +13,15 @@ export class FontRegistry {
   private readonly families = new Map<number, string>();
   private style: HTMLStyleElement | undefined;
   private cssRules = new Set<string>();
+  private loads: Promise<unknown>[] = [];
+
+  /** Resolves once every embedded face registered so far has loaded (or failed).
+   *  Data-driven apps measure `textWidth` to lay themselves out, so the bootstrap
+   *  waits on this — otherwise a one-shot layout that runs before the font loads
+   *  measures the fallback face and never corrects (e.g. the bnl top-nav drifting). */
+  ready(): Promise<void> {
+    return Promise.allSettled(this.loads).then(() => undefined);
+  }
 
   register(timeline: AssetTimeline) {
     const fonts = Object.values(timeline.assets ?? {}).filter((asset) => asset.kind === "font" && asset.src);
@@ -45,12 +54,14 @@ export class FontRegistry {
       this.addCssFace(embedded, url);
       if (typeof FontFace !== "undefined" && typeof document.fonts?.add === "function") {
         const face = new FontFace(embedded, `url("${url}")`);
-        face
-          .load()
-          .then((loaded) => document.fonts.add(loaded))
-          .catch(() => {
-            /* extraction failed — the CSS fallback stack still applies */
-          });
+        this.loads.push(
+          face
+            .load()
+            .then((loaded) => document.fonts.add(loaded))
+            .catch(() => {
+              /* extraction failed — the CSS fallback stack still applies */
+            }),
+        );
       }
     }
   }

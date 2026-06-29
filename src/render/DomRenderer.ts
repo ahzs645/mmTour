@@ -9,6 +9,9 @@ import { applyColorTransform } from "./colorTransform";
 // instead of a broken-image box.
 const TRANSPARENT_PIXEL = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
+// Flash insets a dynamic TextField's content by a fixed 2px gutter inside its bounds.
+const TEXT_GUTTER = 2;
+
 // Mask shapes are inlined into the <mask> (Chrome won't rasterize an <image>-
 // referenced SVG inside a mask). Their fills are forced white → a robust
 // Mask shapes are inlined into the <clipPath>. CRITICAL: Chrome ignores nested
@@ -58,9 +61,9 @@ function loadMaskShape(src: string): ParsedShape | null | undefined {
   return undefined;
 }
 
-function svgImage(v: MaskVisual, extra = "", dimensions: { width: number; height: number }, key: string): string {
-  if (v.maskGroup) return `<g${extra}>${maskGroupSvg(v.maskGroup, key, dimensions)}</g>`;
-  if (v.text) return svgText(v, extra);
+function svgImage(v: MaskVisual, extra = "", dimensions: { width: number; height: number }, key: string, resolveFontFamily?: (fontId?: number) => string | undefined): string {
+  if (v.maskGroup) return `<g${extra}>${maskGroupSvg(v.maskGroup, key, dimensions, resolveFontFamily)}</g>`;
+  if (v.text) return svgText(v, extra, resolveFontFamily);
   const m = v.matrix;
   const url = assetUrl(v.src);
   const filter = v.colorTransform ? ` filter="url(#${maskColorFilterId(v.colorTransform)})"` : "";
@@ -71,7 +74,7 @@ function svgImage(v: MaskVisual, extra = "", dimensions: { width: number; height
   );
 }
 
-function svgText(v: MaskVisual, extra = ""): string {
+function svgText(v: MaskVisual, extra = "", resolveFontFamily?: (fontId?: number) => string | undefined): string {
   const text = v.text!;
   const m = v.matrix;
   const x = text.x ?? v.origin.x;
@@ -96,23 +99,34 @@ function svgText(v: MaskVisual, extra = ""): string {
     `color:${text.color ?? "#000"}`,
     `text-align:${align}`,
     `white-space:${whiteSpace}`,
-    "font-family:sans-serif",
+    // Composed (masked/clipped) text fields must use their embedded face like the
+    // plain path does — otherwise e.g. the Robotics "New Robots!" badge falls back to
+    // a wider system sans, overruns its field, and spills off the badge. The family
+    // stack is interpolated into a double-quoted style="" attribute, so swap the font
+    // names' double quotes for single quotes — otherwise the first `"` closes the
+    // attribute and the whole font-family (and everything after) is dropped.
+    `font-family:${(resolveFontFamily?.(text.fontId) ?? "sans-serif").replace(/"/g, "'")}`,
   ].join(";");
   return (
+    // A Flash text field draws past its own bounds (no clip), but an SVG <foreignObject>
+    // clips content to its width/height — which truncated e.g. "New Robots!" to "New Robot".
+    // overflow:visible lets the text render in full; the surrounding mask clip-path still
+    // bounds it to the artwork.
     `<foreignObject class="player-text player-mask-text" x="${x}" y="${y}" width="${width}" height="${height}" ` +
+    `overflow="visible" style="overflow:visible" ` +
     `transform="matrix(${m.a},${m.b},${m.c},${m.d},${m.tx},${m.ty})"${extra}>` +
     `<div xmlns="http://www.w3.org/1999/xhtml" style="${style}">${staticLines || content}</div></foreignObject>`
   );
 }
 
 /** Build an inline SVG string that clips `items` to the `mask` shape's geometry. */
-function maskGroupSvg(group: { mask: MaskVisual; items: MaskVisual[] }, key: string, dimensions: { width: number; height: number }): string {
+function maskGroupSvg(group: { mask: MaskVisual; items: MaskVisual[] }, key: string, dimensions: { width: number; height: number }, resolveFontFamily?: (fontId?: number) => string | undefined): string {
   const open = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${dimensions.width}" height="${dimensions.height}" style="position:absolute;left:0;top:0;overflow:visible">`;
   const filterDefs = maskColorFilterDefs(group.items);
   const shape = loadMaskShape(group.mask.src);
   // Until the mask shape loads (or if it failed), show the items unclipped.
   if (!shape) {
-    return `${open}${filterDefs ? `<defs>${filterDefs}</defs>` : ""}${group.items.map((it, index) => svgImage(it, "", dimensions, `${key}_${it.key ?? index}`)).join("")}</svg>`;
+    return `${open}${filterDefs ? `<defs>${filterDefs}</defs>` : ""}${group.items.map((it, index) => svgImage(it, "", dimensions, `${key}_${it.key ?? index}`, resolveFontFamily)).join("")}</svg>`;
   }
 
   // Bake mask-matrix ∘ origin-shift ∘ shape-g into ONE matrix on a single <g>, so the
@@ -125,7 +139,7 @@ function maskGroupSvg(group: { mask: MaskVisual; items: MaskVisual[] }, key: str
   // <path>/<polygon> directly (the only reliable form).
   const tf = `matrix(${combined.a},${combined.b},${combined.c},${combined.d},${combined.tx},${combined.ty})`;
   const clipBody = shape.body.replace(/<(path|polygon|rect|ellipse|circle)\b/g, `<$1 transform="${tf}"`);
-  const items = group.items.map((it, index) => svgImage(it, it.opacity !== 1 ? ` opacity="${it.opacity}"` : "", dimensions, `${key}_${it.key ?? index}`)).join("");
+  const items = group.items.map((it, index) => svgImage(it, it.opacity !== 1 ? ` opacity="${it.opacity}"` : "", dimensions, `${key}_${it.key ?? index}`, resolveFontFamily)).join("");
   return `${open}<defs>${filterDefs}<clipPath id="${clipId}" clipPathUnits="userSpaceOnUse">${clipBody}</clipPath></defs><g clip-path="url(#${clipId})">${items}</g></svg>`;
 }
 
@@ -232,6 +246,19 @@ export class DomRenderer {
         this.hoveredButtonKeys.delete(key);
       }
     }
+
+    this.scheduleStaticFit();
+  }
+
+  private staticFitQueued = false;
+  /** Coalesce static-line fitting to one rAF per render burst (and once fonts load), so we
+   *  don't force a layout reflow every frame. */
+  private scheduleStaticFit() {
+    if (this.staticFitQueued) return;
+    this.staticFitQueued = true;
+    const run = () => { this.staticFitQueued = false; fitStaticLines(this.layer); };
+    requestAnimationFrame(run);
+    document.fonts?.ready.then(() => fitStaticLines(this.layer)).catch(() => {});
   }
 
   /**
@@ -250,7 +277,7 @@ export class DomRenderer {
     }
     rendered.element.style.zIndex = String(node.order);
     rendered.element.style.transform = "none";
-    rendered.element.innerHTML = maskGroupSvg(node.maskGroup!, node.key, this.options.stageDimensions ?? { width: 640, height: 480 });
+    rendered.element.innerHTML = maskGroupSvg(node.maskGroup!, node.key, this.options.stageDimensions ?? { width: 640, height: 480 }, this.options.resolveFontFamily);
   }
 
   private createNode(node: RenderNode): RenderedNode {
@@ -435,6 +462,16 @@ export class DomRenderer {
     if (width > 0) element.style.width = `${width}px`;
     const height = text.height ?? node.origin.height;
     if (height > 0) element.style.height = `${height}px`;
+    // Flash insets a dynamic TextField's content by a 2px gutter inside its bounds, on all
+    // four sides; our bounds-derived box omits it, so dynamic fields rendered ~2px high and
+    // ~2px left (the field _height/autoSize metrics already budget the gutter — only the
+    // drawn position lacked it). A symmetric border-box pad reproduces it without disturbing
+    // center/right alignment or the wrap width. Static DefineText carries its own per-record
+    // positions via staticLineHtml, so it is left untouched.
+    if (!text.staticLines?.length) {
+      element.style.boxSizing = "border-box";
+      element.style.padding = `${TEXT_GUTTER}px`;
+    }
     element.style.fontSize = `${text.fontHeight}px`;
     element.style.lineHeight = `${text.lineHeight ?? text.fontHeight + (text.leading ?? 0)}px`;
     element.style.color = text.color ?? "#000";
@@ -472,7 +509,11 @@ export class DomRenderer {
 
 function flashHtmlTextToBrowserHtml(value: string): string {
   const template = document.createElement("template");
-  template.innerHTML = value;
+  // Flash's soft break is `<sbr />`, which the HTML parser treats as an unknown,
+  // non-void element: it nests every following sibling *inside* the <sbr>, and the
+  // serializer below then drops them. Normalize it to a real void <br> first so
+  // multi-line html fields (e.g. the BnL privacy footer) keep all their lines.
+  template.innerHTML = value.replace(/<sbr\b[^>]*\/?>/gi, "<br>");
   const serializeNode = (node: Node): string => {
     if (node.nodeType === Node.TEXT_NODE) return escapeHtml(node.textContent ?? "");
     if (!(node instanceof Element)) return "";
@@ -553,12 +594,35 @@ function staticLineHtml(
     const left = text.align === "center" ? line.x + (boxWidth - lineWidth) / 2 : line.x;
     const top = line.y - text.fontHeight;
     const align = text.align ?? "left";
+    // The true per-glyph advances of a DefineText live in its records (`line.width` is their
+    // sum), not in the font. When the embedded face's own advances are wider (e.g. the
+    // table-less "Impact" wordmark), the rendered line overruns `line.width`; mark it so a
+    // post-render pass scales it back to the recorded width — matching Flash's spacing.
+    // Scale from the left: a record's glyphs are anchored at `line.x` and advance rightward,
+    // so the left edge must stay put (origin:center would slide the line right as it shrinks).
     return (
-      `<span style="position:absolute;left:${left}px;top:${top}px;width:${lineWidth}px;` +
-      `height:${text.fontHeight}px;line-height:${text.fontHeight}px;white-space:pre;` +
+      `<span class="player-static-line" data-sw="${lineWidth}" style="position:absolute;left:${left}px;top:${top}px;width:${lineWidth}px;` +
+      `height:${text.fontHeight}px;line-height:${text.fontHeight}px;white-space:pre;transform-origin:left top;` +
       `color:${text.color ?? "#000"};text-align:${align}">${escapeHtml(line.text.trimEnd())}</span>`
     );
   }).join("");
+}
+
+/** Scale each static DefineText line back to its recorded advance width. A SWF text record
+ *  carries its own glyph advances; we render the string with the embedded font's advances,
+ *  which can be wider (table-less faces) — so squeeze the line horizontally to the recorded
+ *  width so spacing matches Flash. A no-op for faces whose advances already match. */
+function fitStaticLines(root: ParentNode) {
+  const spans = root.querySelectorAll<HTMLElement>("span.player-static-line");
+  for (const span of spans) {
+    const target = parseFloat(span.dataset.sw ?? "");
+    if (!Number.isFinite(target) || target <= 0) continue;
+    span.style.transform = "";
+    const natural = span.scrollWidth || span.getBoundingClientRect().width;
+    if (Number.isFinite(natural) && natural > target + 0.5) {
+      span.style.transform = `scaleX(${target / natural})`;
+    }
+  }
 }
 
 function suppressDuplicateTextNodes(nodes: RenderNode[]): RenderNode[] {

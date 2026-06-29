@@ -15,8 +15,10 @@ export {
   mergeJpeg,
   inflate,
   decodeLossless,
+  decodeJpegAlpha,
   bitmapToDataUrl,
   isJpegBitmap,
+  isAlphaJpegBitmap,
   isLosslessBitmap,
 } from "./imageDecoder.ts";
 export type { BitmapSet, RawImage, DecodedImage } from "./imageDecoder.ts";

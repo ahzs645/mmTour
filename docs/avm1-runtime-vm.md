@@ -130,10 +130,191 @@ name** (`"topNavButton"`, `"subsectionClip"`, …). `Model.init()` then loads th
   headline + article bodies, the news-link list, robot names, and the contact privacy
   text — matching the Ruffle reference.
 
-  **Remaining (fidelity, not blocking):** layout/positioning of some runtime-attached rows
-  isn't pixel-matched to Ruffle yet (e.g. nav-bar placement, animation timing of the reveal
-  panel), and the left-nav/ticker loops attach fewer rows than Ruffle in some states. These
-  are rendering-fidelity refinements on top of a working render, not architectural gaps.
+## Stage 4 — rendering fidelity (DONE — the home view matches Ruffle)
+
+Four fidelity bugs that made the working render diverge from Ruffle, each fixed
+generically (no scene-specific code):
+
+- **Embedded fonts were all rejected → everything fell back to Arial.** SWF
+  `DefineFont3` uses a 20480-unit em square, but OpenType/OTS (Chrome's font
+  sanitizer) caps `unitsPerEm` at 16384, so every in-browser-built bnl face
+  ("TradeGothic Bold" for the nav/headlines, the Frutiger faces, …) failed to
+  decode and the browser silently used Arial — losing the bold weight and the
+  correct glyph metrics. `convert/fontBuilder.ts` now scales any oversized font
+  (outlines + advances + vertical metrics) down to a valid 2048-unit em. This was
+  the dominant visible defect; with it the text renders in the real faces.
+
+- **The top-nav overflowed ("Contact Us" fell off the bar).** The nav positions
+  each item by the previous item's `_width`/`textWidth` (autoSize), which the
+  player estimated as `0.62 × fontHeight × chars`. TradeGothic Bold is condensed,
+  so every label was over-measured and the drift accumulated. `Player` now measures
+  with the field's real embedded font via canvas (advance widths, like Flash's
+  `textWidth`), gated on the face having loaded.
+
+- **The privacy footer lost three of its four lines.** Flash's soft break
+  `<sbr />` is an unknown, non-void tag; the HTML parser nested every following
+  sibling inside it and the serializer dropped them. `render/DomRenderer.ts`
+  normalizes `<sbr>` to a real void `<br>` first.
+
+- **The robotics roster leaked onto the home view.** Section reveal panels are
+  placed on the timeline and bound to their AS2 component classes, but only
+  `attachMovie`'d clips ran their constructor — and the constructor is where a
+  Section hides itself until activated. `player/avm1App.ts` now runs the AS2
+  constructor once for any timeline-placed class-linked clip (matching Flash's
+  instantiation semantics), so the robotics section stays hidden until opened and
+  the top-right panel is empty, as in Ruffle.
+
+## Stage 5 — frame-locked animation + interactive navigation (DONE)
+
+- **Animations ran on wall-clock, not the frame clock.** The app drove its timers,
+  tweens and `onEnterFrame` from `setTimeout`/`setInterval`/`Date.now`, decoupled
+  from the SWF frame rate, so its phase drifted from Ruffle; repeating timers were
+  disabled outright; and frame-based tweens snapped to their end instead of
+  animating. `runDataDrivenApp` now returns an `enterFrame(dtMs)` hook the Player
+  calls from `onTick`, and a frame-locked scheduler advances everything in lockstep
+  with the frame rate: timeouts/intervals fire off an accumulated frame clock
+  (`getTimer` returns it), `mx.transitions.Tween` animates over its real duration
+  with its easing applied, clip `onEnterFrame` handlers run each frame, and per-tick
+  mutations coalesce into the Player's single post-tick render. Repeating intervals
+  are re-enabled, so the background feature rotation runs as in Flash.
+
+- **The top-nav layout could drift on a font-load race.** The nav lays out once
+  from `textWidth`; if the embedded face hadn't loaded yet, the measurement fell
+  back to the char-count estimate and the bar stayed mis-spaced. `FontRegistry`
+  now exposes `ready()` and the data-driven bootstrap waits on it, so the layout
+  always measures the real face — matching Ruffle's bullets to within a pixel.
+
+With these, **section navigation works and animates**: clicking a top-nav item
+transitions to that section with its left subnav, header and themed background, as
+in Ruffle (verified against Ruffle for the Robotics section).
+
+## Stage 6 — section reveal-panel content (DONE)
+
+- **A section's body text stayed invisible.** Each section's content panel
+  (`subsectionHolder` → `subsection_N` → `body_txt`) is authored hidden in the SWF
+  — placed with a color-transform alpha of 0 — and revealed at runtime when the
+  section opens by setting `_alpha = 100`. The flatten *multiplied* the placement's
+  design alpha by the runtime clip alpha, but in Flash they are the same property:
+  `_alpha` REPLACES the placement alpha. So `design(0) × runtime(100)` stayed 0 and
+  the revealed copy never showed. `Player.placedAlpha` now lets a runtime `_alpha`
+  override the design alpha (in data-driven app mode; the tour keeps the legacy
+  multiply). Opening a section now shows its subsection body text — e.g. the
+  Robotics "About" copy — matching Ruffle.
+
+- **The selected top-nav label didn't turn white.** AS2 components restyle fields
+  at runtime via `TextField.setTextFormat(...)`; the top-nav whitens the selected
+  item's label (and reverts the previous one) with
+  `label_txt.setTextFormat({color})`. The VM didn't handle `setTextFormat`, so the
+  selected label kept its dark colour — dark-on-blue, which read as "off". A
+  `setTextFormat` bridge path now applies the format (color/size/align/leading)
+  through the existing text override, so the selected item turns white like Ruffle.
+
+## Stage 7 — robot image matte (DONE)
+
+- **A section's decorative robot bitmap showed a black box instead of a cutout.**
+  The Robotics robot arm is char **236**, a `DefineBitsJPEG3` — a JPEG plus a
+  *separate* zlib-compressed alpha channel that cuts the arm out of its background.
+  (An earlier diagnosis blamed a `clipDepth` mask on char 234/232; that was wrong —
+  the image carries its own alpha and needs no mask.) The in-browser compiler's
+  `bitmapBytes` (`src/convert/compileScene.ts`) routed *every* JPEG variant through
+  `mergeJpeg`, which keeps only the opaque JPEG and discards the JPEG3/4 alpha. So
+  the arm rendered as an opaque rectangle — the black JPEG matte — over the leaves.
+  `bitmapBytes` now detects alpha JPEGs (`isAlphaJpegBitmap`), decodes them via the
+  existing `decodeJpegAlpha` (JPEG → RGBA, then zlib-inflated alpha applied per
+  pixel) and emits an RGBA **PNG**, exactly like the lossless path; plain JPEGs with
+  no alpha stay JPEG. Verified end-to-end: char 236 now emits `images/236.png`
+  (456×309) whose alpha channel is ~62% fully transparent with soft (partial) edges
+  and an opaque arm — so the robot shows cut out over the leaf background, matching
+  Ruffle. This mirrors `bitmapToDataUrl`, which already handled alpha JPEGs; only the
+  compile-to-file path had the gap.
+
+## Stage 8 — Robotics-section text polish (DONE)
+
+Three more text fields in the Robotics section drifted from Ruffle:
+
+- **The "New Robots!" badge truncated to "New Robot" and used the wrong font.** The
+  badge label is a *composed* (clipped) text field, rendered by `DomRenderer.svgText`
+  inside an SVG `<foreignObject>`. Three things were wrong: (1) the path hardcoded
+  `font-family:sans-serif`; (2) the foreignObject clipped text to its own box (a Flash
+  field draws past its bounds); (3) most importantly, `svgText` builds the `<div>` as an
+  innerHTML string with a **double-quoted** `style=""` attribute, and the resolved family
+  stack contains double-quoted names (`"swf-font-43", …`) — so the first quote closed the
+  attribute and the whole `font-family` (plus everything after) was silently dropped,
+  leaving the label in a system sans. Fix: resolve the embedded face (threaded through
+  `maskGroupSvg`/`svgImage`), set `overflow:visible`, and **single-quote the font names**
+  so the attribute survives. The badge now renders in its embedded TradeGothic Bold,
+  matching Ruffle. (The normal text path was unaffected because it sets
+  `element.style.fontFamily` as a DOM property, not an attribute string.)
+
+- **The section-title tab showed a squished sliver instead of "Robotics".** bnl authors
+  the title field ~10px wide and lets it autoSize to its text. We rendered the fixed box
+  and compressed "Robotics" to fit. `Player.leafNode` now measures a single-line autoSize
+  field (flag captured from `DefineEditText` in `editTextStyle`, or set at runtime via
+  `leafProps.autoSize`) and grows the box. Note the grow anchor comes from the autoSize
+  *direction* ("left"/"center"/"right", `true`=left) — **not** text alignment: an early
+  version shifted by text-align, which slid the center-aligned-but-autoSize="left" top-nav
+  labels left under their bullets and broke nav spacing. The tab now shows a full-size
+  "Robotics" and the nav stays aligned.
+
+- **The "ROBOTICS" wordmark rendered letter-spaced ("R O B O T I C S").** Its font
+  (char 240, "Impact") ships *no* `FontAdvanceTable`; `buildTtf` then gave every glyph a
+  full-em advance, so each letter sat an em apart. `buildTtf` now derives a glyph's
+  advance from its own outline (`xMax` + a small right bearing) when no table is present,
+  matching the condensed face. This also tightened the "New Robots!" font (char 43, also
+  table-less). Fonts that ship advances are unchanged.
+
+**On the top-nav "pill":** an earlier note here flagged the selected item not keeping its
+blue pill. That was a misread — bnl has **no persistent selected state**. The pill is
+`topNavButton.background._visible`, set `true` only on rollover and `false` on rollout (no
+"selected"/"enabled" gate anywhere in the component). Verified against Ruffle: with the
+pointer moved away, Ruffle shows plain text for every item, exactly like our player; on
+hover both show the blue pill + white label + white bullet. The nav already matches.
+
+The Robotics section now matches Ruffle: alpha-cutout robot, full-size title, tight
+wordmark, the "New Robots!" badge in its embedded face, body text, subnav, themed
+background, and the hover-only nav pill.
+
+## Stage 9 — left-subnav vertical spacing (DONE)
+
+The left-column subnav (e.g. Business Divisions → SYNOPSIS / BUSINESS COMMUNITIES /
+BUSINESS ETHICS) stacked ~3px too tight per item, so the labels crept upward relative
+to their separator lines and drifted further with each row. `LeftNav.populate` stacks
+the attached `left nav button` clips by each one's `_height` (`_loc6_ += _loc2_._height`),
+and `LeftNavButton.set title` first sets `title_txt._y = 8`, then
+`bottomBar._y = title_txt._height + 15` — so a button's height is defined by its
+runtime-moved `bottomBar`. Our `liveClipBounds` (which backs the `_height` the component
+reads) measured each child from its **static** `instance.matrix`, ignoring the runtime
+`bottomBar._y` override, so every button reported ~30px instead of ~33px. Fix:
+`liveClipBounds` now applies `applyClipMatrixOverrides(instance.matrix, child)` — the same
+runtime child transform the `flatten()` render path already uses — so the reported height
+reflects the moved `bottomBar`. The separator lines now land exactly on Ruffle's and the
+per-row drift is gone. (The `title_txt._y = 8` itself was already honored.) This is a
+general bounds-vs-render consistency fix, not a bnl-specific tweak.
+
+A second, smaller offset remained after that: every dynamic field sat ~2px high and ~2px
+left of Ruffle. Flash insets an editText field's content by a fixed **2px gutter** inside
+its bounds, on all four sides; our box is derived straight from the SWF `DefineEditText`
+bounds (`editTextStyle` sets `x/y = bounds.{x,y}Min/20`) and omitted it — the field's
+`_height`/autoSize metrics already budgeted the gutter (`textWidth + 4`), only the drawn
+position lacked it. `DomRenderer.styleText` now applies a symmetric `box-sizing:border-box`
++ `padding:2px` on the flowing-text path, which reproduces the gutter without disturbing
+center/right alignment or the wrap width. Static `DefineText` (the wordmark, section
+titles) carries its own per-record positions via `staticLineHtml` and is left untouched.
+Subnav labels now match Ruffle's baseline (and left edge exactly); nav labels, news
+headlines, and body copy are unaffected (the inset moves them onto Ruffle, not off it).
+
+Finally, the separators stopped tracking *content amount*: a Corporate-News headline that
+wraps onto three lines got the same cell as a two-line one, so its rule cut close to the
+text. `liveTextMetrics` had estimated the wrapped line count as `ceil(textWidth /
+wrapWidth)`, which divides total text width and ignores word boundaries — a 3-line headline
+measured as 2. It now lays the text out in a cached hidden `<div>` at the renderer's content
+width (box − gutter) with the embedded face and reads the real wrapped height, so the
+field's `_height` — and thus `bottomBar._y` — grows with the actual line count. One subtlety:
+a CSS line box adds `leading` below *every* line incl. the last, but Flash's `textHeight`
+omits the trailing leading on multi-line fields, so the DOM height is one `leading` too tall
+for 2+ lines; subtract it (a single-line floor leaves 1-line items untouched). The news
+separators now land on Ruffle's to the pixel (`[13,53,96,138,193,235]`), the 3-line item
+included, and the single-line subnav is unchanged.
 
 ## Non-negotiable
 

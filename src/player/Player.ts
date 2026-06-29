@@ -24,7 +24,7 @@ import {
   type ButtonVisualState,
 } from "./renderNodes";
 import { ClipInstance } from "./ClipInstance";
-import { runDataDrivenApp, type AppClip, type AppText, type PlayerBridge } from "./avm1App";
+import { runDataDrivenApp, type AppClip, type AppText, type DataDrivenApp, type PlayerBridge } from "./avm1App";
 import { evalCondition } from "./conditions";
 import { IDENTITY, multiplyMatrix } from "./matrix";
 import { Ticker } from "./Ticker";
@@ -100,6 +100,12 @@ export type PlayerOptions = {
   /** Frame to start at. Overrides `timeline.entryFrame` — a movie LOADED via loadMovieNum
    *  must start at 0 to run its gating logic; entryFrame is only the standalone preview frame. */
   startFrame?: number;
+  /** Resolve a text field's fontId to its CSS font-family stack (shared with the renderer),
+   *  so the player can measure `textWidth`/autoSize `_width` with the real embedded metrics. */
+  resolveFontFamily?: (fontId?: number) => string | undefined;
+  /** Resolves once the scene's embedded fonts have loaded. A data-driven app's bootstrap
+   *  waits on this so its one-shot, `textWidth`-driven layout measures the real faces. */
+  awaitFonts?: () => Promise<void>;
 };
 
 const ROOT_ID = -1;
@@ -123,6 +129,9 @@ export class Player {
   private readonly renderer: DomRenderer;
   private readonly options: PlayerOptions;
   private readonly ticker: Ticker;
+  private destroyed = false;
+  /** Frame driver for a running data-driven app (bnl), advanced on each tick. */
+  private dataApp: DataDrivenApp | null = null;
 
   private readonly assets: Record<string, TimelineAsset>;
   private readonly linkageAssetIds = new Map<string, number>();
@@ -238,9 +247,24 @@ export class Player {
   private tryRunDataDrivenApp() {
     const control = this.timeline.control as { initActions?: unknown[]; frameBytecode?: { frame: number }[] } | undefined;
     if (!control?.initActions?.length || !control?.frameBytecode?.length) return;
+    // The app lays itself out from `textWidth` (e.g. the top-nav positions each item
+    // by the previous label's measured width). Those measurements are only correct
+    // once the embedded fonts have loaded, and the layout runs once — so wait for the
+    // fonts first. Without this the layout can measure the fallback face and the bar
+    // drifts permanently. Falls through synchronously when no awaitFonts is provided.
+    const fontsReady = this.options.awaitFonts?.();
+    if (fontsReady) {
+      fontsReady.then(() => this.runDataDrivenAppNow(control)).catch(() => this.runDataDrivenAppNow(control));
+      return;
+    }
+    this.runDataDrivenAppNow(control);
+  }
+
+  private runDataDrivenAppNow(control: { initActions?: unknown[]; frameBytecode?: { frame: number }[] }) {
+    if (this.destroyed) return; // torn down during the async font wait
     // The app's entry script (e.g. App.main) lives on a later root frame that also
     // places the View container instances. Advance the root there so they exist.
-    const bootFrame = Math.max(0, ...control.frameBytecode.map((f) => Number(f.frame) || 0));
+    const bootFrame = Math.max(0, ...control.frameBytecode!.map((f) => Number(f.frame) || 0));
     if (this.root.currentFrame !== bootFrame) this.root = this.buildRoot(bootFrame);
     const idToLinkage = new Map<number, string>();
     for (const [name, id] of Object.entries((this.timeline as { linkage?: Record<string, number> }).linkage ?? {})) {
@@ -252,7 +276,7 @@ export class Player {
       idToLinkage.set(asset.id, names[0]);
     }
     try {
-      runDataDrivenApp(control as never, this.makeAppBridge(idToLinkage));
+      this.dataApp = runDataDrivenApp(control as never, this.makeAppBridge(idToLinkage));
     } catch (error) {
       console.warn("[avm1App] data-driven app bootstrap failed", error);
     }
@@ -276,6 +300,7 @@ export class Player {
         return child ? asClip(child) : undefined;
       },
       createEmptyMovieClip: (parent, name, depth) => asClip(this.createEmptyClip(toClip(parent), name, depth)),
+      removeClip: (clip) => this.removeMovieClip(toClip(clip)),
       setText: (t, value, html) => {
         const owner = toClip(t.clip);
         const id = this.findTextChildByName(owner, t.field);
@@ -294,6 +319,13 @@ export class Player {
       setTextProp: (t, key, value) => {
         const owner = toClip(t.clip);
         this.setLeafDisplayProp(owner, t.field, normalizeAvm1PropertyName(key) ?? key, value as VarValue);
+      },
+      setTextFormat: (t, format) => {
+        const owner = toClip(t.clip);
+        const id = this.findTextChildByName(owner, t.field);
+        if (id === undefined) return;
+        Object.assign(this.textOverrideFor({ id, owner, name: t.field }), dynamicTextFromTextFormat(format as Record<string, VarValue | undefined>));
+        owner.mutatedLeaves.add(t.field);
       },
       getClipProp: (clip, key) => this.getAppClipProp(toClip(clip), normalizeAvm1PropertyName(key) ?? key),
       setClipProp: (clip, key, value) => { setClipProperty(toClip(clip), normalizeAvm1PropertyName(key) ?? key, value as VarValue); },
@@ -439,7 +471,12 @@ export class Player {
         origin = applyLeafOriginOverrides(asset, props);
       }
       if (!origin.width && !origin.height) continue;
-      boxes.push(transformedBounds(origin, instance.matrix));
+      // Honor runtime child-clip transforms (attachMovie'd buttons set e.g.
+      // bottomBar._y at runtime); the static instance.matrix alone misses them, so a
+      // component that stacks children by their reported _height (bnl's LeftNav) would
+      // pack them too tightly. Mirrors the flatten() render path.
+      const child = clip.childClips.get(instance.depth);
+      boxes.push(transformedBounds(origin, applyClipMatrixOverrides(instance.matrix, child)));
     }
     if (!boxes.length) return undefined;
     const minX = Math.min(...boxes.map((box) => box.x));
@@ -493,13 +530,114 @@ export class Player {
           : fallbackHeight || 12,
     );
     const autoSize = props?.autoSize !== undefined ? avm1Boolean(props.autoSize) : false;
-    const width = measuredTextWidth(text.text ?? "", text.fontHeight, fallbackWidth, autoSize);
-    const charsPerLine = Math.max(1, Math.floor(Math.max(1, autoSize ? fallbackWidth || width : fallbackWidth || width) / Math.max(1, lineHeight * 0.62)));
+    const realWidth = this.measureTextWidthPx(text.text ?? "", Number(text.fontHeight), text.fontId ?? asset.text?.fontId);
+    const width = realWidth != null
+      // Flash autoSize fields are textWidth + a 2px gutter on each side; non-autoSize
+      // fields keep their authored bounds unless the text is wider (then it reports the
+      // text width, matching the heuristic path the app already relied on).
+      ? (autoSize ? realWidth + 4 : Math.max(fallbackWidth, realWidth))
+      : measuredTextWidth(text.text ?? "", text.fontHeight, fallbackWidth, autoSize);
+    const wrapWidth = Math.max(1, fallbackWidth || width);
+    const charsPerLine = Math.max(1, Math.floor(wrapWidth / Math.max(1, lineHeight * 0.62)));
     const plain = (text.text ?? "").replace(/<[^>]+>/g, "").trim();
     const explicitLines = plain ? plain.split(/\r?\n/).length : 1;
-    const wrappedLines = plain ? Math.ceil(plain.length / charsPerLine) : 1;
-    const contentHeight = Math.max(lineHeight, Math.max(explicitLines, wrappedLines) * lineHeight);
-    return { width, height: autoSize ? contentHeight : Math.max(fallbackHeight, contentHeight) };
+    // A word-wrapping field's real line count depends on word boundaries, not just total
+    // text width: measure the wrapped height in a hidden div at the same content width the
+    // renderer uses (box width minus the 2px gutter each side). The old `ceil(textWidth /
+    // wrapWidth)` ratio ignored word breaks, so a 3-line headline was counted as 2 and
+    // bnl's LeftNav — which drops each item's separator by the field's reported `_height` —
+    // gave it the same cell as a 2-line item. Fall back to the ratio estimate when the DOM
+    // or the embedded face isn't available yet.
+    const measuredWrapHeight = text.wordWrap && plain
+      ? this.measureWrappedHeightPx(plain, fontHeight, text.fontId ?? asset.text?.fontId, Math.max(1, wrapWidth - 4), lineHeight)
+      : undefined;
+    let contentHeight: number;
+    if (measuredWrapHeight != null && measuredWrapHeight > 0) {
+      // A CSS line box applies `leading` below every line, including the last; Flash's
+      // textHeight doesn't count the trailing leading on a multi-line field. The DOM
+      // measurement is therefore one `leading` too tall for 2+ lines — subtract it (the
+      // single-line floor keeps the verified 1-line subnav height unchanged).
+      const lead = Number(text.leading ?? 0);
+      contentHeight = Math.max(lineHeight, measuredWrapHeight - lead);
+    } else {
+      const wrappedLines = text.wordWrap && plain
+        ? (realWidth != null && realWidth > 0 ? Math.max(1, Math.ceil(realWidth / wrapWidth)) : Math.ceil(plain.length / charsPerLine))
+        : 1;
+      contentHeight = Math.max(lineHeight, Math.max(explicitLines, wrappedLines) * lineHeight);
+    }
+    // A Flash TextField's _height is its text height plus a 2px gutter top and bottom; the
+    // LeftNav stacks subnav buttons by that reported height, so omitting the gutter packed
+    // the items ~4px too tightly vs Ruffle. Include it for autoSize fields (which report
+    // their fitted height); fixed-height fields keep their authored bounds.
+    return { width, height: autoSize ? contentHeight + 4 : Math.max(fallbackHeight, contentHeight) };
+  }
+
+  private measureDiv?: HTMLDivElement | null;
+  private wrappedHeightCache = new Map<string, number>();
+  /** Measure the *wrapped* height of a word-wrapping field with its real embedded font, by
+   *  laying the text out in a hidden div at the same content width the renderer uses. The
+   *  old `ceil(textWidth / wrapWidth)` estimate ignored word boundaries, so a headline that
+   *  actually breaks onto three lines was counted as two — and bnl's LeftNav, which stacks
+   *  items (and drops each one's separator) by the field's reported `_height`, gave every
+   *  item the same cell instead of growing it to fit. Returns undefined when no DOM is
+   *  available or the embedded face has not loaded yet (caller falls back to the estimate). */
+  private measureWrappedHeightPx(text: string, fontHeightPx: number, fontId: number | undefined, contentWidth: number, lineHeightPx: number): number | undefined {
+    if (typeof document === "undefined" || typeof document.createElement !== "function") return undefined;
+    if (!Number.isFinite(fontHeightPx) || fontHeightPx <= 0 || !(contentWidth > 0)) return undefined;
+    const family = this.options.resolveFontFamily?.(fontId);
+    if (!family) return undefined;
+    const stripped = text.replace(/<[^>]+>/g, "");
+    if (!stripped.trim()) return 0;
+    const primary = family.split(",")[0].trim().replace(/^["']|["']$/g, "");
+    try { if (document.fonts && !document.fonts.check(`${fontHeightPx}px "${primary}"`)) return undefined; } catch { return undefined; }
+    const key = `${fontId}|${Math.round(contentWidth)}|${Math.round(lineHeightPx)}|${fontHeightPx}|${stripped}`;
+    const cached = this.wrappedHeightCache.get(key);
+    if (cached !== undefined) return cached;
+    let div = this.measureDiv;
+    if (!div) {
+      div = document.createElement("div");
+      div.style.cssText = "position:absolute;visibility:hidden;left:-99999px;top:0;white-space:pre-wrap;margin:0;padding:0;border:0";
+      (document.body ?? document.documentElement).appendChild(div);
+      this.measureDiv = div;
+    }
+    div.style.fontFamily = family;
+    div.style.fontSize = `${fontHeightPx}px`;
+    div.style.lineHeight = `${lineHeightPx}px`;
+    div.style.width = `${contentWidth}px`;
+    div.textContent = stripped;
+    const h = div.offsetHeight;
+    if (h > 0) this.wrappedHeightCache.set(key, h);
+    return h;
+  }
+
+  private measureCtx?: CanvasRenderingContext2D | null;
+  /** Measure a line's pixel width with the field's real embedded font (its advance
+   *  widths, like Flash's `textWidth`) so autoSize/`_width`-driven layouts — e.g. the
+   *  bnl top-nav, which positions each item by the previous one's measured width —
+   *  match Ruffle instead of a fixed char-count estimate. Returns undefined when no
+   *  DOM/canvas is available or the embedded face has not loaded yet (the caller then
+   *  falls back to the estimate), and the widest line's width for multi-line text. */
+  private measureTextWidthPx(text: string, fontHeightPx: number, fontId?: number): number | undefined {
+    if (typeof document === "undefined" || typeof document.createElement !== "function") return undefined;
+    if (!Number.isFinite(fontHeightPx) || fontHeightPx <= 0) return undefined;
+    const family = this.options.resolveFontFamily?.(fontId);
+    if (!family) return undefined;
+    const stripped = text.replace(/<[^>]+>/g, "");
+    if (!stripped.trim()) return 0;
+    // Only trust real metrics once the embedded face has loaded; otherwise canvas would
+    // measure a fallback system font and report the wrong width.
+    const primary = family.split(",")[0].trim().replace(/^["']|["']$/g, "");
+    try { if (document.fonts && !document.fonts.check(`${fontHeightPx}px "${primary}"`)) return undefined; } catch { return undefined; }
+    if (this.measureCtx === undefined) this.measureCtx = document.createElement("canvas").getContext("2d");
+    const ctx = this.measureCtx;
+    if (!ctx) return undefined;
+    ctx.font = `${fontHeightPx}px ${family}`;
+    let max = 0;
+    for (const line of stripped.split(/\r?\n/)) {
+      const w = ctx.measureText(line.replace(/\s+$/, "")).width;
+      if (w > max) max = w;
+    }
+    return max;
   }
 
   get frameCount(): number {
@@ -559,6 +697,8 @@ export class Player {
   }
 
   destroy() {
+    this.destroyed = true;
+    this.dataApp = null;
     this.ticker.destroy();
     this.clearRuntimeTimers();
     this.buttonVisualStates.clear();
@@ -2070,6 +2210,9 @@ export class Player {
 
   private onTick() {
     this.tickClip(this.root);
+    // Drive a data-driven app's timers/tweens/onEnterFrame on the frame clock so
+    // its animations stay in lockstep with the SWF frame rate (and Ruffle).
+    this.dataApp?.enterFrame(1000 / this.ticker.fps);
     this.render();
     this.options.onFrame?.(this.root.currentFrame, this.ticker.isPlaying);
   }
@@ -3147,6 +3290,18 @@ export class Player {
     return false;
   }
 
+  /** Alpha contribution of a placed instance. A clip's design alpha (the placement's
+   *  color-transform alpha) and a runtime `_alpha` are the SAME Flash property, so a
+   *  runtime `_alpha` REPLACES the design alpha rather than multiplying with it. The
+   *  legacy multiply is kept for the tour (where nothing sets `_alpha` over a faded
+   *  placement); the override is applied in data-driven app mode, where a section's
+   *  content panel is authored hidden (cxform alpha 0) and revealed at runtime — the
+   *  multiply would otherwise keep it at 0 even after the app sets `_alpha = 100`. */
+  private placedAlpha(instanceOpacity: number, child: ClipInstance | undefined): number {
+    if (this.dataApp && child?.alpha !== undefined) return clipAlpha(child);
+    return instanceOpacity * clipAlpha(child);
+  }
+
   private flatten(
     clip: ClipInstance,
     world: RenderNode["matrix"],
@@ -3228,7 +3383,7 @@ export class Player {
       if (child && runtimeMaskClips.has(child)) continue;
       if (child?.visible === false) continue;
       const matrix = multiplyMatrix(world, applyClipMatrixOverrides(instance.matrix, child));
-      const opacity = worldOpacity * instance.opacity * clipAlpha(child);
+      const opacity = worldOpacity * this.placedAlpha(instance.opacity, child);
       const colorTransform = composeRenderColorTransform(worldColorTransform, instance.colorTransform);
       const key = `${path}/${instance.depth}`;
       if (!asset) {
@@ -3349,7 +3504,7 @@ export class Player {
       const child = clip.childClips.get(instance.depth);
       if (child?.visible === false) continue;
       const matrix = multiplyMatrix(world, applyClipMatrixOverrides(instance.matrix, child));
-      const instanceOpacity = opacity * instance.opacity * clipAlpha(child);
+      const instanceOpacity = opacity * this.placedAlpha(instance.opacity, child);
       const colorTransform = composeRenderColorTransform(worldColorTransform, instance.colorTransform);
       const key = `${path}/${instance.depth}`;
       if (asset.kind === "button") {
@@ -3593,6 +3748,12 @@ export class Player {
     parentClip?: ClipInstance,
     leafProps?: Record<string, VarValue | undefined>,
   ): RenderNode {
+    let origin = applyLeafOriginOverrides(asset, leafProps);
+    let text = asset.kind === "text" ? this.resolveTextField(asset.id, asset, parentClip, instance.name) : undefined;
+    if (text) {
+      const grown = this.autoSizeTextLayout(asset, text, leafProps);
+      if (grown) ({ text, origin } = { text: grown.text, origin: { ...origin, x: grown.x, width: grown.width } });
+    }
     return {
       key,
       order,
@@ -3600,14 +3761,53 @@ export class Player {
       kind: asset.kind,
       name: instance.name,
       src,
-      origin: applyLeafOriginOverrides(asset, leafProps),
+      origin,
       matrix,
       opacity,
       colorTransform,
       ...renderMetadataFromInstance(instance),
       clipDepth: instance.clipDepth,
-      text: asset.kind === "text" ? this.resolveTextField(asset.id, asset, parentClip, instance.name) : undefined,
+      text,
     };
+  }
+
+  /** A Flash autoSize text field grows to fit its text instead of clipping/compressing —
+   *  e.g. bnl's section-title tab authors the field ~10px wide and lets "Robotics" expand
+   *  it. We render a fixed box and would otherwise squeeze the text to a sliver, so for a
+   *  single-line autoSize field measure the real text and widen the box, shifting x by the
+   *  autoSize *direction* (left/center/right — a separate property from text alignment; the
+   *  default `true` is left-anchored) so it grows the way Flash does. Returns undefined when
+   *  it shouldn't apply (multiline, empty, already-fitting, or the font hasn't loaded yet). */
+  private autoSizeTextLayout(
+    asset: TimelineAsset,
+    text: NonNullable<ReturnType<Player["resolveTextField"]>>,
+    leafProps?: Record<string, VarValue | undefined>,
+  ): { text: NonNullable<ReturnType<Player["resolveTextField"]>>; x: number; width: number } | undefined {
+    // Flash's TextField.autoSize is a *direction* ("left"/"center"/"right"), independent
+    // of text alignment, and `true` means "left". The field grows from that anchor:
+    // "left" keeps the left edge fixed (grows right), "center" grows both ways, "right"
+    // keeps the right edge. Using the anchor (not text.align) matters — the top-nav labels
+    // are center-*aligned* but autoSize="left", so they must keep their left edge so the
+    // leading bullet stays put; center-shifting them (the old bug) slid them under the bullet.
+    const raw = leafProps?.autoSize !== undefined ? leafProps.autoSize : (text.autoSize ? "left" : undefined);
+    if (raw === undefined || raw === null) return undefined;
+    const rawStr = typeof raw === "string" ? raw.toLowerCase() : "";
+    const on = rawStr ? rawStr !== "none" : avm1Boolean(raw);
+    if (!on || text.wordWrap || text.multiline || text.staticLines?.length) return undefined;
+    const anchor = rawStr === "center" ? "center" : rawStr === "right" ? "right" : "left";
+    const content = (text.text ?? "").replace(/<[^>]+>/g, "");
+    if (!content.trim() || content.includes("\n")) return undefined;
+    const natural = this.measureTextWidthPx(content, Number(text.fontHeight), text.fontId ?? asset.text?.fontId);
+    if (natural == null || natural <= 0) return undefined;
+    const measured = natural + 4; // Flash autoSize adds a 2px gutter each side
+    const authoredX = text.x ?? asset.text?.x ?? asset.origin.x ?? 0;
+    const authoredWidth = text.width ?? asset.text?.width ?? asset.origin.width ?? 0;
+    if (measured <= authoredWidth) return undefined; // already fits — leave the authored box
+    const x =
+      anchor === "center" ? authoredX + (authoredWidth - measured) / 2
+      : anchor === "right" ? authoredX + (authoredWidth - measured)
+      : authoredX;
+    return { text: { ...text, x, width: measured }, x, width: measured };
   }
 
   /** Merge loadVariables() text into the player and re-render bound fields. */
