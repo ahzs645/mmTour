@@ -3290,6 +3290,22 @@ export class Player {
     return false;
   }
 
+  /** Whether any descendant child clip was hidden at runtime (`_visible = false`). A baked
+   *  sprite frame is composited at the SWF's *design-time* state, so a child a class method
+   *  later hides (e.g. bnl's TopNavButton constructor sets `background._visible = false`, so
+   *  the blue rollover pill is hidden until hover) would still be painted from the bake. When
+   *  the subtree holds such a hidden clip we render the sprite from the live tree instead, so
+   *  the `child.visible === false` skip in `flatten` actually drops it. Gated (like the
+   *  sibling dynamic-instance check) on `hasAnyDynamicInstances`, so a scene that never
+   *  mutates its display list keeps its baked-frame fidelity untouched. */
+  private subtreeHasHiddenChild(clip: ClipInstance): boolean {
+    for (const child of clip.childClips.values()) {
+      if (child.visible === false) return true;
+      if (this.subtreeHasHiddenChild(child)) return true;
+    }
+    return false;
+  }
+
   /** Alpha contribution of a placed instance. A clip's design alpha (the placement's
    *  color-transform alpha) and a runtime `_alpha` are the SAME Flash property, so a
    *  runtime `_alpha` REPLACES the design alpha rather than multiplying with it. The
@@ -3434,7 +3450,8 @@ export class Player {
       // transparent button hit areas from its nested timeline so it stays
       // interactive and its frame scripts still run (logic lives in the tree).
       if (asset.kind === "sprite" && asset.frames?.length && !asset.overflowsBounds
-          && !(this.hasAnyDynamicInstances && child && this.subtreeHasDynamicInstances(child))) {
+          && !(this.hasAnyDynamicInstances && child && this.subtreeHasDynamicInstances(child))
+          && !(this.hasAnyDynamicInstances && child && this.subtreeHasHiddenChild(child))) {
         const frameIndex = child ? clamp(child.currentFrame, 0, asset.frames.length - 1) : 0;
         out.push(spriteNode(key, order.n++, asset, asset.frames[frameIndex], matrix, opacity, instance, child?.currentFrame, colorTransform));
         if (child && asset.timeline?.length) this.collectButtons(child, matrix, colorTransform, key, order, out, opacity);

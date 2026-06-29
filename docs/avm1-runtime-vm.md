@@ -263,16 +263,76 @@ Three more text fields in the Robotics section drifted from Ruffle:
   matching the condensed face. This also tightened the "New Robots!" font (char 43, also
   table-less). Fonts that ship advances are unchanged.
 
-**On the top-nav "pill":** an earlier note here flagged the selected item not keeping its
-blue pill. That was a misread — bnl has **no persistent selected state**. The pill is
+**On the top-nav "pill":** bnl has **no persistent selected state** — the pill is
 `topNavButton.background._visible`, set `true` only on rollover and `false` on rollout (no
-"selected"/"enabled" gate anywhere in the component). Verified against Ruffle: with the
-pointer moved away, Ruffle shows plain text for every item, exactly like our player; on
-hover both show the blue pill + white label + white bullet. The nav already matches.
+"selected"/"enabled" gate anywhere in the component). The `TopNavButton` constructor sets
+`background._visible = false` up front, so at rest every item is plain text + bullet.
 
 The Robotics section now matches Ruffle: alpha-cutout robot, full-size title, tight
-wordmark, the "New Robots!" badge in its embedded face, body text, subnav, themed
-background, and the hover-only nav pill.
+wordmark, the "New Robots!" badge in its embedded face, body text, subnav, and themed
+background.
+
+## Stage 8a — the rollover pill was baked on for *every* nav item (DONE)
+
+A later look found the nav rendering **all** items with the blue pill at rest — Ruffle
+shows none until hover. Root cause was the **tree-vs-baked** split, not the pill logic:
+`topNavButton` (char 63) is a sprite with baked frames and no `overflowsBounds`, so
+`flatten` rendered it as **one composited `DefineSprite_63/1.svg`** (pill 3-slice + bullet
++ a placeholder label) and only overlaid the live `label_txt`. The constructor's
+`background._visible = false` *did* run and set the child clip's `visible = false`, but the
+bake is composited at the SWF's **design-time** state (pill visible), so the runtime hide
+never reached the picture. (The constructor runs and the hide lands — confirmed by reading
+the background child's `visible` at flatten time — it just couldn't affect a baked frame.)
+
+Fix (`Player.flatten`, generic): a sprite whose subtree holds a **runtime-hidden child
+clip** (`visible === false`) is pulled onto the live-tree render path instead of baked, so
+the `child.visible === false` skip already in `flatten`/`collectButtons` actually drops it.
+New `subtreeHasHiddenChild`, gated on `hasAnyDynamicInstances` like the sibling
+dynamic-instance check, so a scene that never mutates its display list keeps baked-frame
+fidelity. With it the nav matches Ruffle: plain at rest, and on hover the one hovered item
+gets its pill + white label (`background._visible = true` → that subtree no longer hidden →
+re-bakes with the pill, sized to the label by `set label`).
+
+## Stage 8b — the Corporate-News "TOP STORY" lede overlaps the headline (DIAGNOSED)
+
+In the news section the `NewsTopStory` panel draws its lede text *on top of* the wrapped
+headline (the right-column `NewsStory` renders fine). The component positions each lede
+line relative to the headline height:
+
+```as
+// NewsTopStory.set lede
+this.textClips[0]._y += (this.titleClip.title_txt._height - 25.6) + 2;
+```
+
+Four independent defects stack up here; the panel needs all four to land like Ruffle, and
+only the first three have low-risk runtime fixes — the fourth is the actual blocker and
+lives in the build/VM, so the panel is **diagnosed, not yet fixed**:
+
+1. **`InitArray` reversed every array literal.** `avm1Vm`/`convert/avm1/interp.ts` build an
+   array with `arr.unshift(stack.pop())`. AVM1 pushes elements last-first, so the top of
+   the stack is element 0 (Ruffle: `array[i] = pop()`); `unshift` flips it, so
+   `[a,b,c][0]` came back as `c`. `textClips[0]` (meant to be the *first* lede line, the
+   only one the `_y` nudge anchors on) resolved to the last, unplaced field. Fix is
+   `arr.push` — verified to make `textClips[0]` the right leaf — but it changes ordering for
+   *all* data-driven arrays, so it wants a full bnl regression pass before landing.
+2. **A text leaf's `_x`/`_y` weren't readable.** `Player.getAppTextProp` handled
+   `_width`/`_height`/`textColor` but returned `undefined` for `_x`/`_y`, so
+   `text_txt._y += …` computed `undefined + n = NaN` and never moved the field. A leaf's
+   `_y` should default to its placement matrix `ty` (pixels), like a clip's `placedY`.
+3. **Wrapped-text height was under-measured for the headline font.** Line height was
+   `fontHeight + leading`, but Flash advances lines by the font's real **ascent+descent**.
+   For TradeGothic Bold (the headline face) that's ~1.17× the em, so the 2-line title
+   measured ~39px vs Flash's ~47, and the `_height - 25.6` offset under-shot. Canvas
+   `measureText().fontBoundingBox{Ascent,Descent}` gives the right advance (≈21px@18px vs
+   fontHeight 18); fonts where it equals the em (the Frutiger body faces) are unchanged.
+4. **`set lede` never reaches the `_y` line (the actual blocker).** Even with 1–3, the
+   field doesn't move: instrumenting the VM shows `set lede` runs the word-wrap `while`
+   loop and reads `titleClip.title_txt._height`, then **stops** — `this.textClips` is never
+   evaluated, so the offset assignment doesn't execute. The compiled bytecode for the
+   setter appears to end early (likely a `convert/avm1Control` extraction gap for this
+   compound-assignment-in-a-loop shape), so the runtime fixes above can't land the lede.
+   Fixing this means closing the bytecode-extraction gap (or the VM control-flow handling)
+   for that function — build-side work beyond the nav-pill change.
 
 ## Stage 9 — left-subnav vertical spacing (DONE)
 
