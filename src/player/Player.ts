@@ -541,20 +541,73 @@ export class Player {
     const charsPerLine = Math.max(1, Math.floor(wrapWidth / Math.max(1, lineHeight * 0.62)));
     const plain = (text.text ?? "").replace(/<[^>]+>/g, "").trim();
     const explicitLines = plain ? plain.split(/\r?\n/).length : 1;
-    // Only a word-wrapping field breaks onto extra lines; a single-line field stays one line.
-    // For wrappers, estimate the line count from the real measured text width vs the wrap
-    // width — the old char-count heuristic over-counted labels that comfortably fit one line
-    // (e.g. "BUSINESS COMMUNITIES"), so the LeftNav, which stacks subnav buttons by their
-    // reported height, dropped the next item an extra row.
-    const wrappedLines = text.wordWrap && plain
-      ? (realWidth != null && realWidth > 0 ? Math.max(1, Math.ceil(realWidth / wrapWidth)) : Math.ceil(plain.length / charsPerLine))
-      : 1;
-    const contentHeight = Math.max(lineHeight, Math.max(explicitLines, wrappedLines) * lineHeight);
+    // A word-wrapping field's real line count depends on word boundaries, not just total
+    // text width: measure the wrapped height in a hidden div at the same content width the
+    // renderer uses (box width minus the 2px gutter each side). The old `ceil(textWidth /
+    // wrapWidth)` ratio ignored word breaks, so a 3-line headline was counted as 2 and
+    // bnl's LeftNav — which drops each item's separator by the field's reported `_height` —
+    // gave it the same cell as a 2-line item. Fall back to the ratio estimate when the DOM
+    // or the embedded face isn't available yet.
+    const measuredWrapHeight = text.wordWrap && plain
+      ? this.measureWrappedHeightPx(plain, fontHeight, text.fontId ?? asset.text?.fontId, Math.max(1, wrapWidth - 4), lineHeight)
+      : undefined;
+    let contentHeight: number;
+    if (measuredWrapHeight != null && measuredWrapHeight > 0) {
+      // A CSS line box applies `leading` below every line, including the last; Flash's
+      // textHeight doesn't count the trailing leading on a multi-line field. The DOM
+      // measurement is therefore one `leading` too tall for 2+ lines — subtract it (the
+      // single-line floor keeps the verified 1-line subnav height unchanged).
+      const lead = Number(text.leading ?? 0);
+      contentHeight = Math.max(lineHeight, measuredWrapHeight - lead);
+    } else {
+      const wrappedLines = text.wordWrap && plain
+        ? (realWidth != null && realWidth > 0 ? Math.max(1, Math.ceil(realWidth / wrapWidth)) : Math.ceil(plain.length / charsPerLine))
+        : 1;
+      contentHeight = Math.max(lineHeight, Math.max(explicitLines, wrappedLines) * lineHeight);
+    }
     // A Flash TextField's _height is its text height plus a 2px gutter top and bottom; the
     // LeftNav stacks subnav buttons by that reported height, so omitting the gutter packed
     // the items ~4px too tightly vs Ruffle. Include it for autoSize fields (which report
     // their fitted height); fixed-height fields keep their authored bounds.
     return { width, height: autoSize ? contentHeight + 4 : Math.max(fallbackHeight, contentHeight) };
+  }
+
+  private measureDiv?: HTMLDivElement | null;
+  private wrappedHeightCache = new Map<string, number>();
+  /** Measure the *wrapped* height of a word-wrapping field with its real embedded font, by
+   *  laying the text out in a hidden div at the same content width the renderer uses. The
+   *  old `ceil(textWidth / wrapWidth)` estimate ignored word boundaries, so a headline that
+   *  actually breaks onto three lines was counted as two — and bnl's LeftNav, which stacks
+   *  items (and drops each one's separator) by the field's reported `_height`, gave every
+   *  item the same cell instead of growing it to fit. Returns undefined when no DOM is
+   *  available or the embedded face has not loaded yet (caller falls back to the estimate). */
+  private measureWrappedHeightPx(text: string, fontHeightPx: number, fontId: number | undefined, contentWidth: number, lineHeightPx: number): number | undefined {
+    if (typeof document === "undefined" || typeof document.createElement !== "function") return undefined;
+    if (!Number.isFinite(fontHeightPx) || fontHeightPx <= 0 || !(contentWidth > 0)) return undefined;
+    const family = this.options.resolveFontFamily?.(fontId);
+    if (!family) return undefined;
+    const stripped = text.replace(/<[^>]+>/g, "");
+    if (!stripped.trim()) return 0;
+    const primary = family.split(",")[0].trim().replace(/^["']|["']$/g, "");
+    try { if (document.fonts && !document.fonts.check(`${fontHeightPx}px "${primary}"`)) return undefined; } catch { return undefined; }
+    const key = `${fontId}|${Math.round(contentWidth)}|${Math.round(lineHeightPx)}|${fontHeightPx}|${stripped}`;
+    const cached = this.wrappedHeightCache.get(key);
+    if (cached !== undefined) return cached;
+    let div = this.measureDiv;
+    if (!div) {
+      div = document.createElement("div");
+      div.style.cssText = "position:absolute;visibility:hidden;left:-99999px;top:0;white-space:pre-wrap;margin:0;padding:0;border:0";
+      (document.body ?? document.documentElement).appendChild(div);
+      this.measureDiv = div;
+    }
+    div.style.fontFamily = family;
+    div.style.fontSize = `${fontHeightPx}px`;
+    div.style.lineHeight = `${lineHeightPx}px`;
+    div.style.width = `${contentWidth}px`;
+    div.textContent = stripped;
+    const h = div.offsetHeight;
+    if (h > 0) this.wrappedHeightCache.set(key, h);
+    return h;
   }
 
   private measureCtx?: CanvasRenderingContext2D | null;

@@ -303,6 +303,19 @@ titles) carries its own per-record positions via `staticLineHtml` and is left un
 Subnav labels now match Ruffle's baseline (and left edge exactly); nav labels, news
 headlines, and body copy are unaffected (the inset moves them onto Ruffle, not off it).
 
+Finally, the separators stopped tracking *content amount*: a Corporate-News headline that
+wraps onto three lines got the same cell as a two-line one, so its rule cut close to the
+text. `liveTextMetrics` had estimated the wrapped line count as `ceil(textWidth /
+wrapWidth)`, which divides total text width and ignores word boundaries — a 3-line headline
+measured as 2. It now lays the text out in a cached hidden `<div>` at the renderer's content
+width (box − gutter) with the embedded face and reads the real wrapped height, so the
+field's `_height` — and thus `bottomBar._y` — grows with the actual line count. One subtlety:
+a CSS line box adds `leading` below *every* line incl. the last, but Flash's `textHeight`
+omits the trailing leading on multi-line fields, so the DOM height is one `leading` too tall
+for 2+ lines; subtract it (a single-line floor leaves 1-line items untouched). The news
+separators now land on Ruffle's to the pixel (`[13,53,96,138,193,235]`), the 3-line item
+included, and the single-line subnav is unchanged.
+
 ## Non-negotiable
 
 Per `AGENTS.md`: nothing scene-specific is hardcoded. The VM interprets each SWF's own
