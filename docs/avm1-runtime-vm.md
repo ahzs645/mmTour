@@ -473,6 +473,21 @@ only — the CLI tour build renders static `DefineText` as a plain field (no `st
 now centres in its bar like Ruffle, the table-less "New Robots!" badge is untouched. (Parity
 TODO if the tour ever moves onto `staticLines`: emit the same ratio from the CLI build.)
 
+## Stage 13 — the Ruffle compare panel rendered at a different scale than the player (DONE)
+
+Follow-up to Stage 12: the "World News Live" logo (and the whole ticker bar) still *looked*
+high next to Ruffle. Checking the player against an FFDec frame render (which renders the SWF
+faithfully) showed the player was already correct — bar `barMid≈27`, wordmark `mid≈26.7` in
+850-tall stage units, matching FFDec's `27` / `26.5`. The mismatch was the **comparison view**,
+not the player: `.stage-wrap` (the `#ruffleMount`) sizes from `aspect-ratio: var(--stage-aspect,
+4 / 3)`, but `applyStageDimensions` only ever set `--stage-aspect` on `assetWrap` (the player
+stage's wrapper, a *sibling*). So the Ruffle panel fell back to **4/3** while the player used
+bnl's real **1000/850** — at 542px wide that's 406px vs 460px tall, so Ruffle letterboxed to a
+~12% smaller scale and every element (the bar, the logo) sat higher and smaller than the
+player's. Fix: set `--stage-aspect` on `#ruffleMount` too, from the same movie dimensions. The
+panels are now identical size (460.7px) and render at one scale; bnl's wordmark/bar line up 1:1.
+No effect on 4/3 movies (their aspect already *is* 4/3). App-shell only — not the runtime.
+
 ## Non-negotiable
 
 Per `AGENTS.md`: nothing scene-specific is hardcoded. The VM interprets each SWF's own
