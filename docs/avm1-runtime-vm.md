@@ -442,6 +442,31 @@ With both, a hovered nav button stays on the tree, its centre slice scales to
 short and long, matching Ruffle. At-rest render is unchanged (the buttons were already
 tree-rendered there); tour scenes are untouched (no `hasAnyDynamicInstances`).
 
+## Stage 12 — the "World News Live" ticker logo sits too high (DIAGNOSED)
+
+In Ruffle the "World News Live" wordmark is vertically centred in its rounded ticker bar; in
+the player it rides high, with a gap below it. Measured against the in-browser bnl (stage at
+0.677×, values in SWF units): the bar art (`tickerArt`, char ff5) spans y≈11.8–32.7 (centre
+≈22.2); the BnL globe (y17.6–27.5) and the *scrolling* ticker items (`label_txt`, dynamic
+text, y16 h14 → centre ≈23) both centre correctly — only the **static** wordmark is off,
+sitting at y12.2–25 (centre ≈18.6), ~3.6u too high.
+
+Root cause is the **static `DefineText` baseline** in `DomRenderer.staticLineHtml`: a line is
+placed at `top = line.y − fontHeight`, where `line.y` is the glyph **baseline** (the record's
+`offsetY`, see `reconstructTextRecords`). But inside a `line-height: fontHeight` box the
+browser puts the alphabetic baseline at `top + cssAscent`, and `cssAscent < fontHeight`, so
+the glyphs land ~`(fontHeight − cssAscent)` **above** the intended baseline. It's invisible
+for top/left-anchored static text (most fields), but the wordmark is authored centred in its
+bar, so the offset is plainly visible. (The dynamic ticker items use the `player-text` path —
+box + gutter, not record baselines — which is why they centre fine.)
+
+Fix is renderer-side and **global to every static `DefineText` line in every scene**, so it
+needs care + cross-scene verification (the tour scenes' generated assets aren't in-repo, so
+only bnl can be checked in-browser here): either plumb the font **ascent** through so the line
+anchors at `top = line.y − ascent`, or position by baseline directly (SVG `<text y=baseline>`
+semantics), preserving the `fitStaticLines` advance-squeeze pass. Left unimplemented to avoid a
+blind global text shift.
+
 ## Non-negotiable
 
 Per `AGENTS.md`: nothing scene-specific is hardcoded. The VM interprets each SWF's own
