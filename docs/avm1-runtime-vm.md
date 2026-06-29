@@ -263,16 +263,85 @@ Three more text fields in the Robotics section drifted from Ruffle:
   matching the condensed face. This also tightened the "New Robots!" font (char 43, also
   table-less). Fonts that ship advances are unchanged.
 
-**On the top-nav "pill":** an earlier note here flagged the selected item not keeping its
-blue pill. That was a misread — bnl has **no persistent selected state**. The pill is
+**On the top-nav "pill":** bnl has **no persistent selected state** — the pill is
 `topNavButton.background._visible`, set `true` only on rollover and `false` on rollout (no
-"selected"/"enabled" gate anywhere in the component). Verified against Ruffle: with the
-pointer moved away, Ruffle shows plain text for every item, exactly like our player; on
-hover both show the blue pill + white label + white bullet. The nav already matches.
+"selected"/"enabled" gate anywhere in the component). The `TopNavButton` constructor sets
+`background._visible = false` up front, so at rest every item is plain text + bullet.
 
 The Robotics section now matches Ruffle: alpha-cutout robot, full-size title, tight
-wordmark, the "New Robots!" badge in its embedded face, body text, subnav, themed
-background, and the hover-only nav pill.
+wordmark, the "New Robots!" badge in its embedded face, body text, subnav, and themed
+background.
+
+## Stage 8a — the rollover pill was baked on for *every* nav item (DONE)
+
+A later look found the nav rendering **all** items with the blue pill at rest — Ruffle
+shows none until hover. Root cause was the **tree-vs-baked** split, not the pill logic:
+`topNavButton` (char 63) is a sprite with baked frames and no `overflowsBounds`, so
+`flatten` rendered it as **one composited `DefineSprite_63/1.svg`** (pill 3-slice + bullet
++ a placeholder label) and only overlaid the live `label_txt`. The constructor's
+`background._visible = false` *did* run and set the child clip's `visible = false`, but the
+bake is composited at the SWF's **design-time** state (pill visible), so the runtime hide
+never reached the picture. (The constructor runs and the hide lands — confirmed by reading
+the background child's `visible` at flatten time — it just couldn't affect a baked frame.)
+
+Fix (`Player.flatten`, generic): a sprite whose subtree holds a **runtime-hidden child
+clip** (`visible === false`) is pulled onto the live-tree render path instead of baked, so
+the `child.visible === false` skip already in `flatten`/`collectButtons` actually drops it.
+New `subtreeHasHiddenChild`, gated on `hasAnyDynamicInstances` like the sibling
+dynamic-instance check, so a scene that never mutates its display list keeps baked-frame
+fidelity. With it the nav matches Ruffle: plain at rest, and on hover the one hovered item
+gets its pill + white label (`background._visible = true` → that subtree no longer hidden →
+re-bakes with the pill, sized to the label by `set label`).
+
+## Stage 8b — the Corporate-News "TOP STORY" lede overlaps the headline (DIAGNOSED)
+
+In the news section the `NewsTopStory` panel draws its lede text *on top of* the wrapped
+headline (the right-column `NewsStory` renders fine). The component positions each lede
+line relative to the headline height:
+
+```as
+// NewsTopStory.set lede
+this.textClips[0]._y += (this.titleClip.title_txt._height - 25.6) + 2;
+```
+
+### Stage 8b — FIXED
+
+Four independent defects stacked up; all four are fixed and the lede now sits below the
+headline (verified against the live in-browser-compiled bnl, plus the home/Robotics/
+Business-Divisions sections for regressions). An earlier note guessed the blocker was a
+bytecode-extraction *truncation* — disassembling the setter disproved that: its 187 ops are
+all there, including `textClips[0]._y +=`. The real blocker was a **double-decode** bug
+that, together with the array reversal, made the offset read garbage / land on the wrong
+field.
+
+1. **`InitArray` reversed every array literal.** `avm1Vm`/`convert/avm1/interp.ts` built the
+   array with `arr.unshift(stack.pop())`. AVM1 pushes elements last-first, so the top of the
+   stack is element 0 (Ruffle: `array[i] = pop()`); `unshift` flips it, so `[a,b,c][0]` came
+   back as `c`. `textClips[0]` (the *first* lede line, the one the `_y` nudge anchors on)
+   resolved to the last, unplaced field → the assignment was a no-op. Fix: `arr.push`. Only
+   data-driven apps run through this VM (the tour uses the legacy assign/call path), and bnl
+   home/sections/ticker were re-verified.
+2. **`ActionPush` doubles were decoded with the halves swapped.** The SWF stores a type-6
+   double's two 32-bit words **high-word-first**; `parse.ts`/`avm1Disasm.mjs` read them as a
+   plain little-endian `getFloat64`, so `25.6` decoded as `-2.353438281290117e-185`
+   (`_height - 25.6` ≈ `_height`, throwing the offset off). New `readSwfDouble` assembles
+   `[low][high]` first. (`0.0` is symmetric under the swap, which is why most of bnl's 986
+   double pushes looked fine and the bug hid for so long — only the non-zero constants like
+   25.6 / 0.5 / 87.5 were wrong.)
+3. **A text leaf's `_x`/`_y` weren't readable.** `Player.getAppTextProp` handled
+   `_width`/`_height`/`textColor` but returned `undefined` for `_x`/`_y`, so
+   `text_txt._y += …` computed `undefined + n = NaN` and never moved the field. A leaf's
+   `_x`/`_y` now default to its placement matrix `tx`/`ty` (pixels), like a clip's
+   `placedX`/`placedY` (`textLeafPlacement`).
+4. **Wrapped-text height was under-measured for the headline font.** Line height was
+   `fontHeight + leading`, but Flash advances lines by the font's real **ascent+descent**.
+   For TradeGothic Bold (the headline face) that's ~1.17× the em, so the 2-line title
+   measured ~39px vs Flash's ~47, and the `_height - 25.6` offset under-shot. `lineHeightBase`
+   measures the embedded face's `fontBoundingBox{Ascent,Descent}` via canvas (≈21px@18px vs
+   fontHeight 18) and feeds both the metric and the rendered line spacing; fonts where it
+   equals the em (the Frutiger body faces, so the news-link separators from Stage 9) are
+   unchanged. Gated on `hasAnyDynamicInstances`, so non-data-driven scenes keep their
+   baseline.
 
 ## Stage 9 — left-subnav vertical spacing (DONE)
 
@@ -315,6 +384,28 @@ omits the trailing leading on multi-line fields, so the DOM height is one `leadi
 for 2+ lines; subtract it (a single-line floor leaves 1-line items untouched). The news
 separators now land on Ruffle's to the pixel (`[13,53,96,138,193,235]`), the 3-line item
 included, and the single-line subnav is unchanged.
+
+## Stage 10 — top-nav labels that *fit* still drifted right (DONE)
+
+Stage 8's autoSize fix re-anchored labels that **grow** past their authored box, but the
+nav was still uneven: "Robotics" sat with a wide gap after its bullet and crowded
+"Corporate News". Measuring the baked red bullets (fixed offset inside each `topNavButton`,
+so they encode each `button._x`) against Ruffle showed every bullet→text gap should be a
+uniform ~10px; the player held that for most labels but blew out to ~3× on Robotics, with
+World News and Contact Us also creeping right — graduated by how *short* the label is.
+
+Root cause: `autoSizeTextLayout` only resized the box when the text was **wider** than the
+authored field (`if (measured <= authoredWidth) return undefined`). All seven labels share
+one `label_txt` authored 85u wide and **center**-aligned; the three wide labels (Business
+Divisions, Corporate News, Buy n Large Store) grew and left-anchored correctly, but the
+four that fit ≤85u (Robotics 57u, Contact Us 71u, World News 78u, Our Company 85u) kept the
+wide box and center alignment, so each was pushed right by `(85 − textWidth)/2` — largest
+for the shortest label. Flash's autoSize resizes in **both** directions: it shrinks a
+too-wide box as well as growing a too-narrow one, always pinning the anchor edge. Fix: drop
+the early return so the shrink case re-anchors too (for autoSize="left" that pins the left
+edge to the bullet). The change is position-preserving wherever text-align equals the
+autoSize anchor — only align≠anchor fields (the center-aligned-but-autoSize="left" nav
+labels) move, and they move onto Ruffle: every bullet→text gap is now a uniform ~11px.
 
 ## Non-negotiable
 

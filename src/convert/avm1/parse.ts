@@ -16,6 +16,16 @@ const readCStr = (b: Uint8Array, o: number) => {
 const u16 = (b: Uint8Array, o: number) => (b[o] | (b[o + 1] << 8));
 const s16 = (b: Uint8Array, o: number) => { const v = u16(b, o); return v & 0x8000 ? v - 0x10000 : v; };
 const u32 = (b: Uint8Array, o: number) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
+/** ActionPush type 6 (double): the SWF stores the two 32-bit halves of the IEEE-754
+ *  little-endian double *swapped* (high word first). Read each word LE, then assemble
+ *  in [low][high] order — without this, e.g. `25.6` decodes as ~-2.35e-185. */
+const readSwfDouble = (b: Uint8Array, o: number): number => {
+  const buf = new ArrayBuffer(8);
+  const dv = new DataView(buf);
+  dv.setUint32(0, u32(b, o + 4), true);
+  dv.setUint32(4, u32(b, o), true);
+  return dv.getFloat64(0, true);
+};
 
 function decodePush(body: Uint8Array, pool: string[]): any[] {
   const out: any[] = [];
@@ -28,7 +38,7 @@ function decodePush(body: Uint8Array, pool: string[]): any[] {
     else if (t === 3) out.push({ type: "undefined", value: undefined });
     else if (t === 4) out.push({ type: "register", value: body[c++] });
     else if (t === 5) out.push({ type: "boolean", value: body[c++] !== 0 });
-    else if (t === 6) { out.push({ type: "double", value: new DataView(body.buffer, body.byteOffset + c, 8).getFloat64(0, true) }); c += 8; }
+    else if (t === 6) { out.push({ type: "double", value: readSwfDouble(body, c) }); c += 8; }
     else if (t === 7) { out.push({ type: "integer", value: (u32(body, c) | 0) }); c += 4; }
     else if (t === 8) { const i = body[c++]; out.push({ type: "constant", value: pool[i] }); }
     else if (t === 9) { const i = u16(body, c); out.push({ type: "constant", value: pool[i] }); c += 2; }

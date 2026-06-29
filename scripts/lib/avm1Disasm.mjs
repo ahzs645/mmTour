@@ -108,7 +108,13 @@ export function decodePushValues(body, pool) {
     } else if (type === 5) {
       values.push({ type: "boolean", value: body[cursor++] !== 0 });
     } else if (type === 6) {
-      values.push({ type: "double", value: new DataView(body.buffer, body.byteOffset + cursor, 8).getFloat64(0, true) });
+      // ActionPush doubles store the two 32-bit halves swapped (high word first); read
+      // each word LE then assemble [low][high], else e.g. 25.6 decodes as ~-2.35e-185.
+      const dbuf = new ArrayBuffer(8);
+      const dv = new DataView(dbuf);
+      dv.setUint32(0, readU32(body, cursor + 4), true);
+      dv.setUint32(4, readU32(body, cursor), true);
+      values.push({ type: "double", value: dv.getFloat64(0, true) });
       cursor += 8;
     } else if (type === 7) {
       values.push({ type: "integer", value: readU32(body, cursor) });

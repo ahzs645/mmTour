@@ -84,7 +84,8 @@ class Vm {
         case "SetMember": { const val = stack.pop(); const key = String(stack.pop()); const obj = stack.pop(); if (obj && typeof obj === "object") obj[key] = val; break; }
         case "DefineLocal": { const val = stack.pop(); const name = String(stack.pop()); frame.locals[name] = val; break; }
         case "DefineLocal2": { const name = String(stack.pop()); if (!(name in frame.locals)) frame.locals[name] = UNDEF; break; }
-        case "InitArray": { const n = Number(stack.pop()) | 0; const arr: any[] = []; for (let i = 0; i < n; i++) arr.unshift(stack.pop()); stack.push(arr); break; }
+        // Stack is element-0-on-top (Ruffle: `array[i] = pop()`); push to keep source order.
+        case "InitArray": { const n = Number(stack.pop()) | 0; const arr: any[] = []; for (let i = 0; i < n; i++) arr.push(stack.pop()); stack.push(arr); break; }
         case "InitObject": { const n = Number(stack.pop()) | 0; const o: any = {}; for (let i = 0; i < n; i++) { const v = stack.pop(); const k = String(stack.pop()); o[k] = v; } stack.push(o); break; }
         case "NewObject": { const name = String(stack.pop()); const n = Number(stack.pop()) | 0; for (let i = 0; i < n; i++) stack.pop(); stack.push({ __class: name }); break; }
         case "NewMethod": { const name = String(stack.pop()); stack.pop(); const n = Number(stack.pop()) | 0; for (let i = 0; i < n; i++) stack.pop(); stack.push({ __class: name }); break; }

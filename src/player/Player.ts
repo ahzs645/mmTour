@@ -436,6 +436,15 @@ export class Player {
     const props = this.leafDisplayProps(owner, name);
     const explicit = this.explicitLeafProps.get(props);
     if (explicit?.has(key)) return props[key];
+    // A field's _x/_y default to its placement (pixels), so a component that nudges a leaf
+    // relative to its design spot — bnl's NewsTopStory drops each lede line by
+    // `text_txt._y += title._height - 25.6` — reads a number, not undefined (else `+=` is NaN
+    // and the line never moves, leaving the lede overlapping the headline).
+    if (key === "_x" || key === "_y") {
+      const placement = this.textLeafPlacement(owner, name);
+      if (!placement) return undefined;
+      return key === "_x" ? placement.matrix.tx : placement.matrix.ty;
+    }
     const id = this.findTextChildByName(owner, name);
     const asset = id === undefined ? undefined : this.getAsset(id);
     if (!asset || asset.kind !== "text") return undefined;
@@ -521,12 +530,15 @@ export class Player {
     if (!text) return { width: fallbackWidth, height: fallbackHeight };
     const fontHeight = Number(text.fontHeight);
     const explicitLineHeight = Number(text.lineHeight);
+    // Flash advances lines by the font's real ascent+descent, not the field's `fontHeight`
+    // (em); use the measured face metrics so a wrapped autoSize field's `_height` matches.
+    const lineAdvance = this.lineHeightBase(text.fontId ?? asset.text?.fontId, fontHeight);
     const lineHeight = Math.max(
       1,
       Number.isFinite(explicitLineHeight) && explicitLineHeight > 0
         ? explicitLineHeight
-        : Number.isFinite(fontHeight) && fontHeight > 0
-          ? fontHeight + Number(text.leading ?? 0)
+        : Number.isFinite(lineAdvance) && lineAdvance > 0
+          ? lineAdvance + Number(text.leading ?? 0)
           : fallbackHeight || 12,
     );
     const autoSize = props?.autoSize !== undefined ? avm1Boolean(props.autoSize) : false;
@@ -638,6 +650,44 @@ export class Player {
       if (w > max) max = w;
     }
     return max;
+  }
+
+  private fontLineHeightCache = new Map<string, number | null>();
+  /** A font's natural line advance (ascent + descent) at `fontHeightPx`, measured with the
+   *  real embedded face via canvas. Flash spaces lines by the font's own ascent+descent, not
+   *  by the field's `fontHeight` (the em size) — for a face like bnl's TradeGothic Bold the
+   *  ascent+descent is ~1.17× the em, so `fontHeight + leading` under-measures every line and
+   *  a wrapped autoSize field reports too small a `_height` (bnl's NewsTopStory offsets its
+   *  lede by `title._height - 25.6`, so the under-measured title let the lede overlap it).
+   *  Returns undefined until the face has loaded (caller falls back to `fontHeight`). */
+  private measureFontLineHeightPx(fontId: number | undefined, fontHeightPx: number): number | undefined {
+    if (typeof document === "undefined" || typeof document.createElement !== "function") return undefined;
+    if (!Number.isFinite(fontHeightPx) || fontHeightPx <= 0) return undefined;
+    const family = this.options.resolveFontFamily?.(fontId);
+    if (!family) return undefined;
+    const primary = family.split(",")[0].trim().replace(/^["']|["']$/g, "");
+    const key = `${primary}|${fontHeightPx}`;
+    const cached = this.fontLineHeightCache.get(key);
+    if (cached !== undefined) return cached ?? undefined;
+    try { if (document.fonts && !document.fonts.check(`${fontHeightPx}px "${primary}"`)) return undefined; } catch { return undefined; }
+    if (this.measureCtx === undefined) this.measureCtx = document.createElement("canvas").getContext("2d");
+    const ctx = this.measureCtx;
+    if (!ctx) return undefined;
+    ctx.font = `${fontHeightPx}px ${family}`;
+    const m = ctx.measureText("Mg");
+    const advance = (m.fontBoundingBoxAscent ?? 0) + (m.fontBoundingBoxDescent ?? 0);
+    const result = Number.isFinite(advance) && advance > 0 ? advance : null;
+    this.fontLineHeightCache.set(key, result);
+    return result ?? undefined;
+  }
+
+  /** The line advance a text field stacks lines by: the embedded font's real ascent+descent
+   *  (so multi-line `_height` matches Flash), falling back to the field's `fontHeight` (the
+   *  em) before the face loads. Gated on `hasAnyDynamicInstances` (data-driven apps) so a
+   *  scene that never mutates its display list keeps its existing text baseline. */
+  private lineHeightBase(fontId: number | undefined, fontHeightPx: number): number {
+    if (!this.hasAnyDynamicInstances) return fontHeightPx;
+    return this.measureFontLineHeightPx(fontId, fontHeightPx) ?? fontHeightPx;
   }
 
   get frameCount(): number {
@@ -2545,6 +2595,16 @@ export class Player {
     return undefined;
   }
 
+  /** The placement of a named text leaf in `clip`'s current frame — its design `_x`/`_y`
+   *  live in the placement matrix's `tx`/`ty` (pixels), like a clip's `placedX`/`placedY`. */
+  private textLeafPlacement(clip: ClipInstance, name: string): TimelineFrame["instances"][number] | undefined {
+    const frame = this.framesFor(clip)?.[clip.currentFrame];
+    for (const instance of frame?.instances ?? []) {
+      if (instance.name === name && this.getAsset(instance.characterId)?.kind === "text") return instance;
+    }
+    return undefined;
+  }
+
   private resolveLeafTarget(scope: ClipInstance, target: string, locals?: Locals): { owner: ClipInstance; name: string; props: Record<string, VarValue | undefined> } | undefined {
     const parts = target.split(".").filter(Boolean);
     if (!parts.length) return undefined;
@@ -3290,6 +3350,22 @@ export class Player {
     return false;
   }
 
+  /** Whether any descendant child clip was hidden at runtime (`_visible = false`). A baked
+   *  sprite frame is composited at the SWF's *design-time* state, so a child a class method
+   *  later hides (e.g. bnl's TopNavButton constructor sets `background._visible = false`, so
+   *  the blue rollover pill is hidden until hover) would still be painted from the bake. When
+   *  the subtree holds such a hidden clip we render the sprite from the live tree instead, so
+   *  the `child.visible === false` skip in `flatten` actually drops it. Gated (like the
+   *  sibling dynamic-instance check) on `hasAnyDynamicInstances`, so a scene that never
+   *  mutates its display list keeps its baked-frame fidelity untouched. */
+  private subtreeHasHiddenChild(clip: ClipInstance): boolean {
+    for (const child of clip.childClips.values()) {
+      if (child.visible === false) return true;
+      if (this.subtreeHasHiddenChild(child)) return true;
+    }
+    return false;
+  }
+
   /** Alpha contribution of a placed instance. A clip's design alpha (the placement's
    *  color-transform alpha) and a runtime `_alpha` are the SAME Flash property, so a
    *  runtime `_alpha` REPLACES the design alpha rather than multiplying with it. The
@@ -3434,7 +3510,8 @@ export class Player {
       // transparent button hit areas from its nested timeline so it stays
       // interactive and its frame scripts still run (logic lives in the tree).
       if (asset.kind === "sprite" && asset.frames?.length && !asset.overflowsBounds
-          && !(this.hasAnyDynamicInstances && child && this.subtreeHasDynamicInstances(child))) {
+          && !(this.hasAnyDynamicInstances && child && this.subtreeHasDynamicInstances(child))
+          && !(this.hasAnyDynamicInstances && child && this.subtreeHasHiddenChild(child))) {
         const frameIndex = child ? clamp(child.currentFrame, 0, asset.frames.length - 1) : 0;
         out.push(spriteNode(key, order.n++, asset, asset.frames[frameIndex], matrix, opacity, instance, child?.currentFrame, colorTransform));
         if (child && asset.timeline?.length) this.collectButtons(child, matrix, colorTransform, key, order, out, opacity);
@@ -3753,6 +3830,12 @@ export class Player {
     if (text) {
       const grown = this.autoSizeTextLayout(asset, text, leafProps);
       if (grown) ({ text, origin } = { text: grown.text, origin: { ...origin, x: grown.x, width: grown.width } });
+      // Render lines at the font's real advance (ascent+descent), matching how the field's
+      // `_height` was measured, so a wrapped field draws with the same spacing it reports.
+      if (text && !(Number(text.lineHeight) > 0)) {
+        const base = this.lineHeightBase(text.fontId ?? asset.text?.fontId, Number(text.fontHeight));
+        if (base !== Number(text.fontHeight)) text = { ...text, lineHeight: Math.max(1, base + Number(text.leading ?? 0)) };
+      }
     }
     return {
       key,
@@ -3802,7 +3885,12 @@ export class Player {
     const measured = natural + 4; // Flash autoSize adds a 2px gutter each side
     const authoredX = text.x ?? asset.text?.x ?? asset.origin.x ?? 0;
     const authoredWidth = text.width ?? asset.text?.width ?? asset.origin.width ?? 0;
-    if (measured <= authoredWidth) return undefined; // already fits — leave the authored box
+    // autoSize resizes the box to the text in BOTH directions — it shrinks a too-wide box as
+    // well as growing a too-narrow one — always keeping the anchor edge fixed. Re-anchor even
+    // when the text already fits: the top-nav labels are align=center inside an 85u-wide box,
+    // so a short label like "Robotics" that fits would otherwise stay centered and slide right
+    // off its leading bullet. Shrinking the box to the text makes center-align a no-op and
+    // lines every label up under its bullet (matching Flash/Ruffle).
     const x =
       anchor === "center" ? authoredX + (authoredWidth - measured) / 2
       : anchor === "right" ? authoredX + (authoredWidth - measured)
