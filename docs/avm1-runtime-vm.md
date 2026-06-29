@@ -407,6 +407,41 @@ edge to the bullet). The change is position-preserving wherever text-align equal
 autoSize anchor — only align≠anchor fields (the center-aligned-but-autoSize="left" nav
 labels) move, and they move onto Ruffle: every bullet→text gap is now a uniform ~11px.
 
+## Stage 11 — top-nav rollover pill didn't stretch to the label (DONE)
+
+Stage 8a got the pill to appear only on hover; this stage gets it the right *width*. The
+pill is `TopNavButton.background`, a 3-slice (`left`/`center`/`right`). `set label` resizes
+it at runtime to fit the text:
+
+```as
+this.background.center._width = this.label_txt._width;            // stretch the centre slice
+this.background.right._x = this.background.center._x + this.background.center._width;  // slide the right cap to the new end
+```
+
+In Ruffle the pill therefore hugs every label. In the player it didn't: at rest the button
+renders from the **tree** (its `background` is hidden, so `subtreeHasHiddenChild` pulls it
+off the bake), but the instant you hover, `background._visible = true` makes the subtree
+"not hidden" and it falls back to the **baked** frame — composited at the SWF's authored
+size, so every pill was the same fixed width: too wide for short labels (Robotics left a big
+gap on the right and swallowed its bullet) and too narrow for long ones (Corporate News
+spilled out the right cap).
+
+Fix, in two parts, both general (no scene-specifics):
+- New `subtreeHasTransformedChild` — a third "pull off the bake onto the tree" trigger
+  alongside `subtreeHasDynamicInstances`/`subtreeHasHiddenChild`, firing when any descendant
+  carries a runtime **size** override (`_width`/`_height`/`_xscale`/`_yscale`) the
+  design-time bake can't represent. Gated on `hasAnyDynamicInstances` like its siblings, so
+  non-app scenes keep their baked-frame fidelity untouched.
+- `applyClipMatrixOverrides` now honours a clip's runtime `_width`/`_height`: with no
+  explicit `_xscale`/`_yscale` it rescales the clip to that pixel size relative to its
+  unscaled bounds (the asset origin), matching Flash's `_width` setter. The render call sites
+  pass the child's `asset.origin` as that natural size.
+
+With both, a hovered nav button stays on the tree, its centre slice scales to
+`label_txt._width` and its right cap moves to the stretched end — the pill hugs every label,
+short and long, matching Ruffle. At-rest render is unchanged (the buttons were already
+tree-rendered there); tour scenes are untouched (no `hasAnyDynamicInstances`).
+
 ## Non-negotiable
 
 Per `AGENTS.md`: nothing scene-specific is hardcoded. The VM interprets each SWF's own
