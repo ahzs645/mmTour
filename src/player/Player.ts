@@ -3885,7 +3885,12 @@ export class Player {
     const measured = natural + 4; // Flash autoSize adds a 2px gutter each side
     const authoredX = text.x ?? asset.text?.x ?? asset.origin.x ?? 0;
     const authoredWidth = text.width ?? asset.text?.width ?? asset.origin.width ?? 0;
-    if (measured <= authoredWidth) return undefined; // already fits — leave the authored box
+    // autoSize resizes the box to the text in BOTH directions — it shrinks a too-wide box as
+    // well as growing a too-narrow one — always keeping the anchor edge fixed. Re-anchor even
+    // when the text already fits: the top-nav labels are align=center inside an 85u-wide box,
+    // so a short label like "Robotics" that fits would otherwise stay centered and slide right
+    // off its leading bullet. Shrinking the box to the text makes center-align a no-op and
+    // lines every label up under its bullet (matching Flash/Ruffle).
     const x =
       anchor === "center" ? authoredX + (authoredWidth - measured) / 2
       : anchor === "right" ? authoredX + (authoredWidth - measured)

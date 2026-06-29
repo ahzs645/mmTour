@@ -385,6 +385,28 @@ for 2+ lines; subtract it (a single-line floor leaves 1-line items untouched). T
 separators now land on Ruffle's to the pixel (`[13,53,96,138,193,235]`), the 3-line item
 included, and the single-line subnav is unchanged.
 
+## Stage 10 — top-nav labels that *fit* still drifted right (DONE)
+
+Stage 8's autoSize fix re-anchored labels that **grow** past their authored box, but the
+nav was still uneven: "Robotics" sat with a wide gap after its bullet and crowded
+"Corporate News". Measuring the baked red bullets (fixed offset inside each `topNavButton`,
+so they encode each `button._x`) against Ruffle showed every bullet→text gap should be a
+uniform ~10px; the player held that for most labels but blew out to ~3× on Robotics, with
+World News and Contact Us also creeping right — graduated by how *short* the label is.
+
+Root cause: `autoSizeTextLayout` only resized the box when the text was **wider** than the
+authored field (`if (measured <= authoredWidth) return undefined`). All seven labels share
+one `label_txt` authored 85u wide and **center**-aligned; the three wide labels (Business
+Divisions, Corporate News, Buy n Large Store) grew and left-anchored correctly, but the
+four that fit ≤85u (Robotics 57u, Contact Us 71u, World News 78u, Our Company 85u) kept the
+wide box and center alignment, so each was pushed right by `(85 − textWidth)/2` — largest
+for the shortest label. Flash's autoSize resizes in **both** directions: it shrinks a
+too-wide box as well as growing a too-narrow one, always pinning the anchor edge. Fix: drop
+the early return so the shrink case re-anchors too (for autoSize="left" that pins the left
+edge to the bullet). The change is position-preserving wherever text-align equals the
+autoSize anchor — only align≠anchor fields (the center-aligned-but-autoSize="left" nav
+labels) move, and they move onto Ruffle: every bullet→text gap is now a uniform ~11px.
+
 ## Non-negotiable
 
 Per `AGENTS.md`: nothing scene-specific is hardcoded. The VM interprets each SWF's own
