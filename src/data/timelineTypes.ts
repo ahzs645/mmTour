@@ -348,6 +348,12 @@ export type DynamicText = {
     y: number;
     width?: number;
   }>;
+  /** Where the font's alphabetic baseline sits within a `line-height: fontHeight` box, as a
+   *  fraction of fontHeight — i.e. (1 + ascent/em − descent/em) / 2. Static `DefineText` lines
+   *  anchor at `top = line.y − fontHeight × baselineRatio` so glyphs land on their recorded
+   *  baseline. 1 (full-em ascent, no descent) reproduces the old `top = line.y − fontHeight`
+   *  and is the default when absent, so already-generated timelines are unaffected. */
+  baselineRatio?: number;
   color?: string;
   align?: "left" | "center" | "right" | string;
   multiline?: boolean;

@@ -212,7 +212,7 @@ export async function compileScene(bytes: Uint8Array, scene: string): Promise<Co
       if (!content) continue;
       put(`texts/${t.id}.txt`, "text/plain", content);
       const b = t.bounds;
-      const text = staticTextStyle(t, content, reconstructTextRecords(t, fonts));
+      const text = staticTextStyle(t, content, reconstructTextRecords(t, fonts), fonts);
       assets[String(t.id)] ??= {
         id: t.id, kind: "text", src: `generated/${scene}/texts/${t.id}.txt`,
         origin: b ? { x: b.xMin / 20, y: b.yMin / 20, width: (b.xMax - b.xMin) / 20, height: (b.yMax - b.yMin) / 20 } : zero(),
@@ -581,16 +581,18 @@ function editTextStyle(t: any, scene: string) {
   return { id: t.id, kind: "text", src: `generated/${scene}/texts/${t.id}.txt`, origin: { x: text.x, y: text.y, width: w, height: h }, text };
 }
 
-function staticTextStyle(t: any, content: string, staticLines: Array<{ text: string; x: number; y: number; width?: number }> = []) {
+function staticTextStyle(t: any, content: string, staticLines: Array<{ text: string; x: number; y: number; width?: number }> = [], fonts?: Map<number, any>) {
   const b = t.bounds;
   const firstRecord = (t.records ?? []).find((record: any) => record.fontId !== undefined || record.fontSize !== undefined || record.color);
   const lineHeight = staticTextLineHeight(t.records ?? []);
   const width = b ? (b.xMax - b.xMin) / 20 : 0;
   const height = b ? (b.yMax - b.yMin) / 20 : 0;
+  const fontId = (t.records ?? []).find((record: any) => record.fontId !== undefined)?.fontId;
   return {
     fontId: firstRecord?.fontId,
     fontHeight: firstRecord?.fontSize ? firstRecord.fontSize / 20 : 12,
     lineHeight,
+    baselineRatio: staticBaselineRatio(fontId !== undefined ? fonts?.get(fontId) : undefined),
     color: firstRecord?.color ? `#${hx(firstRecord.color.r)}${hx(firstRecord.color.g)}${hx(firstRecord.color.b)}` : undefined,
     align: "center",
     x: b ? b.xMin / 20 : 0,
@@ -604,6 +606,21 @@ function staticTextStyle(t: any, content: string, staticLines: Array<{ text: str
     text: content,
     staticLines: staticLines.length ? staticLines : undefined,
   };
+}
+
+/** Fraction of fontHeight at which the alphabetic baseline sits in a `line-height: fontHeight`
+ *  box, for anchoring static `DefineText` lines (see DynamicText.baselineRatio). Mirrors the
+ *  vertical metrics `fontBuilder` writes: a face WITH a FontLayout reports its real (sub-em)
+ *  ascent + descent — so the baseline is `(1 + ascent/em − descent/em) / 2` down the box — while
+ *  a table-less face falls back to a full-em ascent / zero descent, giving 1 (the old
+ *  `top = line.y − fontHeight`). Returns undefined when the font is unknown, so the renderer
+ *  keeps that default. The em-scale fontBuilder may apply cancels in the ratio. */
+function staticBaselineRatio(font: any): number | undefined {
+  if (!font) return undefined;
+  const em = font.emSquareSize || 1024;
+  const ascent = font.layout?.ascent != null ? font.layout.ascent / em : 1;
+  const descent = font.layout?.descent != null ? font.layout.descent / em : 0;
+  return (1 + ascent - descent) / 2;
 }
 
 function staticTextLineHeight(records: any[]) {

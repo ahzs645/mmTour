@@ -442,30 +442,36 @@ With both, a hovered nav button stays on the tree, its centre slice scales to
 short and long, matching Ruffle. At-rest render is unchanged (the buttons were already
 tree-rendered there); tour scenes are untouched (no `hasAnyDynamicInstances`).
 
-## Stage 12 — the "World News Live" ticker logo sits too high (DIAGNOSED)
+## Stage 12 — the "World News Live" ticker logo sat too high (DONE)
 
 In Ruffle the "World News Live" wordmark is vertically centred in its rounded ticker bar; in
-the player it rides high, with a gap below it. Measured against the in-browser bnl (stage at
-0.677×, values in SWF units): the bar art (`tickerArt`, char ff5) spans y≈11.8–32.7 (centre
-≈22.2); the BnL globe (y17.6–27.5) and the *scrolling* ticker items (`label_txt`, dynamic
-text, y16 h14 → centre ≈23) both centre correctly — only the **static** wordmark is off,
-sitting at y12.2–25 (centre ≈18.6), ~3.6u too high.
+the player it rode high, with a gap below it. Measured against the in-browser bnl (stage at
+0.677×, values in SWF units): the bar art spans y≈11.8–32.7 (centre ≈22.2); the BnL globe
+(y17.6–27.5) and the *scrolling* ticker items (`label_txt`, dynamic text, centre ≈23) both
+centre correctly — only the **static** wordmark was off, ~3.6u too high.
 
-Root cause is the **static `DefineText` baseline** in `DomRenderer.staticLineHtml`: a line is
+Root cause was the **static `DefineText` baseline** in `DomRenderer.staticLineHtml`: a line was
 placed at `top = line.y − fontHeight`, where `line.y` is the glyph **baseline** (the record's
-`offsetY`, see `reconstructTextRecords`). But inside a `line-height: fontHeight` box the
-browser puts the alphabetic baseline at `top + cssAscent`, and `cssAscent < fontHeight`, so
-the glyphs land ~`(fontHeight − cssAscent)` **above** the intended baseline. It's invisible
-for top/left-anchored static text (most fields), but the wordmark is authored centred in its
-bar, so the offset is plainly visible. (The dynamic ticker items use the `player-text` path —
-box + gutter, not record baselines — which is why they centre fine.)
+`offsetY`, see `reconstructTextRecords`). Inside a `line-height: fontHeight` box the browser
+puts the alphabetic baseline `cssAscent` below the box top, and `cssAscent < fontHeight`, so
+the glyphs landed ~`(fontHeight − cssAscent)` **above** the intended baseline. Invisible for
+top/left-anchored static text, but the wordmark is authored centred in its bar, so it showed.
+(The dynamic ticker items use the `player-text` box+gutter path, not record baselines — which
+is why they centre fine.) This is *exactly* the case `fontBuilder` already special-cases: a
+table-less face is given a full-em ascent / zero descent so the baseline lands on `line.y`; a
+face **with** a real `FontLayout` keeps its true sub-em ascent, and that is the wordmark's font.
 
-Fix is renderer-side and **global to every static `DefineText` line in every scene**, so it
-needs care + cross-scene verification (the tour scenes' generated assets aren't in-repo, so
-only bnl can be checked in-browser here): either plumb the font **ascent** through so the line
-anchors at `top = line.y − ascent`, or position by baseline directly (SVG `<text y=baseline>`
-semantics), preserving the `fitStaticLines` advance-squeeze pass. Left unimplemented to avoid a
-blind global text shift.
+Fix: carry a per-font **`baselineRatio`** = `(1 + ascent/em − descent/em) / 2` — where the CSS
+alphabetic baseline actually sits in a `line-height: fontHeight` box (half-leading + ascent),
+using the *same* vertical metrics `fontBuilder` writes into the face. `staticLineHtml` now
+anchors at `top = line.y − fontHeight × baselineRatio`. It **defaults to 1** when absent, which
+is both the full-em table-less case and the old formula — so faces without recorded metrics,
+and every already-generated timeline, are byte-for-byte unchanged. Computed in
+`compileScene.staticTextStyle` (`staticBaselineRatio`); scope is the in-browser compile path
+only — the CLI tour build renders static `DefineText` as a plain field (no `staticLines`), so
+`staticLineHtml` never runs for it and the tour can't regress. Verified on bnl: the wordmark
+now centres in its bar like Ruffle, the table-less "New Robots!" badge is untouched. (Parity
+TODO if the tour ever moves onto `staticLines`: emit the same ratio from the CLI build.)
 
 ## Non-negotiable
 
