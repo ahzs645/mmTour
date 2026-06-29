@@ -407,6 +407,87 @@ edge to the bullet). The change is position-preserving wherever text-align equal
 autoSize anchor — only align≠anchor fields (the center-aligned-but-autoSize="left" nav
 labels) move, and they move onto Ruffle: every bullet→text gap is now a uniform ~11px.
 
+## Stage 11 — top-nav rollover pill didn't stretch to the label (DONE)
+
+Stage 8a got the pill to appear only on hover; this stage gets it the right *width*. The
+pill is `TopNavButton.background`, a 3-slice (`left`/`center`/`right`). `set label` resizes
+it at runtime to fit the text:
+
+```as
+this.background.center._width = this.label_txt._width;            // stretch the centre slice
+this.background.right._x = this.background.center._x + this.background.center._width;  // slide the right cap to the new end
+```
+
+In Ruffle the pill therefore hugs every label. In the player it didn't: at rest the button
+renders from the **tree** (its `background` is hidden, so `subtreeHasHiddenChild` pulls it
+off the bake), but the instant you hover, `background._visible = true` makes the subtree
+"not hidden" and it falls back to the **baked** frame — composited at the SWF's authored
+size, so every pill was the same fixed width: too wide for short labels (Robotics left a big
+gap on the right and swallowed its bullet) and too narrow for long ones (Corporate News
+spilled out the right cap).
+
+Fix, in two parts, both general (no scene-specifics):
+- New `subtreeHasTransformedChild` — a third "pull off the bake onto the tree" trigger
+  alongside `subtreeHasDynamicInstances`/`subtreeHasHiddenChild`, firing when any descendant
+  carries a runtime **size** override (`_width`/`_height`/`_xscale`/`_yscale`) the
+  design-time bake can't represent. Gated on `hasAnyDynamicInstances` like its siblings, so
+  non-app scenes keep their baked-frame fidelity untouched.
+- `applyClipMatrixOverrides` now honours a clip's runtime `_width`/`_height`: with no
+  explicit `_xscale`/`_yscale` it rescales the clip to that pixel size relative to its
+  unscaled bounds (the asset origin), matching Flash's `_width` setter. The render call sites
+  pass the child's `asset.origin` as that natural size.
+
+With both, a hovered nav button stays on the tree, its centre slice scales to
+`label_txt._width` and its right cap moves to the stretched end — the pill hugs every label,
+short and long, matching Ruffle. At-rest render is unchanged (the buttons were already
+tree-rendered there); tour scenes are untouched (no `hasAnyDynamicInstances`).
+
+## Stage 12 — the "World News Live" ticker logo sat too high (DONE)
+
+In Ruffle the "World News Live" wordmark is vertically centred in its rounded ticker bar; in
+the player it rode high, with a gap below it. Measured against the in-browser bnl (stage at
+0.677×, values in SWF units): the bar art spans y≈11.8–32.7 (centre ≈22.2); the BnL globe
+(y17.6–27.5) and the *scrolling* ticker items (`label_txt`, dynamic text, centre ≈23) both
+centre correctly — only the **static** wordmark was off, ~3.6u too high.
+
+Root cause was the **static `DefineText` baseline** in `DomRenderer.staticLineHtml`: a line was
+placed at `top = line.y − fontHeight`, where `line.y` is the glyph **baseline** (the record's
+`offsetY`, see `reconstructTextRecords`). Inside a `line-height: fontHeight` box the browser
+puts the alphabetic baseline `cssAscent` below the box top, and `cssAscent < fontHeight`, so
+the glyphs landed ~`(fontHeight − cssAscent)` **above** the intended baseline. Invisible for
+top/left-anchored static text, but the wordmark is authored centred in its bar, so it showed.
+(The dynamic ticker items use the `player-text` box+gutter path, not record baselines — which
+is why they centre fine.) This is *exactly* the case `fontBuilder` already special-cases: a
+table-less face is given a full-em ascent / zero descent so the baseline lands on `line.y`; a
+face **with** a real `FontLayout` keeps its true sub-em ascent, and that is the wordmark's font.
+
+Fix: carry a per-font **`baselineRatio`** = `(1 + ascent/em − descent/em) / 2` — where the CSS
+alphabetic baseline actually sits in a `line-height: fontHeight` box (half-leading + ascent),
+using the *same* vertical metrics `fontBuilder` writes into the face. `staticLineHtml` now
+anchors at `top = line.y − fontHeight × baselineRatio`. It **defaults to 1** when absent, which
+is both the full-em table-less case and the old formula — so faces without recorded metrics,
+and every already-generated timeline, are byte-for-byte unchanged. Computed in
+`compileScene.staticTextStyle` (`staticBaselineRatio`); scope is the in-browser compile path
+only — the CLI tour build renders static `DefineText` as a plain field (no `staticLines`), so
+`staticLineHtml` never runs for it and the tour can't regress. Verified on bnl: the wordmark
+now centres in its bar like Ruffle, the table-less "New Robots!" badge is untouched. (Parity
+TODO if the tour ever moves onto `staticLines`: emit the same ratio from the CLI build.)
+
+## Stage 13 — the Ruffle compare panel rendered at a different scale than the player (DONE)
+
+Follow-up to Stage 12: the "World News Live" logo (and the whole ticker bar) still *looked*
+high next to Ruffle. Checking the player against an FFDec frame render (which renders the SWF
+faithfully) showed the player was already correct — bar `barMid≈27`, wordmark `mid≈26.7` in
+850-tall stage units, matching FFDec's `27` / `26.5`. The mismatch was the **comparison view**,
+not the player: `.stage-wrap` (the `#ruffleMount`) sizes from `aspect-ratio: var(--stage-aspect,
+4 / 3)`, but `applyStageDimensions` only ever set `--stage-aspect` on `assetWrap` (the player
+stage's wrapper, a *sibling*). So the Ruffle panel fell back to **4/3** while the player used
+bnl's real **1000/850** — at 542px wide that's 406px vs 460px tall, so Ruffle letterboxed to a
+~12% smaller scale and every element (the bar, the logo) sat higher and smaller than the
+player's. Fix: set `--stage-aspect` on `#ruffleMount` too, from the same movie dimensions. The
+panels are now identical size (460.7px) and render at one scale; bnl's wordmark/bar line up 1:1.
+No effect on 4/3 movies (their aspect already *is* 4/3). App-shell only — not the runtime.
+
 ## Non-negotiable
 
 Per `AGENTS.md`: nothing scene-specific is hardcoded. The VM interprets each SWF's own

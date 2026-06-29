@@ -585,14 +585,21 @@ function fitSingleLineText(element: HTMLElement, span: HTMLElement, width: numbe
 }
 
 function staticLineHtml(
-  text: { staticLines?: Array<{ text: string; x: number; y: number; width?: number }>; fontHeight: number; color?: string; align?: string },
+  text: { staticLines?: Array<{ text: string; x: number; y: number; width?: number }>; fontHeight: number; color?: string; align?: string; baselineRatio?: number },
   fallbackWidth: number,
 ): string {
   const boxWidth = Math.max(1, fallbackWidth);
+  // `line.y` is the glyph baseline; inside a `line-height: fontHeight` box the browser puts the
+  // alphabetic baseline `fontHeight × baselineRatio` below the box top (the font's half-leading
+  // + ascent), so anchor the line there. baselineRatio defaults to 1 — the full-em ascent the
+  // table-less faces report and the old `top = line.y − fontHeight` — so faces without recorded
+  // metrics (and any already-generated timeline) are unchanged; faces with a real FontLayout
+  // ascent (<1 em) get pushed down onto their baseline, e.g. the centred "World News Live" mark.
+  const baselineRatio = text.baselineRatio ?? 1;
   return (text.staticLines ?? []).map((line) => {
     const lineWidth = Math.max(1, line.width ?? boxWidth);
     const left = text.align === "center" ? line.x + (boxWidth - lineWidth) / 2 : line.x;
-    const top = line.y - text.fontHeight;
+    const top = line.y - text.fontHeight * baselineRatio;
     const align = text.align ?? "left";
     // The true per-glyph advances of a DefineText live in its records (`line.width` is their
     // sum), not in the font. When the embedded face's own advances are wider (e.g. the

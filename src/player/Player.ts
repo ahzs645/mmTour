@@ -3366,6 +3366,26 @@ export class Player {
     return false;
   }
 
+  /** Whether any descendant child clip carries a runtime SIZE override (`_width`/`_height`/
+   *  `_xscale`/`_yscale`) that the design-time bake can't represent. A baked sprite frame is
+   *  composited at the SWF's authored size, so a clip a class method later resizes (e.g. bnl's
+   *  TopNavButton rollover stretches its pill 3-slice with `background.center._width =
+   *  label_txt._width`, then slides the right cap to the new end) would still be painted at the
+   *  authored width from the bake — too wide for short labels, too narrow for long ones. When the
+   *  subtree holds such a resized clip we render the sprite from the live tree instead, so
+   *  `applyClipMatrixOverrides` reflects the runtime size. Gated (like the sibling
+   *  dynamic-instance / hidden-child checks) on `hasAnyDynamicInstances`, so a scene that never
+   *  mutates its display list keeps its baked-frame fidelity untouched. */
+  private subtreeHasTransformedChild(clip: ClipInstance): boolean {
+    for (const child of clip.childClips.values()) {
+      if (child.width !== undefined || child.height !== undefined
+          || (child.xscale !== undefined && child.xscale !== 100)
+          || (child.yscale !== undefined && child.yscale !== 100)) return true;
+      if (this.subtreeHasTransformedChild(child)) return true;
+    }
+    return false;
+  }
+
   /** Alpha contribution of a placed instance. A clip's design alpha (the placement's
    *  color-transform alpha) and a runtime `_alpha` are the SAME Flash property, so a
    *  runtime `_alpha` REPLACES the design alpha rather than multiplying with it. The
@@ -3458,7 +3478,7 @@ export class Player {
       const child = clip.childClips.get(instance.depth);
       if (child && runtimeMaskClips.has(child)) continue;
       if (child?.visible === false) continue;
-      const matrix = multiplyMatrix(world, applyClipMatrixOverrides(instance.matrix, child));
+      const matrix = multiplyMatrix(world, applyClipMatrixOverrides(instance.matrix, child, asset?.origin));
       const opacity = worldOpacity * this.placedAlpha(instance.opacity, child);
       const colorTransform = composeRenderColorTransform(worldColorTransform, instance.colorTransform);
       const key = `${path}/${instance.depth}`;
@@ -3511,7 +3531,8 @@ export class Player {
       // interactive and its frame scripts still run (logic lives in the tree).
       if (asset.kind === "sprite" && asset.frames?.length && !asset.overflowsBounds
           && !(this.hasAnyDynamicInstances && child && this.subtreeHasDynamicInstances(child))
-          && !(this.hasAnyDynamicInstances && child && this.subtreeHasHiddenChild(child))) {
+          && !(this.hasAnyDynamicInstances && child && this.subtreeHasHiddenChild(child))
+          && !(this.hasAnyDynamicInstances && child && this.subtreeHasTransformedChild(child))) {
         const frameIndex = child ? clamp(child.currentFrame, 0, asset.frames.length - 1) : 0;
         out.push(spriteNode(key, order.n++, asset, asset.frames[frameIndex], matrix, opacity, instance, child?.currentFrame, colorTransform));
         if (child && asset.timeline?.length) this.collectButtons(child, matrix, colorTransform, key, order, out, opacity);
@@ -3580,7 +3601,7 @@ export class Player {
       if (!asset) continue;
       const child = clip.childClips.get(instance.depth);
       if (child?.visible === false) continue;
-      const matrix = multiplyMatrix(world, applyClipMatrixOverrides(instance.matrix, child));
+      const matrix = multiplyMatrix(world, applyClipMatrixOverrides(instance.matrix, child, asset.origin));
       const instanceOpacity = opacity * this.placedAlpha(instance.opacity, child);
       const colorTransform = composeRenderColorTransform(worldColorTransform, instance.colorTransform);
       const key = `${path}/${instance.depth}`;
@@ -4106,11 +4127,18 @@ function leafAlpha(props: Record<string, VarValue | undefined> | undefined): num
   return Number.isFinite(alpha) ? clamp(alpha / 100, 0, 1) : 1;
 }
 
-function applyClipMatrixOverrides<T extends { a: number; b: number; c: number; d: number; tx: number; ty: number }>(matrix: T, clip: ClipInstance | undefined): T {
-  if (!clip || (clip.x === undefined && clip.y === undefined && clip.rotation === undefined && clip.xscale === undefined && clip.yscale === undefined)) return matrix;
+function applyClipMatrixOverrides<T extends { a: number; b: number; c: number; d: number; tx: number; ty: number }>(matrix: T, clip: ClipInstance | undefined, naturalSize?: { width: number; height: number }): T {
+  if (!clip || (clip.x === undefined && clip.y === undefined && clip.rotation === undefined
+      && clip.xscale === undefined && clip.yscale === undefined && clip.width === undefined && clip.height === undefined)) return matrix;
   const next = { ...matrix };
-  const sx = clip.xscale !== undefined ? clip.xscale / 100 : 1;
-  const sy = clip.yscale !== undefined ? clip.yscale / 100 : 1;
+  // A runtime `_width`/`_height` with no explicit `_xscale`/`_yscale` is Flash's `_width` setter:
+  // it rescales the clip to that pixel size relative to its UNSCALED bounds (the asset origin),
+  // overriding the design scale. bnl's TopNavButton rollover stretches its pill's centre slice
+  // this way (`background.center._width = label_txt._width`), so the pill hugs each label.
+  let sx = clip.xscale !== undefined ? clip.xscale / 100 : 1;
+  let sy = clip.yscale !== undefined ? clip.yscale / 100 : 1;
+  if (clip.xscale === undefined && clip.width !== undefined && naturalSize && naturalSize.width > 0) sx = clip.width / naturalSize.width;
+  if (clip.yscale === undefined && clip.height !== undefined && naturalSize && naturalSize.height > 0) sy = clip.height / naturalSize.height;
   if (sx !== 1) {
     next.a *= sx;
     next.b *= sx;
