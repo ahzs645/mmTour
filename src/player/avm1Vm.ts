@@ -112,7 +112,12 @@ export class Avm1Vm {
         case "Delete2": { const key = String(stack.pop()); stack.push(this.deleteVar(frame, key)); break; }
         case "DefineLocal": { const val = stack.pop(); const name = String(stack.pop()); frame.locals[name] = val; break; }
         case "DefineLocal2": { const name = String(stack.pop()); if (!(name in frame.locals)) frame.locals[name] = UNDEF; break; }
-        case "InitArray": { const n = Number(stack.pop()) | 0; const arr: Avm1Value[] = []; for (let i = 0; i < n; i++) arr.unshift(stack.pop()); stack.push(arr); break; }
+        // ActionInitArray pushes elements last-first, so the top of the stack is element 0
+        // (Ruffle: `array[i] = pop()`). Pushing each popped value preserves source order; an
+        // `unshift` would reverse it, so `[a,b,c][0]` came back as `c` — which left bnl's
+        // NewsTopStory reading `textClips[0]` (its first lede line) as the last, unplaced
+        // field, so the lede never moved and overlapped the headline.
+        case "InitArray": { const n = Number(stack.pop()) | 0; const arr: Avm1Value[] = []; for (let i = 0; i < n; i++) arr.push(stack.pop()); stack.push(arr); break; }
         case "InitObject": { const n = Number(stack.pop()) | 0; const o: any = {}; for (let i = 0; i < n; i++) { const v = stack.pop(); const k = String(stack.pop()); o[k] = v; } stack.push(o); break; }
         case "NewObject": { const name = String(stack.pop()); const args = popArgs(stack); stack.push(this.host.construct(name, args)); break; }
         case "NewMethod": { const key = stack.pop(); const obj = stack.pop(); const args = popArgs(stack); stack.push(this.newMethod(obj, key, args)); break; }

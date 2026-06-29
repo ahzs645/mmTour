@@ -304,35 +304,44 @@ line relative to the headline height:
 this.textClips[0]._y += (this.titleClip.title_txt._height - 25.6) + 2;
 ```
 
-Four independent defects stack up here; the panel needs all four to land like Ruffle, and
-only the first three have low-risk runtime fixes — the fourth is the actual blocker and
-lives in the build/VM, so the panel is **diagnosed, not yet fixed**:
+### Stage 8b — FIXED
 
-1. **`InitArray` reversed every array literal.** `avm1Vm`/`convert/avm1/interp.ts` build an
-   array with `arr.unshift(stack.pop())`. AVM1 pushes elements last-first, so the top of
-   the stack is element 0 (Ruffle: `array[i] = pop()`); `unshift` flips it, so
-   `[a,b,c][0]` came back as `c`. `textClips[0]` (meant to be the *first* lede line, the
-   only one the `_y` nudge anchors on) resolved to the last, unplaced field. Fix is
-   `arr.push` — verified to make `textClips[0]` the right leaf — but it changes ordering for
-   *all* data-driven arrays, so it wants a full bnl regression pass before landing.
-2. **A text leaf's `_x`/`_y` weren't readable.** `Player.getAppTextProp` handled
+Four independent defects stacked up; all four are fixed and the lede now sits below the
+headline (verified against the live in-browser-compiled bnl, plus the home/Robotics/
+Business-Divisions sections for regressions). An earlier note guessed the blocker was a
+bytecode-extraction *truncation* — disassembling the setter disproved that: its 187 ops are
+all there, including `textClips[0]._y +=`. The real blocker was a **double-decode** bug
+that, together with the array reversal, made the offset read garbage / land on the wrong
+field.
+
+1. **`InitArray` reversed every array literal.** `avm1Vm`/`convert/avm1/interp.ts` built the
+   array with `arr.unshift(stack.pop())`. AVM1 pushes elements last-first, so the top of the
+   stack is element 0 (Ruffle: `array[i] = pop()`); `unshift` flips it, so `[a,b,c][0]` came
+   back as `c`. `textClips[0]` (the *first* lede line, the one the `_y` nudge anchors on)
+   resolved to the last, unplaced field → the assignment was a no-op. Fix: `arr.push`. Only
+   data-driven apps run through this VM (the tour uses the legacy assign/call path), and bnl
+   home/sections/ticker were re-verified.
+2. **`ActionPush` doubles were decoded with the halves swapped.** The SWF stores a type-6
+   double's two 32-bit words **high-word-first**; `parse.ts`/`avm1Disasm.mjs` read them as a
+   plain little-endian `getFloat64`, so `25.6` decoded as `-2.353438281290117e-185`
+   (`_height - 25.6` ≈ `_height`, throwing the offset off). New `readSwfDouble` assembles
+   `[low][high]` first. (`0.0` is symmetric under the swap, which is why most of bnl's 986
+   double pushes looked fine and the bug hid for so long — only the non-zero constants like
+   25.6 / 0.5 / 87.5 were wrong.)
+3. **A text leaf's `_x`/`_y` weren't readable.** `Player.getAppTextProp` handled
    `_width`/`_height`/`textColor` but returned `undefined` for `_x`/`_y`, so
    `text_txt._y += …` computed `undefined + n = NaN` and never moved the field. A leaf's
-   `_y` should default to its placement matrix `ty` (pixels), like a clip's `placedY`.
-3. **Wrapped-text height was under-measured for the headline font.** Line height was
+   `_x`/`_y` now default to its placement matrix `tx`/`ty` (pixels), like a clip's
+   `placedX`/`placedY` (`textLeafPlacement`).
+4. **Wrapped-text height was under-measured for the headline font.** Line height was
    `fontHeight + leading`, but Flash advances lines by the font's real **ascent+descent**.
    For TradeGothic Bold (the headline face) that's ~1.17× the em, so the 2-line title
-   measured ~39px vs Flash's ~47, and the `_height - 25.6` offset under-shot. Canvas
-   `measureText().fontBoundingBox{Ascent,Descent}` gives the right advance (≈21px@18px vs
-   fontHeight 18); fonts where it equals the em (the Frutiger body faces) are unchanged.
-4. **`set lede` never reaches the `_y` line (the actual blocker).** Even with 1–3, the
-   field doesn't move: instrumenting the VM shows `set lede` runs the word-wrap `while`
-   loop and reads `titleClip.title_txt._height`, then **stops** — `this.textClips` is never
-   evaluated, so the offset assignment doesn't execute. The compiled bytecode for the
-   setter appears to end early (likely a `convert/avm1Control` extraction gap for this
-   compound-assignment-in-a-loop shape), so the runtime fixes above can't land the lede.
-   Fixing this means closing the bytecode-extraction gap (or the VM control-flow handling)
-   for that function — build-side work beyond the nav-pill change.
+   measured ~39px vs Flash's ~47, and the `_height - 25.6` offset under-shot. `lineHeightBase`
+   measures the embedded face's `fontBoundingBox{Ascent,Descent}` via canvas (≈21px@18px vs
+   fontHeight 18) and feeds both the metric and the rendered line spacing; fonts where it
+   equals the em (the Frutiger body faces, so the news-link separators from Stage 9) are
+   unchanged. Gated on `hasAnyDynamicInstances`, so non-data-driven scenes keep their
+   baseline.
 
 ## Stage 9 — left-subnav vertical spacing (DONE)
 
